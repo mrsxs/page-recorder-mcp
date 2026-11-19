@@ -70,6 +70,11 @@
 
     <div id="tab-library" class="tab" hidden>
       <p class="hint block">停止录制后自动保存到这里。脚本库中的脚本可被本地桥接服务调用：Claude Code、Accio 等 AI 工具通过 MCP / HTTP 直接执行并拿到结果。</p>
+      <div class="libbar">
+        <button id="btnImportPkg" class="ghost sm" title="导入别处导出的录制包（.prpkg.json），成为脚本库里的一条新脚本">导入录制包</button>
+        <input type="file" id="pkgFile" accept=".json,application/json" hidden />
+        <a href="#" id="importInTab" class="hint" title="有的系统上弹出选文件对话框时这个弹窗会被关掉，可以改在标签页里导入">选文件时弹窗被关掉？在标签页中打开</a>
+      </div>
       <div id="libList"></div>
       <div id="libEmpty" class="empty" hidden>脚本库为空。录制并停止后会自动保存。</div>
     </div>
@@ -85,6 +90,8 @@
       <label class="row num">单个请求/响应体最多保存 <input type="number" min="16" max="10240" data-k="maxBodyKB" /> KB</label>
       <label class="row num">脚本中每个接口的示例响应最多 <input type="number" min="1" max="1024" data-k="sampleKB" /> KB</label>
       <label class="row col">排除 URL（正则）<input type="text" data-k="excludePattern" placeholder="例如 /api/heartbeat|/ping" /></label>
+      <h4>回放</h4>
+      <label class="row"><input type="checkbox" data-k="realInput" /> 用真实鼠标键盘回放（回放期间浏览器上方会提示“正在调试此浏览器”，结束后消失；关掉则用模拟事件）</label>
       <h4>AI 解读接口</h4>
       <label class="row col">接口类型
         <select data-k="aiProvider"><option value="openai">OpenAI 兼容（OpenAI / DeepSeek / 通义千问 / Kimi / OpenRouter / Ollama …）</option><option value="anthropic">Anthropic Claude</option></select></label>
@@ -94,6 +101,7 @@
       <h4>本地 AI 桥接服务</h4>
       <label class="row"><input type="checkbox" data-k="bridgeEnabled" /> 连接本地桥接服务（运行 bridge/server.js 后自动连接）</label>
       <label class="row col">地址<input type="text" data-k="bridgeUrl" placeholder="ws://127.0.0.1:17321/ext" /></label>
+      <label class="row col">这个浏览器的名称（几个浏览器资料都装了扩展时，AI 用它指定在哪个浏览器执行，改完点“重新连接”）<input type="text" data-k="profileLabel" maxlength="40" placeholder="如 主 Chrome / 店铺B" /></label>
       <div class="row"><button id="btnReconnect" class="ghost">重新连接</button><span id="bridgeState" class="hint"></span></div>
     </div>
   </main>
@@ -103,6 +111,7 @@
     <button id="btnCopyJs" class="ghost">复制脚本</button>
     <button id="btnCopyMd" class="ghost" title="Markdown 格式的步骤、接口与响应结构说明，适合直接发给 AI">复制说明</button>
     <button id="btnExportJson" class="ghost">导出 JSON</button>
+    <button id="btnExportPkg" class="ghost" title="带版本号、已脱敏的录制包（.prpkg.json），可以在别的电脑或浏览器资料里「脚本库 → 导入录制包」导回">导出录制包</button>
   </footer>
 
   <script src="../lib/runtime.js"></script>

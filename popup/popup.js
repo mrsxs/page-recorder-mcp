@@ -6,7 +6,7 @@ const send = (msg) => chrome.runtime.sendMessage(msg);
 let data = null;
 let tab = null;
 let activeTab = 'steps';
-let lastEventCount = -1;
+let lastEventSig = '';
 
 // 显示时长按文字长度算，长消息停留更久；点击可提前关闭
 function toast(text, ms) {
@@ -25,8 +25,10 @@ async function refresh(force) {
   if (!data) return;
   renderHeader();
   renderAiStatus();
-  if (force || data.events.length !== lastEventCount) {
-    lastEventCount = data.events.length;
+  // 语义步骤的成员是录完之后才归组的（事件数不变），所以归组数变了也要重画
+  const sig = data.events.length + ':' + data.events.reduce((n, e) => n + (e.groupedIn ? 1 : 0), 0);
+  if (force || sig !== lastEventSig) {
+    lastEventSig = sig;
     renderTimeline();
     if (activeTab === 'apis' && !document.activeElement.closest('.api')) renderApis();
     if (activeTab === 'library') renderLibrary();
@@ -39,7 +41,9 @@ function renderHeader() {
   const here = rec && tab && st.tabId === tab.id;
   $('#dot').classList.toggle('on', rec);
   $('#status').textContent = rec ? (here ? '录制中' : '正在录制其他标签页') : data.events.length ? '已停止' : '未录制';
-  $('#nSteps').textContent = data.counts.steps;
+  // 只算顶层步骤：归到语义步骤下的原始操作不算（和导出的步骤数一致）
+  const member = grouping(data.events).member;
+  $('#nSteps').textContent = data.events.filter((e) => e.kind === 'step' && !member.has(e.id)).length;
   $('#nReqs').textContent = data.counts.requests;
   $('#btnStart').hidden = rec;
   $('#btnStart').textContent = data.events.length ? '● 重新录制' : '● 开始录制';
@@ -66,7 +70,7 @@ function renderHeader() {
   if (document.activeElement !== nm) nm.value = st.name || '';
   nm.placeholder = data.aiDocs && data.aiDocs.title ? `AI 建议：${data.aiDocs.title}` : '给录制起个名字（停止后自动存入脚本库）';
   const has = data.events.length > 0;
-  ['#btnExportJs', '#btnCopyJs', '#btnCopyMd', '#btnExportJson'].forEach((s) => { $(s).disabled = !has; });
+  ['#btnExportJs', '#btnCopyJs', '#btnCopyMd', '#btnExportJson', '#btnExportPkg'].forEach((s) => { $(s).disabled = !has; });
 }
 
 // 提示会一直显示，直到点 × 关闭（弹窗每 800ms 刷新一次，不能依赖自动隐藏）
@@ -131,20 +135,45 @@ function shortUrl(u) {
 let tlEditing = false;
 const tlSel = new Set();
 let tlAnchor = null; // Shift 连选的起点
-let tlShown = [];    // 当前列表里显示的事件 id，按顺序
+let tlShown = [];    // 当前列表里显示的事件 id，按顺序（含展开的原始操作）
+const tlOpen = new Set(); // 展开了原始操作的语义步骤 id
 
 const sortedEvents = () => [...data.events].sort((a, b) => a.ts - b.ts);
+// 语义步骤（设置日期、选择选项、双击等）的成员：原始操作挂在它下面，不单独占一行。
+// 和导出的规则一致：groupedIn 指向的步骤存在且带 members 才算成员；父步骤被删后成员自动回到顶层
+function grouping(evs) {
+  const groups = new Set(evs.filter((e) => e.kind === 'step' && Array.isArray(e.members)).map((e) => e.id));
+  const children = new Map(); // 父步骤 id -> [成员]
+  const member = new Set();
+  for (const e of evs) {
+    if (e.kind !== 'step' || !e.groupedIn || e.groupedIn === e.id || !groups.has(e.groupedIn)) continue;
+    member.add(e.id);
+    if (!children.has(e.groupedIn)) children.set(e.groupedIn, []);
+    children.get(e.groupedIn).push(e);
+  }
+  return { children, member };
+}
+const TYPE_LABEL = { click: '点击', dblclick: '双击', contextmenu: '右键', hover: '悬停', fill: '输入', select: '选择', check: '勾选', press: '按键', scroll: '滚动', drag: '拖动', navigate: '打开', url: '路由', extract: '提取', upload: '上传' };
+const typeLabel = (e) => (e.type === 'fill' && e.pick === 'date' ? '日期' : e.type === 'fill' && e.pick === 'choice' ? '选择' : TYPE_LABEL[e.type] || e.type);
 
 function renderTimeline() {
   const showReqs = $('#showReqs').checked;
   const evs = sortedEvents();
-  const list = showReqs ? evs : evs.filter((e) => e.kind === 'step');
-  const shown = list.slice(-400);
-  tlShown = shown.map((e) => e.id);
+  const g = grouping(evs);
+  const list = evs.filter((e) => !g.member.has(e.id) && (showReqs || e.kind === 'step'));
+  // 展开的语义步骤后面紧跟它的原始操作（缩进显示）
+  const rows = [];
+  for (const e of list.slice(-400)) {
+    rows.push({ e, sub: false });
+    const kids = g.children.get(e.id);
+    if (kids && tlOpen.has(e.id)) kids.forEach((k) => rows.push({ e: k, sub: true }));
+  }
+  for (const id of tlOpen) if (!g.children.has(id)) tlOpen.delete(id);
+  tlShown = rows.map((r) => r.e.id);
   $('#emptyTip').hidden = evs.length > 0;
   const pick = (e) => (tlEditing ? `<input type="checkbox" class="pick" tabindex="-1" ${tlSel.has(e.id) ? 'checked' : ''} />` : '');
   const del = (e) => (tlEditing ? '' : `<button class="del" data-id="${esc(e.id)}" title="删除">×</button>`);
-  const html = shown.map((e) => {
+  const html = rows.map(({ e, sub }) => {
     const sel = tlEditing && tlSel.has(e.id) ? ' sel' : '';
     if (e.kind === 'request') {
       const err = e.error || !(e.status >= 200 && e.status < 400);
@@ -156,18 +185,21 @@ function renderTimeline() {
         ${del(e)}</li>`;
     }
     const cls = e.type === 'extract' ? 'extract' : e.type === 'navigate' || e.type === 'url' ? 'nav' : 'step';
-    const label = { click: '点击', fill: '输入', select: '选择', check: '勾选', press: '按键', scroll: '滚动', navigate: '打开', url: '路由', extract: '提取', upload: '上传' }[e.type] || e.type;
     let frameTag = '';
     if (e.frame) {
       let fh = '';
       try { fh = new URL(e.frame.url).host; } catch (x) { /* ignore */ }
       frameTag = `<span class="frametag" title="${esc(e.frame.url)}">iframe · ${esc(fh)}</span>`;
     }
-    const opt = tlEditing ? '' : `<button class="opt${e.optional ? ' on' : ''}" data-id="${esc(e.id)}" title="可选步骤：回放时页面上有这个元素就执行，没有就跳过（比如只在未登录时出现的登录）">可选</button>`;
-    return `<li class="${(sel + (e.optional ? ' optional' : '')).trim()}" data-id="${esc(e.id)}">${pick(e)}<span class="ico ${cls}">${label}</span>
-      <div class="body"><div class="main">${esc(PR_EXPORTER.stepDesc(e))}${frameTag}${e.optional ? '<span class="opttag">可选 · 没有就跳过</span>' : ''}</div>
+    // 原始操作由语义步骤负责回放，不单独设可选
+    const opt = tlEditing || sub ? '' : `<button class="opt${e.optional ? ' on' : ''}" data-id="${esc(e.id)}" title="可选步骤：回放时页面上有这个元素就执行，没有就跳过（比如只在未登录时出现的登录）">可选</button>`;
+    const kids = sub ? null : g.children.get(e.id);
+    const grp = kids ? `<button class="grp${tlOpen.has(e.id) ? ' on' : ''}" data-grp="${esc(e.id)}" title="这一步是由几个原始操作合成的，回放时按这一步执行">${tlOpen.has(e.id) ? '收起原始操作' : `展开 ${kids.length} 个原始操作`}</button>` : '';
+    const liCls = (sel + (e.optional && !sub ? ' optional' : '') + (sub ? ' member' : '')).trim();
+    return `<li class="${liCls}" data-id="${esc(e.id)}">${pick(e)}<span class="ico ${cls}">${esc(typeLabel(e))}</span>
+      <div class="body"><div class="main">${esc(PR_EXPORTER.stepDesc(e))}${frameTag}${e.optional && !sub ? '<span class="opttag">可选 · 没有就跳过</span>' : ''}</div>
       ${e.target ? `<div class="sub" title="${esc((e.target.selectors || []).join('\n'))}">${esc((e.target.selectors || [])[0] || '')}</div>` : ''}</div>
-      ${opt}${del(e)}</li>`;
+      ${grp}${opt}${del(e)}</li>`;
   }).join('');
   const tl = $('#timeline');
   tl.classList.toggle('editing', tlEditing);
@@ -178,18 +210,22 @@ function renderTimeline() {
   if (tlEditing) updateEditBar();
 }
 
-// 步骤触发的请求：从该步骤到下一个步骤之间发出的请求（和导出时的归属规则一致）
-function ownRequests(evs, id) {
+// 步骤触发的请求：从该步骤到下一个顶层步骤之间发出的请求（和导出时的归属规则一致：原始操作不算分界，它们的请求归语义步骤）
+function ownRequests(evs, id, member) {
   const i = evs.findIndex((e) => e.id === id);
   const out = [];
-  if (i < 0 || evs[i].kind !== 'step') return out;
-  for (let k = i + 1; k < evs.length && evs[k].kind !== 'step'; k++) out.push(evs[k].id);
+  if (i < 0 || evs[i].kind !== 'step' || member.has(id)) return out;
+  for (let k = i + 1; k < evs.length; k++) {
+    if (evs[k].kind === 'step') { if (member.has(evs[k].id)) continue; break; }
+    out.push(evs[k].id);
+  }
   return out;
 }
 function pickEvent(id, range) {
   const evs = sortedEvents();
+  const member = grouping(evs).member;
   const withReqs = $('#tlWithReqs').checked;
-  const expand = (ids) => ids.flatMap((x) => (withReqs ? [x, ...ownRequests(evs, x)] : [x]));
+  const expand = (ids) => ids.flatMap((x) => (withReqs ? [x, ...ownRequests(evs, x, member)] : [x]));
   const a = tlShown.indexOf(tlAnchor);
   const b = tlShown.indexOf(id);
   if (range && a >= 0 && b >= 0) {
@@ -234,6 +270,14 @@ function setEditing(on) {
 }
 
 $('#timeline').addEventListener('click', async (e) => {
+  // 展开 / 收起语义步骤的原始操作（编辑模式下也能展开，好单独选中成员）
+  const g = e.target.closest('.grp');
+  if (g) {
+    const id = g.dataset.grp;
+    if (tlOpen.has(id)) tlOpen.delete(id); else tlOpen.add(id);
+    renderTimeline();
+    return;
+  }
   if (tlEditing) {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
@@ -279,13 +323,13 @@ const SEC_NAME = { path: '路径', query: 'Query', body: 'Body' };
 function renderParams(A) {
   const box = $('#paramBox');
   if (box.contains(document.activeElement)) return;
-  const fills = A.steps.filter((s) => s.type === 'fill' && s.param);
+  const fills = A.steps.filter((s) => s.param && (s.type === 'fill' || s.type === 'select' || s.type === 'upload'));
   box.hidden = !fills.length;
   if (!fills.length) return;
   box.innerHTML = '<div class="ptitle">输入参数<span>回放时填进输入框，接口里关联的字段会跟着变。想搜别的内容改这里</span></div>' + fills.map((s) => {
     const n = A.steps.indexOf(s) + 1;
     return `<label class="prow"><span class="pname" title="${esc(s.desc)}">${esc(s.param)}</span>
-      <input data-param-step="${esc(s.id)}" value="${esc(s.sensitive ? '' : s.value || '')}"${s.sensitive ? ' disabled placeholder="密码不保存，回放时通过参数传入"' : ''} />
+      <input data-param-step="${esc(s.id)}" value="${esc(s.sensitive ? '' : s.type === 'select' ? s.optionText || s.value || '' : s.value || '')}"${s.sensitive ? ' disabled placeholder="密码不保存，回放时通过参数传入"' : s.type === 'upload' ? ' placeholder="本机文件完整路径，多个用 | 分隔"' : s.type === 'select' ? ` title="${esc((s.options || []).map((o) => o[1]).join('、'))}"` : ''} />
       <span class="pfrom">步骤 ${n}${s.frame ? ' · iframe' : ''}</span></label>`;
   }).join('');
 }
@@ -305,7 +349,7 @@ function renderApis() {
   // 不带手动修改时的接口参数：用来判断某个字段原本是不是关联着输入参数
   const base = Object.keys(data.apiOverrides || {}).length ? PR_EXPORTER.analyze(data.events, data.settings, data.state, {}, data.aiDocs) : A;
   const baseOf = (name) => base.apis.find((x) => x.name === name);
-  const linkOf = (v) => { const m = typeof v === 'string' && v.match(/^\{\{\s*(.+?)\s*\}\}$/); return m ? m[1] : null; };
+  const linkOf = (v) => { const m = typeof v === 'string' && v.match(/^\{\{\s*(.+?)\s*\}\}$/); return m ? m[1].split('|')[0].trim() : null; };
   renderParams(A);
   $('#apiEmpty').hidden = A.apis.length > 0;
   const info = $('#aiInfo');
@@ -504,11 +548,20 @@ function download(text, name, type) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 function buildOut() { return PR_EXPORTER.build(data.events, data.settings, data.state, data.apiOverrides, data.aiDocs); }
+const safeFile = (s) => String(s || 'recording').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 80);
+// 录制包：带版本号、已脱敏的 JSON，可以在别的电脑 / 别的浏览器资料里「脚本库 → 导入录制包」导回
+async function exportPackage(id, fallbackName) {
+  const r = await send(id ? { type: 'exportPackage', id } : { type: 'exportPackage' });
+  if (!r || r.error || !r.pkg) { showNotice('导出录制包失败：' + esc((r && r.error) || '后台没有响应'), 'error'); return; }
+  download(JSON.stringify(r.pkg, null, 2), safeFile(r.pkg.name || fallbackName) + '.prpkg.json', 'application/json');
+  toast('录制包已导出（密码、登录令牌等已去掉）');
+}
 
 $('#btnExportJs').onclick = () => { download(buildOut().script, fileBase() + '.js', 'text/javascript'); };
 $('#btnExportJson').onclick = () => { download(JSON.stringify(buildOut().raw, null, 2), fileBase() + '.json', 'application/json'); };
 $('#btnCopyJs').onclick = async () => { await navigator.clipboard.writeText(buildOut().script); toast('脚本已复制'); };
 $('#btnCopyMd').onclick = async () => { await navigator.clipboard.writeText(buildOut().summary); toast('说明已复制（Markdown）'); };
+$('#btnExportPkg').onclick = () => exportPackage(null, fileBase());
 
 // ---------------- 名称 ----------------
 $('#recName').addEventListener('change', async (e) => {
@@ -566,7 +619,7 @@ function renderLibrary() {
     ${x.description ? `<div class="lib-desc">${esc(x.description)}</div>` : ''}
     <div class="lib-meta">${x.steps} 步 · ${x.requests} 个请求 · ${new Date(x.savedAt).toLocaleString()} · ${esc(x.startUrl || '')}</div>
     ${paramRows(x)}
-    <div class="lib-actions">${x.direct ? '<button data-act="query" class="primary" title="不操作页面，把参数填进接口，直接在开着的页面里请求（快）">⚡ 直接请求</button>' : ''}<button data-act="run" title="在页面上重放录制的操作">▶ 回放操作</button><button data-act="open">打开编辑</button><button data-act="export">导出 .js</button><button data-act="del">删除</button></div>
+    <div class="lib-actions">${x.direct ? '<button data-act="query" class="primary" title="不操作页面，把参数填进接口，直接在开着的页面里请求（快）">⚡ 直接请求</button>' : ''}<button data-act="run" title="在页面上重放录制的操作">▶ 回放操作</button><button data-act="open">打开编辑</button><button data-act="export">导出 .js</button><button data-act="pkg" title="带版本号、已脱敏的录制包，可在别的电脑或浏览器资料里导入">导出录制包</button><button data-act="del">删除</button></div>
     <div class="lib-out"></div></div>`).join('');
 }
 $('#libList').addEventListener('click', async (e) => {
@@ -587,6 +640,9 @@ $('#libList').addEventListener('click', async (e) => {
     const out = PR_EXPORTER.build(item.events, item.settings, item.state, item.apiOverrides, item.aiDocs);
     download(out.script, (item.name || 'recording').replace(/[\\/:*?"<>|\s]+/g, '_') + '.js', 'text/javascript');
     return;
+  } else if (act === 'pkg') {
+    await exportPackage(id, ((data.libIndex || []).find((x) => x.id === id) || {}).name);
+    return;
   } else if (act === 'run' || act === 'query') {
     const label = b.textContent;
     b.disabled = true;
@@ -603,6 +659,33 @@ $('#libList').addEventListener('click', async (e) => {
   renderLibrary();
 });
 
+// 导入录制包：选文件 → 交给后台导入成脚本库里的新条目
+$('#btnImportPkg').onclick = () => $('#pkgFile').click();
+$('#pkgFile').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  let pkg;
+  try {
+    pkg = JSON.parse(await f.text());
+  } catch (err) {
+    showNotice(`「${esc(f.name)}」不是有效的 JSON：${esc(err.message)}`, 'error');
+    return;
+  } finally {
+    e.target.value = ''; // 同一个文件改完可以再选一次
+  }
+  const r = await send({ type: 'importPackage', pkg });
+  if (!r || r.error) { showNotice('导入录制包失败：' + esc((r && r.error) || '后台没有响应'), 'error'); return; }
+  toast(`已导入「${r.name || f.name}」到脚本库`);
+  await refresh(true);
+  renderLibrary();
+});
+// 有的系统上弹出选文件对话框时扩展弹窗会被关掉：改在标签页里打开同一个界面再导入
+$('#importInTab').onclick = (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: chrome.runtime.getURL('popup/popup.html?tab=library') });
+  window.close();
+};
+
 $('#btnReconnect').onclick = async () => {
   const r = await send({ type: 'bridgeReconnect' });
   toast(r.bridge ? '桥接已连接' : '连接失败：请先运行 node bridge/server.js');
@@ -611,6 +694,13 @@ $('#btnReconnect').onclick = async () => {
 
 (async () => {
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // 在标签页里打开（popup.html?tab=library）：直接切到对应页签
+  const initTab = new URLSearchParams(location.search).get('tab');
+  if (initTab) {
+    document.body.classList.add('in-tab');
+    const b = document.querySelector(`.tabs button[data-tab="${initTab}"]`);
+    if (b) b.click();
+  }
   await refresh(true);
   setInterval(() => refresh(false), 800);
 })();

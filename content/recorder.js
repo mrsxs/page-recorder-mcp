@@ -21,13 +21,30 @@
   const CLICKABLE = 'a,button,input,select,textarea,label,summary,option,[role=button],[role=link],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=tab],[role=option],[role=checkbox],[role=radio],[role=switch],[role=treeitem],[onclick],[contenteditable=""],[contenteditable=true],[tabindex]:not([tabindex="-1"])';
   const STABLE_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy', 'data-e2e', 'name', 'aria-label', 'placeholder', 'title', 'alt', 'for', 'href', 'value'];
 
-  const textOf = (el) => ((el && (el.innerText || el.textContent)) || '').trim().replace(/\s+/g, ' ');
+  const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ');
+  const textOf = (el) => norm(el && (el.innerText || el.textContent));
   const dynamicId = (s) => !s || s.length > 50 || /\d{4,}|[0-9a-f]{8,}|^:|^(ember|react|mui|headlessui|radix|el-id|rc_|rc-|ext-gen|yui|ui-id|j_id|__)/i.test(s);
-  const dynamicClass = (s) => !s || s.length > 40 || /^(css|sc|jsx|svelte|emotion|tw|ng)-/i.test(s) || /__[A-Za-z0-9_-]{5,}$/.test(s) || /\d{3,}/.test(s) || /[A-Z0-9]{4,}/.test(s) || /^(active|hover|focus|selected|is-|has-|ng-|v-)/.test(s);
+  // 构建工具生成的哈希类名（CSS-in-JS、CSS Modules）每次发版都会变，不能当选择器
+  const UI_PREFIX = /^(soui|so|ant|el|ivu|layui|mui|arco|t|n|van|semi|next|ui|chakra|v)-/i;
+  function hashedClass(s, all) {
+    if (!/^[a-z]{1,2}-?[a-z0-9]{5,8}$/.test(s)) return false;
+    if (/\d/.test(s)) return true; // c229po6、c-99sfs3
+    return !!(all && all.some((c) => UI_PREFIX.test(c))); // 和组件库类名一起出现的短类名（cqvauqu）
+  }
+  const dynamicClass = (s, all) => !s || s.length > 40 || /^(css|sc|jsx|svelte|emotion|tw|ng)-/i.test(s) || /__[A-Za-z0-9_-]{5,}$/.test(s)
+    || /--[A-Za-z0-9_]{5,}$/.test(s) || /\d{3,}/.test(s) || /[A-Z0-9]{4,}/.test(s) || /^(active|hover|focus|selected|is-|has-|ng-|v-)/.test(s) || hashedClass(s, all);
   const cssAttr = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\a ') + '"';
+  const rootOf = (el) => (el.getRootNode ? el.getRootNode() : document);
 
   function unique(sel, el) {
-    try { const r = document.querySelectorAll(sel); return r.length === 1 && r[0] === el; } catch (e) { return false; }
+    try { const r = rootOf(el).querySelectorAll(sel); return r.length === 1 && r[0] === el; } catch (e) { return false; }
+  }
+  // 事件的真正目标：Shadow DOM 里的元素在 document 上会被换成宿主，用 composedPath 取回
+  const deepTarget = (e) => { const p = e.composedPath ? e.composedPath() : []; return (p[0] && p[0].nodeType === 1 ? p[0] : e.target); };
+  function deepActive() {
+    let a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
   }
 
   function interactive(el) {
@@ -50,7 +67,8 @@
   }
 
   function stableClasses(el) {
-    return [...(el.classList || [])].filter((c) => !dynamicClass(c)).slice(0, 3);
+    const all = [...(el.classList || [])];
+    return all.filter((c) => !dynamicClass(c, all)).slice(0, 3);
   }
 
   function pathSelector(el) {
@@ -99,19 +117,25 @@
     return out.slice(0, 5);
   }
 
+  // 组件库给输入框默认加的 aria-label（Fusion 下拉的 "select"）不是它的名字：有 <label for>、占位文字就用那些
+  const GENERIC_LABEL = /^(select|input|search|text|textbox|combobox|dropdown|listbox|choose|please select|请选择|请输入|选择|搜索)$/i;
   function labelOf(el) {
-    const aria = el.getAttribute('aria-label');
-    if (aria) return aria.trim();
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    const generic = !!aria && GENERIC_LABEL.test(aria);
+    if (aria && !generic) return aria;
     const lb = el.getAttribute('aria-labelledby');
     if (lb) {
-      const t = lb.split(/\s+/).map((id) => textOf(document.getElementById(id))).join(' ').trim();
+      const t = lb.split(/\s+/).map((id) => textOf(rootOf(el).getElementById ? rootOf(el).getElementById(id) : document.getElementById(id))).join(' ').trim();
       if (t) return t;
     }
     if (el.labels && el.labels.length) { const t = textOf(el.labels[0]); if (t) return t; }
     if (el.placeholder) return el.placeholder;
+    const ph = el.getAttribute('data-placeholder') || el.getAttribute('aria-placeholder');
+    if (ph) return ph;
     if (el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type) && el.value) return el.value;
-    if (!/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) { const t = textOf(el); if (t) return t.slice(0, 40); }
-    return el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('name') || el.id || '';
+    // 可编辑区域（富文本编辑器）的文字是用户输入的内容，不能当它的名字
+    if (!/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && !el.isContentEditable) { const t = textOf(el); if (t) return t.slice(0, 40); }
+    return el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('name') || (dynamicId(el.id) ? '' : el.id) || (generic ? aria : '') || '';
   }
 
   function kindName(el) {
@@ -129,16 +153,109 @@
     if (role === 'option' || tag === 'option' || tag === 'li') return '选项';
     if (/^h[1-6]$/.test(tag)) return '标题';
     if (tag === 'img') return '图片';
+    if (tag === 'canvas') return '画布';
     if (tag === 'table') return '表格';
     if (tag === 'ul' || tag === 'ol') return '列表';
     return '元素';
   }
 
+  // ---------- 元素所在的上下文（和回放引擎 lib/runtime.js 的算法一致） ----------
+  // 弹层：对话框、抽屉、下拉、气泡、日期面板等。同一个页面里常有多个结构相同的弹窗，靠弹层标题区分
+  const BOX_SEL = '[role=dialog],[role=alertdialog],[aria-modal=true],dialog,[role=menu],[role=listbox],[role=tooltip]';
+  const BOX_CLASS = /(^|[-_\s])(modal|dialog|drawer|popover|popup|dropdown|picker|layer|overlay|popper|tooltip)([-_\s]|$)/i;
+  const up = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  function boxOf(el) {
+    for (let n = up(el), d = 0; n && n.nodeType === 1 && d < 30; n = up(n), d++) {
+      if (n.matches(BOX_SEL) || (typeof n.className === 'string' && BOX_CLASS.test(n.className))) return n;
+    }
+    return null;
+  }
+  function boxTitle(b) {
+    const h = b.querySelector('[class*=title i],[class*=header i],h1,h2,h3,h4,legend');
+    return h ? norm(h.innerText || h.textContent).slice(0, 40) : '';
+  }
+  // 表单项的标签文字（“下单时间”“仓库”）：从元素往上找，同级里第一个像标签的元素
+  function fieldLabelOf(el) {
+    let n = el;
+    for (let d = 0; d < 6 && n.parentElement; d++) {
+      const p = n.parentElement;
+      for (const c of p.children) {
+        if (c === n || c.contains(el)) continue;
+        const cls = typeof c.className === 'string' ? c.className : '';
+        if (c.tagName === 'LABEL' || /(^|[-_\s])(label|item-title)([-_\s]|$)/i.test(cls)) {
+          const t = norm(c.innerText || c.textContent).replace(/[:：*\s]+$/, '');
+          if (t && t.length <= 30) return t;
+        }
+      }
+      n = p;
+    }
+    // 上面没找到：组件库套得深的（标签在七八层以外），和没有 <label>、只是在控件前面放一段文字的（“发货时间 [日期框]”）。
+    // 只在同一行里往上找：紧挨在前面的纯文字就是名字，再往上遇到带 label 的兄弟也算
+    n = el;
+    for (let d = 0; d < 9 && n.parentElement; d++) {
+      const p = n.parentElement;
+      if (p === document.body || p.getBoundingClientRect().height > 100) break;
+      if (d >= 6) {
+        for (const c of p.children) {
+          if (c === n || c.contains(el)) continue;
+          const cls = typeof c.className === 'string' ? c.className : '';
+          if (c.tagName === 'LABEL' || /(^|[-_\s])(label|item-title)([-_\s]|$)/i.test(cls)) {
+            const t = norm(c.innerText || c.textContent).replace(/[:：*\s]+$/, '');
+            if (t && t.length <= 30) return t;
+          }
+        }
+      }
+      for (let c = n.previousElementSibling; c; c = c.previousElementSibling) {
+        if (c.matches('input,select,textarea,button,a,[role=button]') || c.querySelector('input,select,textarea,button,a,[role=button],[tabindex]') || c.children.length > 2) break;
+        const t = norm(c.innerText || c.textContent).replace(/[:：*\s]+$/, '');
+        if (t.length >= 2 && t.length <= 20 && /[A-Za-z\u4e00-\u9fff]/.test(t)) return t;
+      }
+      n = p;
+    }
+    return '';
+  }
+  // Shadow DOM 宿主链：从最外层到最里层，每层宿主的选择器
+  function hostChain(el) {
+    const hosts = [];
+    for (let r = rootOf(el); r && r.host; r = rootOf(r.host)) hosts.unshift(buildSelectors(r.host));
+    return hosts.length ? hosts : undefined;
+  }
+
+  // 表格行、列表行里的元素（每行都有的“编辑”“删除”）：记下这一行前几格的文字，回放时先按行找，免得点到别的记录上
+  function rowOf(el) {
+    const row = el.closest && el.closest('tr,[role=row]');
+    if (!row || !row.parentElement) return undefined;
+    const sibs = [...row.parentElement.children].filter((r) => r.tagName === row.tagName);
+    if (sibs.length < 2) return undefined;
+    const cells = [...row.children].filter((c) => !c.contains(el)).map((c) => textOf(c)).filter((t) => t && t.length <= 40).slice(0, 3);
+    return cells.length ? cells : undefined;
+  }
+  // 同源的 about:blank / srcdoc iframe（富文本编辑器）里的元素：由外层页面录，记下从外层到它的 iframe 选择器链
+  function frameChain(el) {
+    const chain = [];
+    for (let doc = el.ownerDocument; doc && doc !== document; ) {
+      const f = doc.defaultView && doc.defaultView.frameElement;
+      if (!f) break;
+      chain.unshift(buildSelectors(f));
+      doc = f.ownerDocument;
+    }
+    return chain.length ? chain : undefined;
+  }
   function describe(el) {
     if (!el || el.nodeType !== 1) return null;
-    const label = (labelOf(el) || '').slice(0, 60);
+    // iframe 编辑器的正文（designMode 的 body）：名字、表单标签取外层 iframe 的（“商品描述”）
+    const doc = el.ownerDocument;
+    const host = doc !== document && el === doc.body && doc.defaultView && doc.defaultView.frameElement;
+    const label = ((host ? labelOf(host) : labelOf(el)) || '').slice(0, 60);
     const kind = kindName(el);
     const text = textOf(el).slice(0, 80);
+    const box = boxOf(host || el);
+    const ctx = {};
+    const fl = fieldLabelOf(host || el);
+    if (fl) ctx.label = fl;
+    if (box) ctx.box = { title: boxTitle(box) || undefined };
+    const row = rowOf(el);
+    if (row) ctx.row = row;
     return {
       selectors: buildSelectors(el),
       tag: el.tagName.toLowerCase(),
@@ -146,25 +263,81 @@
       name: el.getAttribute('name') || undefined,
       role: el.getAttribute('role') || undefined,
       kind,
-      label,
-      text: /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ? '' : text,
-      desc: `${kind}${label ? ` "${label}"` : ''}`,
+      label: label || fl || '',
+      // 输入框、可编辑区域的文字是用户填的内容，会变，不用来定位
+      text: /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable ? '' : text,
+      desc: `${kind}${label || fl ? ` "${label || fl}"` : ''}`,
+      ctx,
+      shadow: hostChain(el),
+      frames: frameChain(el),
     };
+  }
+  // 点击位置在元素里的相对坐标：画布、图片、SVG 这类点哪里有区别的元素才记
+  function posIn(el, e) {
+    if (!el || !/^(CANVAS|IMG|AREA|VIDEO|svg)$/i.test(el.tagName)) return undefined;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return undefined;
+    return [Math.round((e.clientX - r.left) / r.width * 1000) / 1000, Math.round((e.clientY - r.top) / r.height * 1000) / 1000];
   }
 
   // ---------------- 录制 ----------------
-  let lastStep = null; // { id, type, el }
+  let lastStep = null; // { id, type, el, dialogs }
+  const recentSteps = []; // 本框架最近录下的步骤（双击归组用）
   function record(step, el) {
     if (!recording) return null;
+    if (session && !step.members && !(el && (session.fields.has(el) || inSessionUI(el)))) endSession();
     step.kind = 'step';
     step.id = step.id || uid();
     step.ts = step.ts || Date.now();
     step.url = location.href;
     step.title = document.title;
     send({ type: 'event', event: step }).then(updateCounts);
-    lastStep = { id: step.id, type: step.type, el };
+    lastStep = { id: step.id, type: step.type, el, dialogs: [], ts: Date.now() };
+    // ov：点的时候在不在浮层里（日历、下拉面板选完就关掉了，之后再看就不知道了）
+    recentSteps.push({ id: step.id, type: step.type, el, ts: Date.now(), ov: !!(el && step.type === 'click' && inOverlay(el)) });
+    if (recentSteps.length > 30) recentSteps.shift();
+    // 选择器会话中：在控件和它的面板里的操作归入会话；操作了别的东西（另一个输入框、下拉框、页面跳转）就先结束会话
+    if (session && !step.members) {
+      if (el && (session.fields.has(el) || inSessionUI(el))) {
+        session.steps.push(step.id);
+        if (!session.fields.has(el) && !session.widget.contains(el)) session.inPanel.add(step.id);
+      } else endSession();
+    }
     return step.id;
   }
+
+  // 录制用的监听：挂在本页面的 document 上；同源的 about:blank / srcdoc iframe（UEditor、KindEditor、TinyMCE、
+  // CKEditor 4 这类 iframe 编辑器）没有自己的 content script，也挂一份，由本页面录（目标带 iframe 选择器链）
+  const HANDLERS = [];
+  function listen(type, fn, opts) { HANDLERS.push([type, fn, opts]); document.addEventListener(type, fn, opts); }
+  const PING = '__page_recorder_ping__';
+  let pinged = false;
+  const onPing = () => { pinged = true; };
+  function ensureDoc(doc) {
+    // 编辑器常用 document.open() 重写 iframe，会清掉挂好的监听：先探一下还在不在
+    pinged = false;
+    try { doc.dispatchEvent(new Event(PING)); } catch (e) { return; }
+    if (pinged) return;
+    try {
+      for (const [type, fn, opts] of HANDLERS) doc.addEventListener(type, fn, opts);
+      doc.addEventListener(PING, onPing);
+    } catch (e) { /* ignore */ }
+  }
+  function blankFrameDocs(doc, depth, out) {
+    out = out || [];
+    if (depth > 3) return out;
+    for (const f of doc.querySelectorAll('iframe,frame')) {
+      // 没有自己地址的框架（不写 src、about:blank、srcdoc；编辑器 document.open() 写过之后地址会变成外层页面的）、
+      // 里面也没有本扩展的 content script（有的话它自己会录）
+      const src = (f.getAttribute('src') || '').trim();
+      if (src && !/^(about:|javascript:)/i.test(src) && !f.hasAttribute('srcdoc')) continue;
+      let d = null;
+      try { if (f.contentWindow && !f.contentWindow.__PAGE_RECORDER_CONTENT__) d = f.contentDocument; } catch (e) { d = null; }
+      if (d && d.documentElement) { out.push(d); blankFrameDocs(d, depth + 1, out); }
+    }
+    return out;
+  }
+  setInterval(() => { if (recording) for (const d of blankFrameDocs(document, 0)) ensureDoc(d); }, 700);
 
   const isOurUI = (e) => !!(uiHost && e.composedPath && e.composedPath().includes(uiHost));
   function isTextField(el) {
@@ -174,54 +347,105 @@
     return !!el.isContentEditable;
   }
   const valueOf = (el) => (el.isContentEditable && !('value' in el) ? el.innerText : el.value);
-  const isSensitive = (el) => el.type === 'password' || el.autocomplete === 'one-time-code' || el.autocomplete === 'current-password' || el.autocomplete === 'new-password';
+  // 见过一次是密码框就一直按密码处理（点“显示密码”小眼睛后 type 变成 text，内容还是密码）
+  const everSensitive = new WeakSet();
+  const isSensitive = (el) => {
+    if (el.type === 'password' || /^(one-time-code|current-password|new-password)$/.test(el.autocomplete || '')) { everSensitive.add(el); return true; }
+    return everSensitive.has(el);
+  };
+  const visibleEl = (el) => !!(el && el.isConnected && (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length));
+  function selectData(el) {
+    const opts = [...el.selectedOptions];
+    return {
+      value: el.multiple ? opts.map((o) => o.value) : el.value,
+      optionText: opts.map((o) => norm(o.text)).join(', '),
+      options: [...el.options].slice(0, 200).map((o) => [o.value, norm(o.text)]),
+    };
+  }
 
   // 输入：合并连续输入，只记录最终值
   let pending = null;
   let pendingTimer = null;
   const lastValue = new WeakMap();
+  const fillOf = new WeakMap(); // 输入框 → 键入它的那一步（之后页面格式化了值，就改这一步的值）
   function flushInput() {
     clearTimeout(pendingTimer);
     if (!pending) return;
     const { el, ts } = pending;
+    pending.last = pending.last || Date.now();
+    const p0 = pending;
     pending = null;
     if (!el.isConnected || !recording) return;
+    remember(el);
     const v = valueOf(el);
     if (lastValue.get(el) === v) return;
     lastValue.set(el, v);
     const sensitive = isSensitive(el) && settings.maskPasswords !== false;
     const value = sensitive ? '' : v;
-    if (lastStep && lastStep.type === 'fill' && lastStep.el === el) {
-      send({ type: 'updateEvent', id: lastStep.id, patch: { value, sensitive } });
+    const commitTs = p0.last;
+    // 密码明文只交给扩展后台的内存：之后请求里出现同一个值就换成占位符（关联到密码参数），不进存储、不进导出
+    const reuse = lastStep && lastStep.type === 'fill' && lastStep.el === el;
+    const sid = reuse ? lastStep.id : uid();
+    if (sensitive && v) send({ type: 'secret', id: sid, value: v });
+    if (reuse) {
+      send({ type: 'updateEvent', id: lastStep.id, patch: Object.assign({ value, sensitive, commitTs }, sensitive ? { secretId: sid } : {}) });
+      fillOf.set(el, { id: lastStep.id, ts: Date.now(), value: v });
       return;
     }
-    record({ type: 'fill', ts, target: describe(el), value, sensitive: sensitive || undefined }, el);
+    const id = record({ id: sid, type: 'fill', ts, commitTs, target: describe(el), value, sensitive: sensitive || undefined, secretId: sensitive ? sid : undefined }, el);
+    if (id) fillOf.set(el, { id, ts: Date.now(), value: v });
+  }
+  // 键入之后页面把值格式化了（1000 → 1,000.00）：几秒内、内容基本没变的，并回键入那一步；
+  // 之后的清空、重置等变化不改历史输入
+  // 格式等价：去掉空白和千分位后数值相等（1000 ↔ 1,000.00），或者去掉分隔符后完全一样（20261104 ↔ 2026-11-04）、只差大小写
+  function sameFormatted(a, b) {
+    const num = (v) => { const t = String(v).trim().replace(/[\s,，]/g, ''); return /^[-+]?\d+(\.\d+)?$/.test(t) ? Number(t) : NaN; };
+    const x = num(a);
+    const y = num(b);
+    if (!Number.isNaN(x) || !Number.isNaN(y)) return x === y; // 数值就按数值比（12.34 和 1234、-100 和 100 不是同一个值）
+    const sq = (v) => norm(v).toLowerCase().replace(/[\s,，.。:：\-_/]/g, '');
+    return !!sq(a) && sq(a) === sq(b);
+  }
+  function formattedFill(el) {
+    const f = fillOf.get(el);
+    if (!f || Date.now() - f.ts > 4000) return null;
+    return sameFormatted(f.value, valueOf(el)) ? f.id : null;
   }
 
-  document.addEventListener('input', (e) => {
+  function onInput(e) {
     if (!recording || !e.isTrusted) return;
-    const el = e.target;
+    const el = deepTarget(e);
     if (!isTextField(el)) return;
+    noteRoot(el);
+    isSensitive(el); // 键入时就登记是不是密码框（之后点了显示密码也还算）
     if (pending && pending.el !== el) flushInput();
     if (!pending) pending = { el, ts: Date.now() };
+    pending.last = Date.now();
     clearTimeout(pendingTimer);
     pendingTimer = setTimeout(flushInput, 1500);
-  }, true);
+  }
+  listen('input', onInput, true);
 
-  document.addEventListener('change', (e) => {
+  function onChange(e) {
     if (!recording) return;
-    const el = e.target;
+    const el = deepTarget(e);
     if (!el || el.nodeType !== 1) return;
     // 下拉框的 change 有时由自动化工具或组件库以非 trusted 事件派发，仍然记录
     if (!e.isTrusted && el.tagName !== 'SELECT') return;
     if (el.tagName === 'SELECT') {
       flushInput();
-      const opts = [...el.selectedOptions];
-      record({ type: 'select', target: describe(el), value: el.multiple ? opts.map((o) => o.value) : el.value, optionText: opts.map((o) => o.text.trim()).join(', ') }, el);
+      if (known.get(el) === fieldKey(el) && !e.isTrusted) return; // 程序改值已经按字段变化录过了
+      // 藏起来的原生下拉框被组件改值后派发的 change：走字段变化的归组（挂到组件界面的语义步骤上），不单独录一步
+      // 等组件这一轮同步更新完（有的先改隐藏下拉框、派发 change，再改显示框）再一起扫
+      if (!e.isTrusted && !visibleEl(el)) { setTimeout(scan, 0); return; }
+      remember(el);
+      record(Object.assign({ type: 'select', target: describe(el) }, selectData(el)), el);
       return;
     }
     if (el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type)) {
       flushInput();
+      remember(el);
+      if (el.type === 'radio') for (const r of allFields()) if (r.type === 'radio' && r.name === el.name) remember(r); // 同组被联动取消的不单独录
       record({ type: 'check', target: describe(el), checked: el.checked }, el);
       return;
     }
@@ -234,65 +458,619 @@
       if (!pending || pending.el !== el) { flushInput(); pending = { el, ts: Date.now() }; }
       flushInput();
     }
+  }
+  listen('change', onChange, true);
+
+  // ---------------- 动作的效果：字段值变化 ----------------
+  // 日期框、下拉组件、自动完成常用脚本直接改输入框的值，没有键盘输入事件。
+  // 每次用户动手前后比对所有字段的值；用户点开某个字段（或它所在的小控件）之后它的值被改了，
+  // 就录成“设置这个字段的值”的步骤（可以当参数改），期间在控件和它弹出的面板里的点击作为它的成员保留
+  const FIELD_SEL = 'input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=reset]):not([type=image]):not([type=file]),textarea,select';
+  const knownRoots = new Set();
+  function noteRoot(el) {
+    for (let r = el && rootOf(el); r && r.host && !knownRoots.has(r); r = rootOf(r.host)) {
+      knownRoots.add(r);
+      r.addEventListener('change', onChange, true); // change 不会穿出 Shadow DOM
+    }
+  }
+  const fieldKey = (el) => (/^(checkbox|radio)$/i.test(el.type) ? 'c' + el.checked : el.tagName === 'SELECT' ? 's' + [...el.selectedOptions].map((o) => o.value).join('\u0001') : 'v' + el.value);
+  const known = new WeakMap();
+  let lastReqScan = 0;
+  function allFields() {
+    const out = [...document.querySelectorAll(FIELD_SEL)];
+    for (const r of [...knownRoots]) {
+      if (!r.host.isConnected) { knownRoots.delete(r); continue; } // 宿主被移除（重新渲染时再进来会重新登记）
+      out.push(...r.querySelectorAll(FIELD_SEL));
+    }
+    return out;
+  }
+  function remember(el) { if (el && el.nodeType === 1 && el.matches(FIELD_SEL)) known.set(el, fieldKey(el)); }
+  function scan() {
+    if (!recording) return;
+    const changed = [];
+    for (const el of allFields()) {
+      const k = fieldKey(el);
+      const old = known.get(el);
+      known.set(el, k);
+      if (old !== undefined && old !== k) changed.push(el); // 第一次见到的只记基线
+    }
+    if (changed.length) onFieldsChanged(changed);
+  }
+  let scanTimers = [];
+  function scheduleScans() {
+    scanTimers.forEach(clearTimeout);
+    scanTimers = [0, 150, 600, 1500].map((ms) => setTimeout(scan, ms));
+  }
+  // 按值判断：值本身是日期或时间才算日期（类名、name 里带 date / time 的联想框、校验框太多）；
+  // 值是空的（清空了日期）才参考提示文字和 name
+  const DATE_HINT = /日期|时间|^date|date$|^time|time$|calendar/i;
+  const dateLike = (el, v) => /^(date|datetime-local|month|week|time)$/i.test(el.type || '')
+    || /\d{4}\s*[-/.年]\s*\d{1,2}/.test(v) || /\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(v) || /^\s*\d{1,2}:\d{2}(:\d{2})?\s*$/.test(v || '')
+    || (!v && (DATE_HINT.test(el.placeholder || '') || DATE_HINT.test(el.name || '')));
+
+  let session = null; // 选择器会话：用户点开某个字段，到点了控件和它弹出的面板以外的东西为止
+  let gesture = null; // 最近一次用户动手 { ts, target, stepId }
+  // 控件外壳：一行以内的小块，里面没有带文字的按钮/链接（整个表单、带“搜索”按钮的那一行都不算）
+  function compactWidget(n) {
+    if (n === document.body || n === document.documentElement) return false;
+    const r = n.getBoundingClientRect();
+    if (r.height > 80 || r.width > 900) return false;
+    return ![...n.querySelectorAll('button,a,[role=button],input[type=submit],input[type=button]')].some((b) => textOf(b) || b.value);
+  }
+  function widgetNear(t) {
+    const pickable = (f) => f.tagName !== 'SELECT' && !/^(checkbox|radio)$/i.test(f.type);
+    if (t.matches && t.matches(FIELD_SEL)) {
+      if (!pickable(t)) return null;
+      // 区间控件（开始、结束两个框）：选完开始日期焦点会自动跳到结束框，两个框算一个控件
+      for (let n = t.parentElement, d = 0; n && d < 3; n = n.parentElement, d++) {
+        const fs = [...n.querySelectorAll(FIELD_SEL)];
+        if (fs.length > 2 || !compactWidget(n)) break;
+        if (fs.length === 2 && fs.every(pickable)) return { fields: fs, widget: n };
+      }
+      return { fields: [t], widget: t };
+    }
+    // 点在控件的外壳、图标上（日期区间的两个框共用一个外壳）：往上找只包着一两个输入框的小块；
+    // 带文字的按钮、链接不算（输入框旁边的“搜索”按钮）；纯图标按钮、声明了会弹出东西的按钮（打开日历的小图标）算
+    const it = interactive(t);
+    const opener = (b) => (!textOf(b) && !b.value) || b.hasAttribute('aria-haspopup') || b.hasAttribute('aria-expanded') || b.hasAttribute('aria-controls');
+    if (it && (/^(BUTTON|A)$/.test(it.tagName) || it.getAttribute('role') === 'button') && !opener(it)) return null;
+    for (let n = t, d = 0; n && n.nodeType === 1 && d < 8; n = n.parentElement, d++) {
+      const fs = [...n.querySelectorAll(FIELD_SEL)];
+      if (fs.length > 2 || !compactWidget(n)) break;
+      if (fs.length && fs.every(pickable)) return { fields: fs, widget: n };
+    }
+    return null;
+  }
+  function startSession(near) {
+    endSession();
+    const s = { fields: new Set(near.fields), widget: near.widget, ts: Date.now(), steps: [], inPanel: new Set(), made: new Map(), claimed: new Set(), appeared: new WeakSet(), mutated: new WeakSet() };
+    s.before = new Set(allFields().filter(visibleEl));
+    // 会话期间新出现（插入或从隐藏变显示）的元素算作控件弹出的面板
+    s.mo = new MutationObserver((list) => {
+      for (const m of list) {
+        if (m.type === 'childList') { for (const n of m.addedNodes) if (n.nodeType === 1) s.appeared.add(n); continue; }
+        s.mutated.add(m.target);
+        const o = m.oldValue || '';
+        const shown = m.attributeName === 'hidden' ? !m.target.hasAttribute('hidden')
+          : m.attributeName === 'style' ? /display:\s*none|visibility:\s*hidden/i.test(o) && !/display:\s*none|visibility:\s*hidden/i.test(m.target.getAttribute('style') || '')
+            : /hidden|hide|closed|collapse/i.test(o) && !/hidden|hide|closed|collapse/i.test(m.target.getAttribute('class') || '');
+        if (shown) s.appeared.add(m.target);
+      }
+    });
+    const opts = { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['style', 'class', 'hidden'] };
+    s.mo.observe(document.documentElement, opts);
+    for (const r of knownRoots) { try { s.mo.observe(r, opts); } catch (e) { /* ignore */ } } // 面板在 Shadow DOM 里的
+    s.timer = setTimeout(endSession, 120000);
+    session = s;
+  }
+  // 弹出层：绝对/固定定位、没有铺满屏幕（日历面板、下拉列表）。页面主体区域重新渲染的表格不算
+  function overlayNode(n) {
+    try {
+      const cs = getComputedStyle(n);
+      if (cs.position !== 'absolute' && cs.position !== 'fixed') return false;
+      const r = n.getBoundingClientRect();
+      return r.width < innerWidth * 0.9 && r.height < innerHeight * 0.9;
+    } catch (e) { return false; }
+  }
+  function inSessionUI(t) {
+    if (!session || !t) return false;
+    if (session.widget.contains(t)) return true;
+    // 会话期间新出现、或者被改过（加上 show / open / active 之类的类名显示出来）的浮层
+    for (let n = t; n && n.nodeType === 1; n = up(n)) if ((session.appeared.has(n) || session.mutated.has(n)) && overlayNode(n)) return true;
+    // 控件自己带的下拉层（和输入框在同一个组件外壳里，会话开始后靠切换类名、样式显示出来的）
+    let scope = session.widget;
+    for (let k = 0; k < 3 && scope.parentElement; k++) scope = scope.parentElement;
+    const changed = (n) => n && (session.mutated.has(n) || session.appeared.has(n));
+    if (scope.contains(t)) {
+      for (let n = t; n && n !== scope; n = n.parentElement) {
+        if (overlayNode(n) && (changed(n) || changed(n.parentElement) || (n.parentElement && changed(n.parentElement.parentElement)))) return true;
+      }
+    }
+    return false;
+  }
+  function endSession() {
+    const s = session;
+    if (!s) return;
+    scan();
+    session = null;
+    s.mo.disconnect();
+    clearTimeout(s.timer);
+    // 会话里还没归属的、在弹出面板里的操作（比如选完日期后点的“确定”）并到最后一个语义步骤里，回放时由它负责；
+    // 其他的（点了输入框本身但没选值等）照常保留
+    const rest = s.steps.filter((id) => !s.claimed.has(id) && s.inPanel.has(id));
+    const last = [...s.made.values()].pop();
+    if (last && rest.length) {
+      last.members.push(...rest);
+      send({ type: 'updateEvent', id: last.id, patch: { members: last.members } });
+    }
+  }
+  function semanticStep(el) {
+    const s = session;
+    const isSel = el.tagName === 'SELECT';
+    const isChk = /^(checkbox|radio)$/i.test(el.type);
+    const fresh = s.steps.filter((id) => !s.claimed.has(id));
+    fresh.forEach((id) => s.claimed.add(id));
+    const sens = isSensitive(el) && settings.maskPasswords !== false;
+    const data = isSel ? selectData(el) : isChk ? { checked: el.checked } : { value: sens ? '' : valueOf(el), sensitive: sens || undefined };
+    // 值是哪次操作改的就算那次的时间（扫描是异步的，比页面紧接着发的请求晚）
+    const commitTs = gesture && gesture.ts >= s.ts ? gesture.ts : Date.now();
+    const made = s.made.get(el);
+    if (made) {
+      made.members.push(...fresh);
+      send({ type: 'updateEvent', id: made.id, patch: Object.assign({ members: made.members, commitTs }, data) });
+      return;
+    }
+    const step = Object.assign({ type: isSel ? 'select' : isChk ? 'check' : 'fill', ts: s.ts, commitTs, target: describe(el), members: fresh, via: 'program', sid: s.ts }, data);
+    if (step.type === 'fill') step.pick = dateLike(el, step.value) ? 'date' : 'choice';
+    fresh.forEach((id) => claimed.add(id));
+    const id = record(step, el);
+    if (id) s.made.set(el, { id, members: fresh.slice(), el });
+  }
+  const claimed = new Set(); // 已经归到某个语义步骤下的原始操作
+  const nearField = (a, f) => { for (let n = f, d = 0; n && d < 8; n = n.parentElement, d++) if (n.contains(a)) return compactWidget(n) || d <= 2; return false; };
+  const inOverlay = (a) => { for (let n = a; n && n.nodeType === 1; n = up(n)) if (overlayNode(n)) return true; return false; };
+  // 刚才那几下点击是不是在给这个字段选值：从最近一次点击往回，取点在浮层里、或者点在这个字段旁边的连续点击；
+  // 最早的一下必须点在字段旁边（打开面板的那个图标、外壳），免得把联动回填的字段认成是用户选的
+  function retroMembers(field) {
+    const out = [];
+    for (let i = recentSteps.length - 1; i >= 0; i--) {
+      const s = recentSteps[i];
+      if (Date.now() - s.ts > 15000 || s.type !== 'click' || claimed.has(s.id) || !s.el) break;
+      if (!(s.ov || (s.el.isConnected && nearField(s.el, field)))) break;
+      out.unshift(s);
+    }
+    while (out.length && !nearField(out[0].el, field)) out.shift();
+    return out;
+  }
+  function onFieldsChanged(list) {
+    const effects = [];
+    // 原生下拉框放最后：先让它的界面（layui 的输入框）建好语义步骤，再把下拉框挂上去
+    list = list.slice().sort((a, b) => (a.tagName === 'SELECT') - (b.tagName === 'SELECT'));
+    for (const el of list) {
+      if (pending && pending.el === el) continue; // 正在键入，键入结束时一起录
+      if (isSensitive(el) && settings.maskPasswords !== false) continue; // 密码框的变化不记值
+      const fmt = formattedFill(el);
+      if (session && session.fields.has(el)) {
+        // 只是点开字段后键入、页面格式化了一下（没有在面板里选东西）：并进键入那一步
+        const picked = session.steps.some((id) => session.inPanel.has(id));
+        if (!picked && fmt) { send({ type: 'updateEvent', id: fmt, patch: { value: valueOf(el) } }); continue; }
+        // 没在面板里选东西、值被清空了（扫码框、标签输入框、聊天框：键入回车后页面清空；输入框旁的清除按钮）：
+        // 不是选值，键入和回车照常保留
+        if (!picked && valueOf(el) === '') continue;
+        semanticStep(el);
+        continue;
+      }
+      if (session && inSessionUI(el)) continue; // 面板里的字段（时间框、年月下拉）
+      if (fmt) { send({ type: 'updateEvent', id: fmt, patch: { value: valueOf(el) } }); continue; }
+      const recent = gesture && gesture.stepId && Date.now() - gesture.ts < 3000;
+      if (recent && el.tagName === 'SELECT' && !el.multiple && !visibleEl(el)) {
+        // 藏起来的原生下拉框被组件改了值（layui、Chosen、Select2 这类自己画界面的下拉）：
+        // 刚选值的那个语义步骤就是它的界面，挂上它的选项（接口发的是选项的值）；没有的话补一个选择步骤
+        const made = session && [...session.made.values()].find((m) => m.el && nearField(m.el, el));
+        const sel = Object.assign({ target: describe(el) }, selectData(el));
+        if (made) { send({ type: 'updateEvent', id: made.id, patch: { sel } }); continue; }
+        const mem = retroMembers(el);
+        if (mem.length) {
+          mem.forEach((m) => claimed.add(m.id));
+          record(Object.assign({ type: 'select', ts: mem[0].ts, commitTs: gesture.ts, target: sel.target, members: mem.map((m) => m.id), via: 'program' }, selectData(el)), el);
+          continue;
+        }
+      }
+      if (recent && !session && el.tagName !== 'SELECT' && !/^(checkbox|radio)$/i.test(el.type) && valueOf(el) !== '' && el !== gesture.target) {
+        // 点图标按钮打开日历、面板里选值（焦点不在输入框上，没建起会话）：回头把这几下点击认作给这个字段选值
+        const mem = retroMembers(el);
+        if (mem.length) {
+          mem.forEach((m) => claimed.add(m.id));
+          const sens = isSensitive(el) && settings.maskPasswords !== false;
+          if (!sens) {
+            record({ type: 'fill', ts: mem[0].ts, commitTs: gesture.ts, target: describe(el), value: valueOf(el), members: mem.map((m) => m.id), via: 'program', sid: mem[0].ts, pick: dateLike(el, valueOf(el)) ? 'date' : 'choice' }, el);
+            continue;
+          }
+        }
+      }
+      // 其他字段跟着变了（联动、回填）：只作为这一步的效果记下，不当输入参数
+      if (recent) effects.push({ desc: (describe(el) || {}).desc, value: String(el.tagName === 'SELECT' ? selectData(el).optionText : /^(checkbox|radio)$/i.test(el.type) ? el.checked : valueOf(el)).slice(0, 60) });
+    }
+    if (effects.length && gesture && gesture.stepId) {
+      gesture.effects = (gesture.effects || []).concat(effects).slice(0, 8);
+      send({ type: 'updateEvent', id: gesture.stepId, patch: { effects: gesture.effects } });
+    }
+  }
+
+  // ---------------- 动作的效果：展开 / 收起 ----------------
+  // 点击前后，目标和往上三层里 aria-expanded 或“展开”类名变了、并且里面显示的东西也跟着变了，
+  // 就记下点完之后的状态；回放时已经是这个状态（比如菜单分组本来就展开着）就不再点
+  const TOGGLE_TOKEN = /(^|[-_])(open|opened|expand|expanded|unfold|unfolded|collapse|collapsed|fold|folded|show|shown)$/i;
+  function visibleCount(n) {
+    const all = n.getElementsByTagName('*');
+    if (all.length > 400) return -1;
+    let c = 0;
+    for (const x of all) if (x.getClientRects().length) c++;
+    return c;
+  }
+  function toggleSnap(el) {
+    const out = [];
+    for (let n = el, k = 0; n && n.nodeType === 1 && k <= 3; n = n.parentElement, k++) {
+      out.push({ n, k, aria: n.getAttribute('aria-expanded'), cls: [...n.classList].filter((c) => TOGGLE_TOKEN.test(c)), vis: visibleCount(n) });
+    }
+    return out;
+  }
+  // 只认菜单、树、折叠面板这类“展开收起本身就是全部作用”的元素（“保存并收起”这种按钮不算）
+  const menuish = (n) => n.matches('li,dd,dt,details,summary,[role=treeitem],[role=menuitem],[role=tab],[aria-expanded]')
+    || /menu|tree|collapse|accordion|nav|group|fold|expand|submenu|panel-header|sider/i.test(typeof n.className === 'string' ? n.className : '');
+  function toggleOf(before, href) {
+    if (location.href !== href) return null; // 点完跳转了，不是单纯的开关
+    for (const b of before) {
+      const { n, k } = b;
+      if (!n.isConnected || !menuish(n)) continue;
+      const aria = n.getAttribute('aria-expanded');
+      if (b.aria !== null && aria !== null && aria !== b.aria) return { up: k, attr: 'aria-expanded', after: aria === 'true' };
+      const cls = [...n.classList].filter((c) => TOGGLE_TOKEN.test(c));
+      const added = cls.filter((c) => !b.cls.includes(c));
+      const removed = b.cls.filter((c) => !cls.includes(c));
+      const vis = visibleCount(n);
+      if ((added.length || removed.length) && b.vis >= 0 && vis >= 0 && vis !== b.vis) return { up: k, cls: added[0] || removed[0], after: !!added.length };
+    }
+    return null;
+  }
+
+  // ---------------- 只显示、不能编辑的下拉 ----------------
+  // 淘宝千牛、Fusion、antd 这类 Select 的显示框不是输入框，值不在任何字段里：
+  // 点开下拉 → 在弹层里点选项 → 下拉上显示的文字变成这个选项，就录成“选择 … 为 {{参数}}”（两下点击作成员），
+  // 回放时点开、按文字点选项，参数改了也能选
+  let lastTrigger = null; // { id, el, text, ts, clicked, again }
+  const selectish = (n) => n.matches('[role=combobox],[aria-haspopup=listbox],[aria-haspopup=true]') || /(^|[-_\s])(select|dropdown|combo(box)?)([-_\s]|$)/i.test(typeof n.className === 'string' ? n.className : '');
+  // 多选下拉把选中的每一项显示成一个标签（带自己的“删除”小按钮）
+  const TAG_CLASS = /(^|[-_\s])(tag|chip|token|selection-item)([-_\s]|$)/i;
+  const isTag = (n) => TAG_CLASS.test(typeof n.className === 'string' ? n.className : '');
+  function shownTags(root) {
+    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item]')].filter(isTag);
+    return tags.filter((t) => !tags.some((o) => o !== t && o.contains(t))).map(tagText).filter(Boolean);
+  }
+  // 标签上的文字，不算它的删除按钮（有的写成 × 字符）
+  function tagText(t) {
+    const c = t.cloneNode(true);
+    c.querySelectorAll('[class*=close],[class*=remove],[class*=delete],button,[role=button],svg,i').forEach((x) => x.remove());
+    return norm(c.textContent);
+  }
+  // 下拉的外壳不大、里面没有别的按钮（标签上的删除按钮不算）
+  function selectBox(n) {
+    if (n === document.body || n === document.documentElement) return false;
+    const r = n.getBoundingClientRect();
+    if (r.height > 160 || r.width > 900) return false;
+    return ![...n.querySelectorAll('button,a,[role=button],input[type=submit],input[type=button]')].some((b) => (textOf(b) || b.value) && !isTag(b) && !(b.parentElement && b.parentElement.closest('[class*=tag],[class*=chip],[class*=token],[class*=selection-item]')));
+  }
+  // 下拉的外壳：往上找“像下拉”的祖先，取最外层的那个（Fusion 的 span.next-select、antd 的 div.ant-select、
+  // shineout 的 div.soui-select-wrapper），显示选中文字的就是它；原生 <select> 由 change 录，不走这里
+  const LIST_SEL = '[role=option],[role=listbox],[role=menu]';
+  function triggerOf(el) {
+    if (!el || el.tagName === 'SELECT' || el.tagName === 'OPTION' || el.closest(LIST_SEL)) return null;
+    let root = null;
+    for (let n = el, k = 0; n && n.nodeType === 1 && k < 7; n = n.parentElement, k++) {
+      if (!selectish(n)) { if (root) break; continue; }
+      if (n !== el && !selectBox(n)) break;
+      if (n.querySelectorAll('select').length) return null;
+      root = n;
+    }
+    return root;
+  }
+  // 下拉上显示的文字：有的组件把选项列表就放在外壳里面（shineout），列表里的文字不算
+  function shownText(root) {
+    if (!root.querySelector('ul,ol,dl,[role=listbox]')) return textOf(root);
+    const c = root.cloneNode(true);
+    c.querySelectorAll('ul,ol,dl,[role=listbox]').forEach((x) => x.remove());
+    return norm(c.textContent);
+  }
+  function noteDisplayChoice(el, id) {
+    const at = Date.now();
+    const lt = lastTrigger;
+    // 刚点开过一个下拉、这一下点的是列表里的一项：当选项看（选项列表的类名里也常带 select，不能先按“下拉外壳”认）
+    const item = el.closest('[role=option],li,dd');
+    const asOption = !!(lt && at - lt.ts <= 15000 && item && !item.contains(lt.clicked) && !item.contains(lt.el) && (inOverlay(el) || item.matches('[role=option]') || lt.el.contains(item) || (item.parentElement && item.parentElement.children.length > 1)));
+    if (!asOption) {
+      // 输入框的值也跟着变了的（会话里由字段变化录成语义步骤）会先认领这两下点击，这里就不再重复录
+      const trig = triggerOf(el);
+      if (trig) {
+        if (!(lt && lt.el === trig && at - lt.ts < 400)) lastTrigger = { id, el: trig, text: shownText(trig), tags: shownTags(trig), ts: at, clicked: el };
+      } else lastTrigger = null;
+      return;
+    }
+    lastTrigger = null;
+    const optText = textOf(el);
+    if (!optText || optText.length > 60) return;
+    setTimeout(() => {
+      if (!lt.el.isConnected || claimed.has(id) || (!lt.again && claimed.has(lt.id))) return;
+      const now = shownText(lt.el);
+      if (now === lt.text) return;
+      const tags = shownTags(lt.el);
+      // 下拉上显示的变成了这个选项；多选的是多出了这一项（点已经选中的是取消，不算选择）
+      if (!(now === optText || tags.includes(optText) || (!tags.length && now.includes(optText) && !lt.text.includes(optText)))) return;
+      const multi = tags.length > 0 || now !== optText || /(^|[-_\s])(multiple|multi|tags)([-_\s]|$)/i.test(typeof lt.el.className === 'string' ? lt.el.className : '');
+      const members = lt.again ? [id] : [lt.id, id];
+      members.forEach((m) => claimed.add(m));
+      // 外壳的文字就是选中的值，会变，不能拿来定位，也不能当名字；名字取表单项标签，或里面输入框的（label for、name）
+      const tg = describe(lt.el);
+      const inner = lt.el.querySelector(FIELD_SEL);
+      const lbl = (tg.ctx && tg.ctx.label) || (inner ? labelOf(inner) : '') || '';
+      Object.assign(tg, { text: '', kind: '下拉框', label: lbl, desc: `下拉框${lbl ? ` "${lbl}"` : ''}` });
+      // 值是点选项那一刻定下来的（350ms 只是用来确认下拉上显示的变了）：选完立刻发的请求要算在这一步之后
+      const step = { type: 'fill', ts: lt.again ? at : lt.ts, commitTs: at, target: tg, value: optText, members, via: 'program', sid: lt.again ? at : lt.ts, pick: 'choice' };
+      // 多选：记下选之前下拉上已有的项（回放时页面上留着上一次选的，先清掉再选）
+      if (multi) { step.multi = true; step.before = lt.tags || []; }
+      record(step, lt.el);
+      // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的
+      if (multi) lastTrigger = { id: lt.id, el: lt.el, text: now, tags, ts: Date.now(), clicked: lt.clicked, again: true };
+    }, 350);
+  }
+
+  // ---------------- 动作的效果：开关、勾选、按下 ----------------
+  // 自定义开关（el-switch、Naive UI 的 switch）、复选框、按下态按钮：点击前后 aria-checked / aria-pressed / aria-selected
+  // 或者里面的原生复选框变了，就记下点完的状态；回放时已经是这个状态就不再点（再点会把开关翻回去）
+  function stateSnap(el) {
+    const out = [];
+    for (let n = el, k = 0; n && n.nodeType === 1 && k <= 3; n = n.parentElement, k++) {
+      for (const a of ['aria-checked', 'aria-pressed', 'aria-selected']) {
+        const v = n.getAttribute(a);
+        if (v === 'true' || v === 'false') out.push({ n, up: k, attr: a, v });
+      }
+    }
+    const box = el.matches('input') ? null : el.control && /^(checkbox|radio)$/i.test(el.control.type) ? el.control : el.querySelector && el.querySelector('input[type=checkbox],input[type=radio]');
+    if (box) out.push({ n: box, input: true, v: String(box.checked) });
+    return out;
+  }
+  function stateOf(before) {
+    for (const b of before || []) {
+      if (!b.n.isConnected) continue;
+      const v = b.input ? String(b.n.checked) : b.n.getAttribute(b.attr);
+      if (v !== b.v && (v === 'true' || v === 'false')) return b.input ? { input: true, after: v === 'true' } : { up: b.up, attr: b.attr, after: v === 'true' };
+    }
+    return null;
+  }
+
+  // ---------------- 鼠标经过的菜单（悬停才展开的菜单，回放时找不到目标就沿这条路悬停一遍） ----------------
+  const hoverTrail = [];
+  function menuLike(el) {
+    for (let n = el, k = 0; n && n.nodeType === 1 && k < 3; n = n.parentElement, k++) {
+      if (n.hasAttribute('aria-haspopup') || n.hasAttribute('aria-expanded')) return true;
+      if (/menu|dropdown|submenu|nav|popover|trigger/i.test(typeof n.className === 'string' ? n.className : '')) return true;
+    }
+    return false;
+  }
+  listen('mouseover', (e) => {
+    if (!recording || !e.isTrusted) return;
+    const t = deepTarget(e);
+    const el = t && t.closest ? t.closest(CLICKABLE) || t : null;
+    if (!el || !menuLike(el)) return;
+    const last = hoverTrail[hoverTrail.length - 1];
+    if (last && last.el === el) { last.ts = Date.now(); return; }
+    hoverTrail.push({ el, ts: Date.now() });
+    if (hoverTrail.length > 6) hoverTrail.shift();
+  }, { capture: true, passive: true });
+  function trailFor(target) {
+    const out = [];
+    for (const h of hoverTrail) {
+      if (Date.now() - h.ts > 5000 || !h.el.isConnected || h.el === target || h.el.contains(target) || target.contains(h.el)) continue;
+      if (!out.includes(h.el)) out.push(h.el);
+    }
+    return out.length ? out.slice(-3).map(describe) : undefined;
+  }
+
+  // ---------------- 手势：每次按下鼠标 ----------------
+  let pressInfo = null; // { t, x, y, ts, max, toggle, href }
+  let dragEndTs = 0;
+  let userScrollTs = 0;
+  listen('pointerdown', (e) => {
+    if (!recording || !e.isTrusted || isOurUI(e)) return;
+    const t = deepTarget(e);
+    noteRoot(t);
+    scan(); // 先把上一次操作之后异步发生的变化归到上一次
+    if (session && !inSessionUI(t)) endSession();
+    if (!session) { const near = widgetNear(t); if (near) startSession(near); }
+    gesture = { ts: Date.now(), target: t };
+    scheduleScans();
+    // 拖动滚动条
+    if (t.clientWidth && (e.offsetX > t.clientWidth || e.offsetY > t.clientHeight)) userScrollTs = Date.now();
+    pressInfo = { t, x: e.clientX, y: e.clientY, ts: Date.now(), max: 0, button: e.button, toggle: e.button === 0 ? toggleSnap(interactive(t)) : null, state: e.button === 0 ? stateSnap(interactive(t)) : null, href: location.href };
+  }, true);
+  listen('focusin', (e) => {
+    if (!recording || !e.isTrusted) return;
+    const t = deepTarget(e);
+    if (!t.matches || !t.matches(FIELD_SEL) || (session && (session.fields.has(t) || inSessionUI(t)))) return;
+    const near = widgetNear(t);
+    if (near) startSession(near);
+  }, true);
+  listen('pointermove', (e) => {
+    if (pressInfo && e.isTrusted) pressInfo.max = Math.max(pressInfo.max, Math.hypot(e.clientX - pressInfo.x, e.clientY - pressInfo.y));
+  }, { capture: true, passive: true });
+  // 拖动：按住移动超过 10 像素再松开。选中文字、拖滚动条、在输入框里拖选不算
+  listen('pointerup', (e) => {
+    const d = pressInfo;
+    if (!d || !recording || !e.isTrusted || d.button !== 0 || isOurUI(e)) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (d.max < 10 || Math.hypot(dx, dy) < 10 || Date.now() - d.ts < 120) return;
+    if (isTextField(d.t) || Date.now() - userScrollTs < 500) return;
+    const selText = window.getSelection ? String(window.getSelection()).trim() : '';
+    if (selText && !(d.t.closest && d.t.closest('[draggable=true]'))) return;
+    const src = interactive(d.t);
+    const end = deepAt(e.clientX, e.clientY, d.t.ownerDocument);
+    const rel = (el, x, y) => { const r = el.getBoundingClientRect(); return r.width && r.height ? [Math.round((x - r.left) / r.width * 1000) / 1000, Math.round((y - r.top) / r.height * 1000) / 1000] : undefined; };
+    dragEndTs = Date.now();
+    flushInput();
+    const toEl = end && end !== src && !src.contains(end) ? interactive(end) : null;
+    record({ type: 'drag', target: describe(src), pos: rel(src, d.x, d.y), to: toEl ? describe(toEl) : undefined, toPos: toEl ? rel(toEl, e.clientX, e.clientY) : undefined, dx: Math.round(dx), dy: Math.round(dy) }, src);
+  }, true);
+  function deepAt(x, y, doc) {
+    let h = (doc || document).elementFromPoint(x, y);
+    while (h && h.shadowRoot) { const i = h.shadowRoot.elementFromPoint(x, y); if (!i || i === h) break; h = i; }
+    return h;
+  }
+  // 原生拖放（draggable）：pointerup 不会来，按 dragstart → drop 录
+  let dndSrc = null;
+  listen('dragstart', (e) => { if (recording && e.isTrusted) dndSrc = interactive(deepTarget(e)); }, true);
+  listen('drop', (e) => {
+    if (!recording || !e.isTrusted) return;
+    // 从桌面拖文件进页面（上传区）：录成上传，回放时用浏览器调试接口把参数里的文件拖进去
+    const dropped = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length ? [...e.dataTransfer.files].map((f) => f.name) : null;
+    if (!dndSrc && dropped) {
+      const zone = interactive(deepTarget(e));
+      flushInput();
+      record({ type: 'upload', drop: true, target: describe(zone), files: dropped }, zone);
+      return;
+    }
+    if (!dndSrc) return;
+    const to = interactive(deepTarget(e));
+    const src = dndSrc;
+    dndSrc = null;
+    dragEndTs = Date.now();
+    pressInfo = null;
+    record({ type: 'drag', html5: true, target: describe(src), to: describe(to), dx: 0, dy: 0 }, src);
   }, true);
 
-  document.addEventListener('click', (e) => {
+  listen('click', (e) => {
     if (!recording || !e.isTrusted || isOurUI(e)) return;
+    const t = deepTarget(e);
     if (e.altKey && settings.altExtract !== false) {
       e.preventDefault();
       e.stopImmediatePropagation();
       flushInput();
       // Alt+点击 = 提取该元素；Alt+Shift+点击 = 提取它所在的整个表格/列表
-      let el = e.target;
+      let el = t;
       if (e.shiftKey) el = el.closest('table,ul,ol,dl,[role=table],[role=grid],[role=list]') || el;
-      const t = describe(el);
-      t.text = ''; // 内容会变化，不用文本定位
+      const tg = describe(el);
+      tg.text = ''; // 内容会变化，不用文本定位
       const name = (el.getAttribute('aria-label') || el.getAttribute('title') || el.id || el.getAttribute('name') || '').trim().slice(0, 30);
-      record({ type: 'extract', target: t, name: name || undefined, sample: textOf(el).slice(0, 200) }, el);
-      toast('已标记提取：' + t.desc);
+      record({ type: 'extract', target: tg, name: name || undefined, sample: textOf(el).slice(0, 200) }, el);
+      toast('已标记提取：' + tg.desc);
       return;
     }
+    if (Date.now() - dragEndTs < 300) return; // 拖动结束时浏览器补的 click，已经录成拖动
     flushInput();
-    const el = interactive(e.target);
+    const el = interactive(t);
     if (!el || el.nodeType !== 1) return;
     if (el.tagName === 'INPUT' && /^(checkbox|radio|file)$/i.test(el.type)) return; // 由 change 记录
     if (el.tagName === 'LABEL' && el.control && /^(checkbox|radio|file)$/i.test(el.control.type)) return;
     if (el.tagName === 'SELECT' || el.tagName === 'OPTION') return;
-    record({ type: 'click', target: describe(el) }, el);
+    const id = record({ type: 'click', target: describe(el), pos: posIn(el, e), hover: trailFor(el) }, el);
+    if (gesture) gesture.stepId = id;
+    if (id) noteDisplayChoice(el, id);
+    // 点完 350ms 看看是不是展开/收起开关、勾选开关
+    const p = pressInfo;
+    if (id && p && (p.toggle || (p.state && p.state.length))) {
+      setTimeout(() => {
+        const patch = {};
+        const tg = p.toggle && toggleOf(p.toggle, p.href);
+        if (tg) patch.toggle = tg;
+        const st = location.href === p.href ? stateOf(p.state) : null;
+        if (st) patch.state = st;
+        if (tg || st) send({ type: 'updateEvent', id, patch });
+      }, 350);
+    }
+  }, true);
+
+  listen('dblclick', (e) => {
+    if (!recording || !e.isTrusted || isOurUI(e)) return;
+    const el = interactive(deepTarget(e));
+    if (!el || el.nodeType !== 1) return;
+    // 双击前浏览器已经发了两次 click（各录了一步）：作为这一步的成员，回放时一起由双击完成
+    const clicks = recentSteps.filter((s) => s.type === 'click' && s.el === el && Date.now() - s.ts < 1500).slice(-2);
+    record({ type: 'dblclick', target: describe(el), pos: posIn(el, e), members: clicks.map((c) => c.id) }, el);
+  }, true);
+
+  listen('contextmenu', (e) => {
+    if (!recording || !e.isTrusted || isOurUI(e)) return;
+    flushInput();
+    const el = interactive(deepTarget(e));
+    if (!el || el.nodeType !== 1) return;
+    const id = record({ type: 'contextmenu', target: describe(el), pos: posIn(el, e) }, el);
+    if (gesture) gesture.stepId = id;
   }, true);
 
   // Alt 点击时阻止页面的 mousedown 行为
-  document.addEventListener('mousedown', (e) => {
+  listen('mousedown', (e) => {
     if (recording && e.isTrusted && e.altKey && settings.altExtract !== false && !isOurUI(e)) {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
   }, true);
 
-  document.addEventListener('keydown', (e) => {
+  // 按键：回车、Esc、Tab 都录；方向键、翻页只在不是打字的时候（或者有展开的下拉/联想列表时）录；
+  // Ctrl/Cmd 组合键录（输入框里的复制、粘贴、全选、撤销除外）；普通打字由输入事件录
+  listen('keydown', (e) => {
     if (!recording || !e.isTrusted || isOurUI(e)) return;
-    if (e.key === 'Alt') return;
-    if (e.key !== 'Enter' && e.key !== 'Escape') return;
+    if (/^(Alt|Control|Meta|Shift|CapsLock|Process|Unidentified|Dead)$/.test(e.key)) return;
     if (e.isComposing || e.keyCode === 229) return; // 输入法组字中
+    if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key)) userScrollTs = Date.now();
+    const t = deepTarget(e);
+    const el = t && t !== document.body && t !== document.documentElement && t.nodeType === 1 ? t : null;
+    const typing = el && isTextField(el);
+    const popup = !!(el && (el.getAttribute('aria-expanded') === 'true' || el.hasAttribute('aria-activedescendant') || session));
+    let keep = false;
+    if (/^(Enter|Escape|Tab)$/.test(e.key)) keep = true;
+    else if (e.ctrlKey || e.metaKey) keep = !(typing && /^[acvxyz]$/i.test(e.key));
+    else if (/^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) keep = !typing || popup;
+    else if (/^(ArrowLeft|ArrowRight|Home|End|Delete|Backspace)$/.test(e.key)) keep = !typing;
+    if (!keep) return;
     flushInput();
-    const el = e.target && e.target !== document.body && e.target.nodeType === 1 ? e.target : null;
-    record({ type: 'press', key: e.key, target: el ? describe(el) : null, ctrl: e.ctrlKey || undefined, meta: e.metaKey || undefined, shift: e.shiftKey || undefined }, el);
+    scan();
+    gesture = { ts: Date.now(), target: t };
+    scheduleScans();
+    const id = record({ type: 'press', key: e.key, target: el ? describe(el) : null, ctrl: e.ctrlKey || undefined, meta: e.metaKey || undefined, shift: e.shiftKey || undefined, alt: e.altKey || undefined }, el);
+    gesture.stepId = id;
+    // Tab：记下焦点落到了哪里（模拟事件回放时按这个移动焦点）
+    if (e.key === 'Tab' && id) setTimeout(() => { const a = deepActive(); if (a && a !== el && a !== document.body) send({ type: 'updateEvent', id, patch: { to: describe(a) } }); }, 0);
   }, true);
 
-  let scrollTimer = null;
+  // 滚动：页面和可滚动的容器（表格、虚拟列表）。只录用户滚的（滚轮、触摸、键盘、拖滚动条），
+  // 页面自己滚的（展开时自动滚到可见位置）不录
+  ['wheel', 'touchmove'].forEach((type) => listen(type, (e) => { if (e.isTrusted) userScrollTs = Date.now(); }, { capture: true, passive: true }));
+  const scrollTimers = new Map();
   let lastScroll = { x: 0, y: 0 };
-  window.addEventListener('scroll', (e) => {
-    if (!recording || settings.recordScroll === false) return;
-    if (e.target !== document && e.target !== window) return;
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(() => {
-      const x = Math.round(window.scrollX);
-      const y = Math.round(window.scrollY);
-      if (Math.abs(y - lastScroll.y) < 200 && Math.abs(x - lastScroll.x) < 200) return;
-      lastScroll = { x, y };
-      if (lastStep && lastStep.type === 'scroll') send({ type: 'updateEvent', id: lastStep.id, patch: { x, y } });
-      else record({ type: 'scroll', x, y }, null);
-    }, 600);
+  const lastElScroll = new WeakMap();
+  listen('scroll', (e) => {
+    if (!recording || settings.recordScroll === false || Date.now() - userScrollTs > 1500) return;
+    const t = e.target === document || e.target === window ? window : e.target;
+    clearTimeout(scrollTimers.get(t));
+    scrollTimers.set(t, setTimeout(() => {
+      scrollTimers.delete(t);
+      if (t === window) {
+        const x = Math.round(window.scrollX);
+        const y = Math.round(window.scrollY);
+        if (Math.abs(y - lastScroll.y) < 200 && Math.abs(x - lastScroll.x) < 200) return;
+        lastScroll = { x, y };
+        if (lastStep && lastStep.type === 'scroll' && !lastStep.el) send({ type: 'updateEvent', id: lastStep.id, patch: { x, y } });
+        else record({ type: 'scroll', x, y }, null);
+        return;
+      }
+      if (t.nodeType !== 1 || !t.isConnected || t === uiHost) return;
+      const x = Math.round(t.scrollLeft);
+      const y = Math.round(t.scrollTop);
+      const prev = lastElScroll.get(t) || { x: 0, y: 0 };
+      if (Math.abs(y - prev.y) < 50 && Math.abs(x - prev.x) < 50) return;
+      lastElScroll.set(t, { x, y });
+      if (lastStep && lastStep.type === 'scroll' && lastStep.el === t) send({ type: 'updateEvent', id: lastStep.id, patch: { x, y } });
+      else record({ type: 'scroll', target: describe(t), x, y }, t);
+    }, 600));
   }, { capture: true, passive: true });
 
   // SPA 路由变化
@@ -305,7 +1083,45 @@
     }, 400);
   }
 
-  window.addEventListener('pagehide', flushInput, true);
+  window.addEventListener('pagehide', () => { flushInput(); endSession(); }, true);
+
+  // 本框架左上角在顶层视口里的位置：逐级问父框架里对应 iframe 元素的内容区位置（跨域也行）
+  function frameOffset() {
+    if (IS_TOP) return Promise.resolve({ x: 0, y: 0 });
+    return new Promise((resolve) => {
+      const id = uid();
+      const done = (v) => { removeEventListener('message', on); clearTimeout(t); resolve(v); };
+      const on = (e) => { const d = e.data; if (e.source === window.parent && d && d[TAG] === 'offsetRes' && d.id === id) done(d.offset || null); };
+      const t = setTimeout(() => done(null), 3000);
+      addEventListener('message', on);
+      window.parent.postMessage({ [TAG]: 'offsetReq', id }, '*');
+    });
+  }
+  function frameElementOf(win) {
+    const all = [...document.querySelectorAll('iframe,frame')];
+    return all.find((f) => { try { return f.contentWindow === win; } catch (e) { return false; } }) || null;
+  }
+  // 回放引擎请求真实输入：坐标换算成顶层视口坐标后交给扩展用调试接口发送
+  async function relayInput(d) {
+    const req = Object.assign({}, d.req);
+    // 坐标只能落在本框架里面：iframe 里的页面不能借扩展点到外层页面
+    const inside = (x, y) => typeof x === 'number' && typeof y === 'number' && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+    if (('x' in req && !inside(req.x, req.y)) || ('tx' in req && !inside(req.tx, req.ty))) return { ok: false, error: '坐标不在页面可视区域内' };
+    // 键盘输入发给整个标签页里有焦点的地方：只有焦点就在本框架里（不在别的框架、也不在子框架里）才发
+    if (req.type === 'key' || req.type === 'text') {
+      const a = deepActive();
+      // 焦点在子框架里：只有同源的 about:blank / srcdoc 编辑器框架（由本页面操作的）可以
+      const blank = (f) => { try { return !f.contentWindow.__PAGE_RECORDER_CONTENT__ && !!f.contentDocument; } catch (e) { return false; } };
+      if (!document.hasFocus() || (a && /^(IFRAME|FRAME)$/.test(a.tagName) && !blank(a))) return { ok: false, error: '焦点不在这个页面里' };
+    }
+    if ('x' in req || 'tx' in req) {
+      const off = await frameOffset();
+      if (!off) return { ok: false, error: '算不出 iframe 在页面里的位置' };
+      if ('x' in req) { req.x += off.x; req.y += off.y; }
+      if ('tx' in req) { req.tx += off.x; req.ty += off.y; }
+    }
+    return (await send({ type: 'realInput', token: d.token, req })) || { ok: false, error: '扩展没有响应' };
+  }
 
   // 转发 hook.js 抓到的请求
   window.addEventListener('message', (e) => {
@@ -313,6 +1129,50 @@
     // 回放引擎的断点，转给扩展（跨源跳转后以扩展收到的为准）
     if (e.source === window && d && d[TAG] === 'progress' && typeof d.token === 'string') {
       send({ type: 'replayProgress', token: d.token, data: d.data });
+      return;
+    }
+    // 页面弹了原生弹窗：记到触发它的那一步上（回放时提前装好同样的应答）
+    if (e.source === window && d && d[TAG] === 'dialog' && recording) {
+      if (lastStep) {
+        lastStep.dialogs.push({ kind: d.kind, message: String(d.message || '').slice(0, 300), result: d.result });
+        send({ type: 'updateEvent', id: lastStep.id, patch: { dialogs: lastStep.dialogs } });
+      }
+      return;
+    }
+    if (e.source === window && d && d[TAG] === 'reqstart') { if (Date.now() - lastReqScan > 150) { lastReqScan = Date.now(); scan(); } return; }
+    // 没挂到页面上的文件框选了文件（hook.js 报告）：记成上传，目标是刚才点的那个“上传”按钮，回放时点它、拦下选文件对话框设文件
+    if (e.source === window && d && d[TAG] === 'filepick' && recording && Array.isArray(d.files)) {
+      const s = lastStep && lastStep.type === 'click' && Date.now() - lastStep.ts < 30000 && lastStep.el && lastStep.el.isConnected ? lastStep : null;
+      if (s) record({ type: 'upload', chooser: true, target: describe(s.el), files: d.files.map(String).slice(0, 20) }, s.el);
+      return;
+    }
+    if (e.source === window && d && d[TAG] === 'input' && typeof d.token === 'string' && d.req) {
+      relayInput(d).then((res) => window.postMessage({ [TAG]: 'inputRes', id: d.id, res }, '*'));
+      return;
+    }
+    // 子框架问自己的位置：找到对应的 iframe 元素，加上它的边框和内边距，再加上本框架自己的位置
+    if (d && d[TAG] === 'offsetReq' && e.source && e.source !== window) {
+      const f = frameElementOf(e.source);
+      if (!f) return;
+      const src = e.source;
+      (async () => {
+        // iframe 所在的弹窗还在滑入、淡入：等它停稳再量位置
+        let last = '';
+        for (let k = 0; k < 16; k++) {
+          const q = f.getBoundingClientRect();
+          const key = [q.left, q.top].map(Math.round).join(',');
+          let moving = false;
+          for (let n = f; n && n.nodeType === 1 && !moving; n = n.parentElement) moving = !!(n.getAnimations && n.getAnimations().some((a) => a.playState === 'running' && !(a.effect && a.effect.getTiming && a.effect.getTiming().iterations === Infinity)));
+          if (!moving && key === last) break;
+          last = key;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        const r = f.getBoundingClientRect();
+        const cs = getComputedStyle(f);
+        const own = { x: r.left + f.clientLeft + (parseFloat(cs.paddingLeft) || 0), y: r.top + f.clientTop + (parseFloat(cs.paddingTop) || 0) };
+        const upOff = await frameOffset();
+        src.postMessage({ [TAG]: 'offsetRes', id: d.id, offset: upOff ? { x: own.x + upOff.x, y: own.y + upOff.y } : null }, '*');
+      })();
       return;
     }
     if (e.source !== window || !d || d[TAG] !== 'net' || !(recording || capturing)) return;
@@ -332,8 +1192,10 @@
   function setRecording(on, s, c) {
     if (s) settings = s;
     if (c) counts = c;
-    if (!on) flushInput();
+    if (!on) { flushInput(); endSession(); }
+    const starting = on && !recording;
     recording = !!on;
+    if (starting) scan(); // 记下所有字段的初始值
     lastScroll = { x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
     hookState();
     if (recording) showUI(); else hideUI();
