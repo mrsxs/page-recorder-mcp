@@ -550,7 +550,7 @@ async function runApiMode(item, b, apis, opts) {
     try {
       // newTab：用全新标签页（默认跑完关掉）；否则复用开着的页面。fresh 对直接请求没有意义（不依赖页面状态）
       const r = await callApi(item, a.name, {}, {
-        params: opts.params, apiParams: opts.apiParams, tabId: opts.tabId, active: opts.active, callTimeout: left,
+        params: opts.params, apiParams: opts.apiParams, tabId: opts.tabId, active: opts.active, deadline,
         reuseTab: opts.newTab ? false : undefined, keepTab: opts.keepTab,
       });
       out.responses.push({ api: a.name, fn: a.fn, status: r.status, ok: r.ok, url: r.url, data: r.data });
@@ -581,7 +581,7 @@ async function runRecording(item, opts) {
   const deadline = Date.now() + (opts.timeout || 180000);
   // 同一个标签页同时只跑一个回放：指定了标签页时先占上（检查和占用之间不能有 await）
   if (opts.tabId) {
-    if (runningTabs.has(opts.tabId)) throw new Error('这个标签页正在回放，请等它结束再试');
+    if (runningTabs.has(opts.tabId) || callingTabs.has(opts.tabId)) throw new Error('这个标签页正在回放或调用接口，请等它结束再试');
     runningTabs.add(opts.tabId);
   }
   let picked;
@@ -650,7 +650,10 @@ async function runRecording(item, opts) {
     total.finalUrl = tab.url;
     total.recording = b.name;
     const cap = captures.get(tabId);
-    if (cap) total.network = cap.list;
+    if (cap) {
+      await drainCapture(cap);
+      total.network = cap.list.slice().sort((x, y) => x.ts - y.ts);
+    }
     return total;
   } finally {
     stopCapture(tabId);
@@ -668,6 +671,17 @@ const CAPTURE_BYTES = 8 * 1024 * 1024;
 function startCapture(tabId) {
   if (!captures.has(tabId)) captures.set(tabId, { list: [], bytes: 0 });
   chrome.tabs.sendMessage(tabId, { type: 'capture', on: true }).catch(() => {});
+}
+// 最后一步发出的请求可能还没返回：等到 1 秒内没有新请求进来（最多 5 秒）再收
+async function drainCapture(cap) {
+  const end = Date.now() + 5000;
+  let n = -1;
+  let quietSince = Date.now();
+  while (Date.now() < end) {
+    if (cap.list.length !== n) { n = cap.list.length; quietSince = Date.now(); }
+    if (Date.now() - quietSince >= 1000) break;
+    await sleep(200);
+  }
 }
 function stopCapture(tabId) {
   if (!captures.delete(tabId)) return;
@@ -737,35 +751,50 @@ async function callApi(item, api, args, opts) {
   let ctx = '';
   let siteOrigin = '';
   try { ctx = new URL(ctxUrl).origin; siteOrigin = new URL(b.recording.startUrl).origin; } catch (e) { /* ignore */ }
-  if (opts.tabId && runningTabs.has(opts.tabId)) throw new Error('这个标签页正在回放，请等它结束再调用接口');
+  const deadline = opts.deadline || Date.now() + (opts.timeout || 90000);
   // 默认复用：先找上次为这个页面源开的接口调用标签页，再找其他开着的页面（包括 iframe）；都没有才新开一个并留着。
   // reuseTab: false 时用全新标签页，默认用完关掉（keepTab: true 保留）
   const reuse = !opts.tabId && opts.reuseTab !== false;
   const keep = opts.keepTab !== undefined ? !!opts.keepTab : reuse;
   let target = null;
-  if (reuse) {
+  if (opts.tabId) {
+    const f = (await listFrames(opts.tabId)).find((x) => x.url.startsWith(ctx + '/'));
+    target = { tabId: opts.tabId, frameId: f ? f.frameId : 0 };
+  } else if (reuse) {
     const kept = await reusedTab('call:' + ctx);
     if (kept && kept.url && kept.url.startsWith(ctx + '/')) target = { tabId: kept.id, frameId: 0 };
     if (!target) target = await findOriginFrame(ctx, siteOrigin);
-    if (target && runningTabs.has(target.tabId)) target = null; // 选的时候还空着，现在被回放占了
+  }
+  // 选的时候还空着，可能已经被回放占了：同步复查后立刻占用（中间不能有 await）
+  if (target && runningTabs.has(target.tabId)) {
+    if (opts.tabId) throw new Error('这个标签页正在回放，请等它结束再调用接口');
+    target = null;
   }
   let created = false;
-  if (!target) {
-    const t = await pickTab(ctxUrl, { ...opts, reuseTab: false });
+  if (target) callBegin(target.tabId);
+  else {
+    const t = await pickTab(ctxUrl, { ...opts, tabId: undefined, reuseTab: false });
     created = t.created;
     target = { tabId: t.tabId, frameId: 0 };
+    callBegin(t.tabId);
     if (created && reuse && keep) await rememberTab('call:' + ctx, t.tabId);
   }
   const tabId = target.tabId;
-  callBegin(tabId);
+  const left = () => deadline - Date.now();
   try {
-    await waitTabComplete(tabId);
+    await waitTabComplete(tabId, Math.max(1000, Math.min(30000, left())));
+    if (left() <= 0) throw new Error('超时：页面还没准备好');
     await injectRuntime(tabId, target.frameId);
-    const config = Object.assign({}, b.config, opts.callTimeout ? { callTimeout: opts.callTimeout } : {});
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId, frameIds: [target.frameId] }, world: 'MAIN', func: pageCall,
-      args: [b.recording, Object.assign({}, b.params, opts.params || {}), mergeApiParams(b.apiParams, opts.apiParams), config, a.name, args || {}],
-    });
+    if (left() <= 0) throw new Error('超时：页面还没准备好');
+    const config = Object.assign({}, b.config, { callTimeout: left() });
+    // 页面在调用期间整页跳转时 executeScript 不会返回，所以也按截止时间兜底
+    const [r] = await Promise.race([
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [target.frameId] }, world: 'MAIN', func: pageCall,
+        args: [b.recording, Object.assign({}, b.params, opts.params || {}), mergeApiParams(b.apiParams, opts.apiParams), config, a.name, args || {}],
+      }),
+      sleep(left() + 3000).then(() => { throw new Error('超时：接口没有在规定时间内返回'); }),
+    ]);
     return Object.assign({ api: a.name, fn: a.fn }, r && r.result);
   } finally {
     callEnd(tabId);

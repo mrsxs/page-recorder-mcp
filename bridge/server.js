@@ -39,7 +39,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   --port <端口>     监听端口，默认 17321              PR_BRIDGE_PORT
   --host <地址>     监听地址，默认 127.0.0.1          PR_BRIDGE_HOST
   --token <口令>    HTTP 调用需带 Authorization: Bearer <口令>   PR_BRIDGE_TOKEN
-改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext
+改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext；
+设置了 token 的话，桥接地址要写成 ws://127.0.0.1:<端口>/ext?token=<口令>。监听非本机地址时必须设置 token。
 `);
   process.exit(0);
 }
@@ -64,6 +65,11 @@ const PORT = Number(flag('port') || process.env.PR_BRIDGE_PORT || 17321);
 const HOST = flag('host') || process.env.PR_BRIDGE_HOST || '127.0.0.1';
 const TOKEN = flag('token') || process.env.PR_BRIDGE_TOKEN || ''; // 可选：设置后 HTTP 调用需带 Authorization: Bearer <token>
 const STDIO = argv.includes('--stdio');
+// 不只监听本机时必须设置 token，否则局域网里任何人都能借你的浏览器登录态执行脚本
+if (!/^(127\.\d+\.\d+\.\d+|localhost|::1)$/.test(HOST) && !TOKEN) {
+  process.stderr.write(`[page-recorder-bridge] 监听 ${HOST} 会暴露给本机以外的设备，必须同时设置 --token（或 PR_BRIDGE_TOKEN）\n`);
+  process.exit(2);
+}
 const log = (...a) => process.stderr.write('[page-recorder-bridge] ' + a.join(' ') + '\n');
 
 // ======================= 与扩展的 WebSocket 连接 =======================
@@ -464,7 +470,8 @@ const server = http.createServer((req, res) => { route(req, res); });
 server.on('upgrade', (req, socket) => {
   const u = new URL(req.url, 'http://x');
   const origin = req.headers.origin || '';
-  if (u.pathname !== '/ext' || !origin.startsWith('chrome-extension://') || !req.headers['sec-websocket-key']) {
+  // Origin 只能挡住网页，挡不住本机/局域网里的其他程序：设置了 token 时扩展也要带上（桥接地址写成 ws://…/ext?token=口令）
+  if (u.pathname !== '/ext' || !origin.startsWith('chrome-extension://') || !req.headers['sec-websocket-key'] || (TOKEN && u.searchParams.get('token') !== TOKEN)) {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
     return;
   }

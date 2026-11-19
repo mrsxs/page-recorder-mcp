@@ -180,7 +180,8 @@ curl -X POST http://127.0.0.1:17321/api/recordings/商品搜索下单/call \
 ### 安全
 
 - 服务只监听 `127.0.0.1`。带 `Origin` 头的跨站请求会被拒绝，网页无法偷偷调用它；只有扩展能通过 WebSocket 连进来
-- 需要更严格的控制时，设置 `PR_BRIDGE_TOKEN=xxx`，之后 HTTP 调用要带 `Authorization: Bearer xxx`
+- 需要更严格的控制时，设置 `--token xxx`（或 `PR_BRIDGE_TOKEN=xxx`）：之后 HTTP 调用要带 `Authorization: Bearer xxx`，扩展「设置」里的桥接地址也要写成 `ws://127.0.0.1:17321/ext?token=xxx`
+- 用 `--host` 监听本机以外的地址时必须设置 token，否则服务拒绝启动
 - 端口可以用 `PR_BRIDGE_PORT` 修改，扩展「设置」里的地址要同步修改
 - 脚本在你已登录的浏览器里执行，能做你在页面上能做的一切。请只接入你信任的 AI 工具
 

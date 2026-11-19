@@ -59,3 +59,32 @@ test('桥接服务启动并应答 /api/status（--port 生效）', async () => {
     p.kill();
   }
 });
+
+test('监听非本机地址但没设 token 时拒绝启动', () => {
+  const r = spawnSync(process.execPath, [server, '--host', '0.0.0.0', '--port', '0'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /必须同时设置 --token/);
+});
+
+test('设置了 token：扩展连接不带 token 被拒，带上才放行', async () => {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const p = spawn(process.execPath, [server, '--port', String(port), '--token', 'abc'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const http = await import('node:http');
+  const upgrade = (path) => new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, path, headers: { Connection: 'Upgrade', Upgrade: 'websocket', Origin: 'chrome-extension://x', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' } });
+    req.on('upgrade', (res, socket) => { socket.destroy(); resolve(101); });
+    req.on('response', (res) => resolve(res.statusCode));
+    req.on('error', () => resolve('closed'));
+    req.end();
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('启动超时')), 10000);
+      p.stderr.on('data', (d) => { if (String(d).includes('已启动')) { clearTimeout(t); resolve(); } });
+    });
+    assert.notEqual(await upgrade('/ext'), 101);
+    assert.equal(await upgrade('/ext?token=abc'), 101);
+  } finally {
+    p.kill();
+  }
+});
