@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="dot" id="dot"></span><b>Page Recorder</b><span class="status" id="status">未录制</span></div>
+    <div class="stats"><span>步骤 <b id="nSteps">0</b></span><span>接口 <b id="nReqs">0</b></span><span id="bridge" class="bridge" title="本地 AI 桥接服务（供 Claude Code / Accio 等调用）">桥接 ○</span></div>
+  </header>
+
+  <section class="meta">
+    <input id="recName" placeholder="给录制起个名字（停止后自动存入脚本库）" />
+  </section>
+  <section class="controls">
+    <button id="btnStart" class="primary">● 开始录制</button>
+    <button id="btnContinue" class="ghost" hidden>继续录制</button>
+    <button id="btnStop" class="danger" hidden>■ 停止录制</button>
+    <button id="btnClear" class="ghost">清空</button>
+  </section>
+  <div id="notice" class="notice" hidden></div>
+
+  <nav class="tabs">
+    <button data-tab="steps" class="active">时间线</button>
+    <button data-tab="apis">接口参数</button>
+    <button data-tab="library">脚本库</button>
+    <button data-tab="settings">设置</button>
+  </nav>
+
+  <main>
+    <div id="tab-steps" class="tab">
+      <div class="filter">
+        <label><input type="checkbox" id="showReqs" checked /> 显示请求</label>
+        <span class="hint">Alt+点击页面元素 = 标记要提取的数据</span>
+        <button id="btnEditTl" class="ghost sm" title="批量删除不想要的步骤，比如登录">编辑</button>
+      </div>
+      <div id="tlEditBar" class="editbar" hidden>
+        <div class="editrow">
+          <span id="tlSel">已选 0 项</span>
+          <label><input type="checkbox" id="tlWithReqs" checked /> 选步骤时带上它触发的请求</label>
+        </div>
+        <div class="editrow">
+          <button id="tlDelete" class="danger sm" disabled>删除所选</button>
+          <button id="tlOpt" class="ghost sm" disabled title="回放时页面上有这个元素就执行，没有就跳过（比如只在未登录时出现的登录）">设为可选</button>
+          <button id="tlNoOpt" class="ghost sm" disabled>取消可选</button>
+          <button id="tlNone" class="ghost sm">清除选择</button>
+          <button id="tlDone" class="ghost sm">完成</button>
+        </div>
+        <div class="hint">点行选择，Shift+点击连选一段。「可选」= 回放时页面上有就执行、没有就跳过，适合登录这类不是每次都出现的步骤。</div>
+      </div>
+      <ol id="timeline" class="timeline"></ol>
+      <div id="emptyTip" class="empty">点击「开始录制」，然后在页面上正常操作。<br />点击、输入、选择、回车都会被记录，fetch/XHR 请求和返回数据会被抓取。</div>
+    </div>
+
+    <div id="tab-apis" class="tab" hidden>
+      <div class="aibar">
+        <button id="btnAi" class="primary">✨ AI 解读接口</button>
+        <button id="btnPrompt" class="ghost" title="复制提示词，交给任意 AI，再把返回的 JSON 粘贴回来">复制提示词</button>
+        <button id="btnPasteDocs" class="ghost">粘贴 AI 结果</button>
+      </div>
+      <div id="aiStatus" class="aistatus" hidden></div>
+      <div id="aiInfo" class="aiinfo" hidden></div>
+      <div id="paramBox" class="parambox" hidden></div>
+      <p class="hint block">下面是每个接口的原始字段，一般不用改：想换搜索内容等，改上面的「输入参数」就行。直接改这里的字段会把它固定成你填的值，回放时页面发出的请求会被改写成这个值。</p>
+      <div id="apiBar" class="apibar" hidden></div>
+      <div id="apiList"></div>
+      <div id="apiEmpty" class="empty" hidden>还没有抓到接口请求。</div>
+    </div>
+
+    <div id="tab-library" class="tab" hidden>
+      <p class="hint block">停止录制后自动保存到这里。脚本库中的脚本可被本地桥接服务调用：Claude Code、Accio 等 AI 工具通过 MCP / HTTP 直接执行并拿到结果。</p>
+      <div id="libList"></div>
+      <div id="libEmpty" class="empty" hidden>脚本库为空。录制并停止后会自动保存。</div>
+    </div>
+
+    <div id="tab-settings" class="tab" hidden>
+      <h4>录制</h4>
+      <label class="row"><input type="checkbox" data-k="maskPasswords" /> 密码输入不保存明文</label>
+      <label class="row"><input type="checkbox" data-k="maskHeaders" /> 导出时隐藏 Authorization / Token / Cookie 等请求头</label>
+      <label class="row"><input type="checkbox" data-k="ignoreTracking" /> 忽略统计、埋点、监控请求</label>
+      <label class="row"><input type="checkbox" data-k="dataOnly" /> 只保留数据接口（忽略脚本、样式、图片、字体）</label>
+      <label class="row"><input type="checkbox" data-k="recordScroll" /> 记录页面滚动</label>
+      <label class="row"><input type="checkbox" data-k="altExtract" /> 启用 Alt+点击 标记提取数据</label>
+      <label class="row num">单个请求/响应体最多保存 <input type="number" min="16" max="10240" data-k="maxBodyKB" /> KB</label>
+      <label class="row num">脚本中每个接口的示例响应最多 <input type="number" min="1" max="1024" data-k="sampleKB" /> KB</label>
+      <label class="row col">排除 URL（正则）<input type="text" data-k="excludePattern" placeholder="例如 /api/heartbeat|/ping" /></label>
+      <h4>AI 解读接口</h4>
+      <label class="row col">接口类型
+        <select data-k="aiProvider"><option value="openai">OpenAI 兼容（OpenAI / DeepSeek / 通义千问 / Kimi / OpenRouter / Ollama …）</option><option value="anthropic">Anthropic Claude</option></select></label>
+      <label class="row col">Base URL<input type="text" data-k="aiBaseUrl" placeholder="https://api.openai.com/v1" /></label>
+      <label class="row col">API Key<input type="password" data-k="aiApiKey" placeholder="只保存在本机浏览器中" /></label>
+      <label class="row col">模型<input type="text" data-k="aiModel" placeholder="如 gpt-4o-mini / deepseek-chat / qwen-plus / claude-sonnet-5-5" /></label>
+      <h4>本地 AI 桥接服务</h4>
+      <label class="row"><input type="checkbox" data-k="bridgeEnabled" /> 连接本地桥接服务（运行 bridge/server.js 后自动连接）</label>
+      <label class="row col">地址<input type="text" data-k="bridgeUrl" placeholder="ws://127.0.0.1:17321/ext" /></label>
+      <div class="row"><button id="btnReconnect" class="ghost">重新连接</button><span id="bridgeState" class="hint"></span></div>
+    </div>
+  </main>
+
+  <footer>
+    <button id="btnExportJs" class="primary">导出脚本 .js</button>
+    <button id="btnCopyJs" class="ghost">复制脚本</button>
+    <button id="btnCopyMd" class="ghost" title="Markdown 格式的步骤、接口与响应结构说明，适合直接发给 AI">复制说明</button>
+    <button id="btnExportJson" class="ghost">导出 JSON</button>
+  </footer>
+
+  <script src="../lib/runtime.js"></script>
+  <script src="../lib/exporter.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
