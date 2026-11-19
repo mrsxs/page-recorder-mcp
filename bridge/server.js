@@ -668,8 +668,10 @@ function savedResult(id) {
   if (r && Date.now() - r.at > RESULT_TTL) { savedResults.delete(String(id)); savedBytes -= r.size; return null; }
   return r || null;
 }
-const jsonLen = (v) => { const s = JSON.stringify(v); return s === undefined ? 0 : s.length; };
-const jsonBytes = (v) => { const s = JSON.stringify(v); return s === undefined ? 0 : Buffer.byteLength(s, 'utf8'); };
+// 结构套得特别深时 JSON.stringify 会栈溢出（能套多深各平台不一样）：量不出来就当作“很大”，走按结构压缩的路
+const jsonLen = (v) => { try { const s = JSON.stringify(v); return s === undefined ? 0 : s.length; } catch (e) { return Infinity; } };
+const jsonBytes = (v) => { try { const s = JSON.stringify(v); return s === undefined ? 0 : Buffer.byteLength(s, 'utf8'); } catch (e) { return 4 * 1024 * 1024; } };
+const sizeText = (n) => (Number.isFinite(n) ? `${n} 字符` : '很大（结构太深，量不出来）');
 const clip = (x, n) => { const t = String(x == null ? '' : x); return t.length > n ? `${t.slice(0, n)}…(+${t.length - n}字)` : t; };
 // 路径写法：a.b[0].c；键名里有点号等特殊字符的写成 a["x.y"]（引号里按 JSON 字符串的写法）
 function pathTokens(p) {
@@ -737,7 +739,7 @@ function compactValue(v, path, budget, depth) {
   if (size <= budget) return v;
   if (Array.isArray(v)) {
     const n = v.length;
-    if (budget < 140 || depth > 40) return `…省略：数组 ${n} 项，${size} 字符`;
+    if (budget < 140 || depth > 40) return `…省略：数组 ${n} 项，${sizeText(size)}`;
     const room = budget - 110;
     // 每项至少 60 字符：按额度算最多放几项
     const k = Math.max(1, Math.min(n, 50, Math.floor(room / Math.max(60, size / n))));
@@ -746,7 +748,7 @@ function compactValue(v, path, budget, depth) {
     return out;
   }
   const keys = Object.keys(v);
-  if (budget < 140 || depth > 40) return `…省略：对象 ${keys.length} 个字段，${size} 字符`;
+  if (budget < 140 || depth > 40) return `…省略：对象 ${keys.length} 个字段，${sizeText(size)}`;
   // 先放说明成败的字段（ok、error、status…），再按原来的顺序放其余的；每个字段至少占“键名 + 30 字符”，按额度算能放几个
   const cand = keys.filter((k) => STATE_KEY.test(k)).concat(keys.filter((k) => !STATE_KEY.test(k)));
   const chosen = new Set();
@@ -757,7 +759,7 @@ function compactValue(v, path, budget, depth) {
     chosen.add(k);
     floor += cost;
   }
-  if (!chosen.size) return `…省略：对象 ${keys.length} 个字段，${size} 字符`;
+  if (!chosen.size) return `…省略：对象 ${keys.length} 个字段，${sizeText(size)}`;
   const shown = keys.filter((k) => chosen.has(k));
   const sizes = shown.map((k) => jsonLen(v[k]) + k.length + 4);
   const order = shown.map((k, i) => i).sort((a, b) => sizes[a] - sizes[b]);
@@ -870,7 +872,7 @@ function aiText(raw, opts, saved) {
         : full;
       if (jsonLen(whole) <= budget) return pretty(whole);
       keep();
-      const note = `结果共 ${jsonLen(full)} 字符，超过一次能给的 ${budget}：下面是按结构压缩过的预览（数组只给开头几项、长文本截短；写着“省略”的字段，路径就是它所在的位置）。${how()}`;
+      const note = `结果共 ${sizeText(jsonLen(full))}，超过一次能给的 ${budget}：下面是按结构压缩过的预览（数组只给开头几项、长文本截短；写着“省略”的字段，路径就是它所在的位置）。${how()}`;
       return fitText((b) => withId(Object.assign({ note }, mark, { preview: compactValue(full, '', Math.max(150, b - jsonLen(mark) - note.length - 80)) })), budget) || tiny('结果');
     }
     // 只要一部分：完整结果先留着，之后翻页、换路径都不用重新调接口

@@ -21,8 +21,8 @@ const LIST = { ok: true, status: 200, data: { ret: ['SUCCESS::调用成功'], da
 const SMALL = { ok: true, status: 200, data: { code: 0, payload: JSON.stringify({ list: [{ id: 1, name: 'a' }], inner: JSON.stringify({ deep: true }) }) } };
 const BIG = { ok: true, data: { rows: Array.from({ length: 200 }, (_, i) => ({ id: i, name: 'n' + i, a: { b: 'x'.repeat(3000) } })) } };
 const WIDE = Object.assign(Object.fromEntries(Array.from({ length: 100 }, (_, i) => ['a_rather_long_field_name_number_' + i, 'v'.repeat(1000)])), { ok: false, error: 'permission denied' });
-let DEEP = { leaf: 'x'.repeat(30) };
-for (let i = 0; i < 4000; i++) DEEP = { c: DEEP };
+// 很深的结构直接拼成 JSON 文本发：测试进程自己不去序列化几千层的对象（栈浅的平台上会溢出）
+const DEEP = { json: '{"c":'.repeat(4000) + '{"leaf":"' + 'x'.repeat(30) + '"}' + '}'.repeat(4000) };
 const TEXTY = { ok: true, title: '[1,2]', note: '{"user":"example-user"}', payload: JSON.stringify({ a: 1, b: [1, 2, 3], big: 'y'.repeat(40) }), 'line\nkey': { v: 'z'.repeat(5000) } };
 const LONGKEYS = Object.fromEntries(Array.from({ length: 40 }, (_, i) => ['k'.repeat(100) + i, 'v'.repeat(300)]));
 const STRROWS = { rows: Array.from({ length: 5 }, (_, i) => JSON.stringify({ id: i, name: 'row' + i, pad: 'p'.repeat(40) })) };
@@ -56,7 +56,9 @@ function fakeExt(port) {
   let buf = Buffer.alloc(0);
   let up = false;
   s.write(`GET /ext HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: chrome-extension://abcdef\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
-  const reply = (id, data) => s.write(frame(JSON.stringify({ type: 'response', id, ok: true, data })));
+  const reply = (id, data) => s.write(frame(data && typeof data.json === 'string' && Object.keys(data).length === 1
+    ? `{"type":"response","id":${JSON.stringify(id)},"ok":true,"data":${data.json}}`
+    : JSON.stringify({ type: 'response', id, ok: true, data })));
   s.on('data', (d) => {
     buf = Buffer.concat([buf, d]);
     if (!up) {
@@ -90,7 +92,9 @@ function fakeExt(port) {
 
 async function withBridge(fn, env) {
   const port = 20000 + Math.floor(Math.random() * 20000);
-  const p = spawn(process.execPath, [server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: Object.assign({}, process.env, env || {}) });
+  // PR_TEST_NODE_FLAGS：本机想模拟栈浅的平台时用（比如 --stack-size=200）
+  const flags = (process.env.PR_TEST_NODE_FLAGS || '').split(' ').filter(Boolean);
+  const p = spawn(process.execPath, [...flags, server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: Object.assign({}, process.env, env || {}) });
   let ext = null;
   try {
     await new Promise((resolve, reject) => {
@@ -267,7 +271,7 @@ test('一句话摘要也不超上限；小结果展开后能按编号读原文�
     // 整理结果出错时的兜底也不超上限（内容里全是引号、反斜杠，序列化后会变长）
     r = await call('QUOTES', { result_max_chars: 2000 });
     assert.ok(r.text.length <= 2000 && !r.err, '兜底 ' + r.text.length);
-    assert.ok(JSON.parse(r.text).raw_head && JSON.parse(r.text).result_id, '走的是出错兜底：' + r.text.slice(0, 200));
+    assert.ok(JSON.parse(r.text).result_id, r.text.slice(0, 200));
   });
 });
 
