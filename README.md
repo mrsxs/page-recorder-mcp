@@ -179,6 +179,10 @@ stdio 方式第一次启动时会在后台起一个桥接服务，之后各个 A
 
 新录了脚本以后，在 Accio 里把 page-recorder 断开再连上，工具列表才会更新（通用的 `run_recording`、`call_api` 不受影响）。其他支持 MCP 的工具（WorkBuddy、Claude Desktop、Cursor 等）用同样的命令或 URL 添加。不支持 MCP 的工具，可以直接调下面的 REST API。
 
+### 给 AI 的技能（可选）
+
+`skills/page-recorder/SKILL.md` 告诉 AI 怎么用这些工具：先看清接口的参数和返回，再在页面里改参数直接请求；直接请求被拒（要页面现算签名，返回 403）时让页面自己带签名发，并把结论写回接口说明。把 `skills/page-recorder` 文件夹复制到 WorkBuddy 的 `~/.workbuddy/skills/` 或 Claude Code 的 `~/.claude/skills/` 就能用。
+
 **只给 AI 用你需要的接口**：录制时会抓到很多接口，在「接口参数」页取消勾选不用的「AI 可调用」，MCP 里就只出现勾选的那几个工具。AI 调这些工具时，直接在开着的页面里发请求、拿结果，不操作页面。
 
 ### MCP 工具
