@@ -7,9 +7,12 @@ import net from 'node:net';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { join, dirname } from 'node:path';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const server = join(dirname(fileURLToPath(import.meta.url)), '..', 'bridge', 'server.js');
+process.env.PR_BRIDGE_DIR = mkdtempSync(join(tmpdir(), 'pr-state-')); // 桥接写的口令文件不放进 ~/.page-recorder
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 一页“商品”：网关式接口的返回，数据整个套在 data.result 这个 JSON 字符串里，每项带一大堆用不上的配置
@@ -41,6 +44,16 @@ const LIB = [{
   ],
 }];
 
+// 一条接口很多、响应示例很长的脚本（get / script / exportPackage 用）
+const DETAIL = {
+  id: 'rec1', name: '大脚本', steps: ['1. 打开页面'], params: { 关键词: 'a' },
+  apis: Array.from({ length: 30 }, (_, i) => ({ name: `GET /api/n${i}`, fn: `api${i}`, title: `接口 ${i}`, url: `https://example.test/api/n${i}`, params: { query: { page: '1' } }, responseSchema: ['{', '  list: Array', '}'], responseSample: { list: Array.from({ length: 20 }, (_, k) => ({ id: k, text: 'x'.repeat(100) })) } })),
+  tools: [{ name: 'api0', inputSchema: { type: 'object', properties: {} } }],
+  analysisPrompt: 'p'.repeat(20000),
+};
+const SCRIPT = Array.from({ length: 3000 }, (_, i) => `const line${i} = ${JSON.stringify('v'.repeat(30))};`).join('\n');
+const PKG = { format: 'page-recorder-package', version: 1, name: '大脚本', item: { name: '大脚本', events: Array.from({ length: 300 }, (_, i) => ({ kind: i % 3 ? 'request' : 'step', ts: i, url: `https://example.test/${'u'.repeat(200)}` })) } };
+
 function frame(text) { // 客户端帧必须带掩码
   const payload = Buffer.from(text);
   const mask = crypto.randomBytes(4);
@@ -50,12 +63,12 @@ function frame(text) { // 客户端帧必须带掩码
   return Buffer.concat([head, mask, Buffer.from(payload.map((b, i) => b ^ mask[i % 4]))]);
 }
 // 假扩展：list 返回脚本库；run / call 按参数里的 kind 返回上面的某个结果
-function fakeExt(port) {
+function fakeExt(port, token) {
   const s = net.connect(port, '127.0.0.1');
   const st = { calls: 0, last: null, socket: s };
   let buf = Buffer.alloc(0);
   let up = false;
-  s.write(`GET /ext HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: chrome-extension://abcdef\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+  s.write(`GET /ext${token ? '?token=' + token : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: chrome-extension://abcdef\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
   const reply = (id, data) => s.write(frame(data && typeof data.json === 'string' && Object.keys(data).length === 1
     ? `{"type":"response","id":${JSON.stringify(id)},"ok":true,"data":${data.json}}`
     : JSON.stringify({ type: 'response', id, ok: true, data })));
@@ -80,6 +93,10 @@ function fakeExt(port) {
       try { m = JSON.parse(text); } catch (e) { continue; }
       if (m.type !== 'request') continue;
       if (m.method === 'list') { reply(m.id, LIB); continue; }
+      if (m.method === 'get') { reply(m.id, DETAIL); continue; }
+      if (m.method === 'script') { reply(m.id, { name: 'rec1', script: SCRIPT }); continue; }
+      if (m.method === 'exportPackage') { reply(m.id, { pkg: PKG }); continue; }
+      if (m.method === 'importPackage') { st.imported = m.params.pkg; reply(m.id, { ok: true, id: 'new1', name: m.params.pkg.name }); continue; }
       st.calls++;
       st.last = m.params;
       const a = m.params.args || m.params.params || {};
@@ -102,11 +119,11 @@ async function withBridge(fn, env) {
       p.stderr.on('data', (d) => { if (String(d).includes('已启动')) { clearTimeout(t); resolve(); } });
       p.on('exit', (code) => { clearTimeout(t); reject(new Error('进程退出 ' + code)); });
     });
-    ext = fakeExt(port);
+    ext = fakeExt(port, env && env.PR_BRIDGE_TOKEN);
     let id = 0;
     const rpc = (method, params) => new Promise((resolve, reject) => {
       const data = JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params });
-      const r = http.request({ host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+      const r = http.request({ host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: Object.assign({ 'content-type': 'application/json' }, env && env.PR_BRIDGE_TOKEN ? { authorization: 'Bearer ' + env.PR_BRIDGE_TOKEN } : {}) }, (res) => {
         let d = '';
         res.on('data', (c) => { d += c; });
         res.on('end', () => { try { resolve(JSON.parse(d).result); } catch (e) { reject(new Error(d)); } });
@@ -301,4 +318,95 @@ test('一条结果就超过缓存总量上限：不留存，提示调用时直�
     assert.ok(o.result_id);
     assert.ok(!(await tool('read_result', { result_id: o.result_id, path: 'ok' })).err);
   }, { PR_RESULT_CACHE_MB: '1' });
+});
+
+test('get_recording 太大时给概要和接口目录，接口详情用 read_result 按 apis[i] 取', async () => {
+  await withBridge(async ({ tool }) => {
+    const r = await tool('get_recording', { recording: 'rec1' });
+    assert.ok(r.text.length <= 24000, `概要 ${r.text.length} 字符`);
+    const o = JSON.parse(r.text);
+    assert.ok(o.result_id);
+    assert.equal(o.apis.length, 30);
+    assert.equal(o.apis[7].path, 'apis[7]');
+    assert.ok(!o.analysisPrompt && !o.apis[7].responseSample, '概要里不放大块内容');
+    const one = JSON.parse((await tool('read_result', { result_id: o.result_id, path: 'apis[7]', fields: ['fn', 'url'] })).text);
+    assert.deepEqual(one.value, { fn: 'api7', url: 'https://example.test/api/n7' });
+    const direct = JSON.parse((await tool('get_recording', { recording: 'rec1', result_path: 'apis[2].fn' })).text);
+    assert.equal(direct.value, 'api2');
+  });
+});
+
+test('get_script 按行分段，写明下一段从哪行开始；to_file 写整份源码', async () => {
+  await withBridge(async ({ tool }) => {
+    const first = (await tool('get_script', { recording: 'rec1' })).text;
+    assert.ok(first.length <= 24000, `第一段 ${first.length} 字符`);
+    const head = first.split('\n')[0];
+    assert.match(head, /共 3000 行/);
+    const next = Number(head.match(/start_line=(\d+)/)[1]);
+    const got = first.split('\n'); // 第 0 行是说明，后面依次是源码第 1 行起
+    assert.equal(got.length, next);
+    assert.equal(got[next - 1], `const line${next - 2} = ${JSON.stringify('v'.repeat(30))};`, '最后一行是完整的');
+    const second = (await tool('get_script', { recording: 'rec1', start_line: next, line_count: 5 })).text.split('\n');
+    assert.equal(second.length, 6);
+    assert.equal(second[1], `const line${next - 1} = ${JSON.stringify('v'.repeat(30))};`);
+    const f = JSON.parse((await tool('get_script', { recording: 'rec1', to_file: true })).text);
+    assert.equal(readFileSync(f.file, 'utf8'), SCRIPT);
+    assert.equal(f.lines, 3000);
+  });
+});
+
+// stdio 方式（AI 客户端自己起的进程）：不在后台起桥接，自己监听端口，假扩展连它
+async function withStdio(fn) {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const p = spawn(process.execPath, [server, '--stdio', '--no-daemon', '--port', String(port)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let ext = null;
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('启动超时')), 10000);
+      p.stderr.on('data', (d) => { if (String(d).includes('已启动')) { clearTimeout(t); resolve(); } });
+    });
+    ext = fakeExt(port);
+    let id = 0;
+    let buf = '';
+    const waiting = new Map();
+    p.stdout.on('data', (c) => {
+      buf += c;
+      for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
+        const m = JSON.parse(buf.slice(0, i));
+        if (waiting.has(m.id)) waiting.get(m.id)(m.result);
+      }
+    });
+    const tool = (name, args) => new Promise((resolve) => {
+      waiting.set(++id, (r) => resolve({ text: r.content[0].text, err: !!r.isError }));
+      p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }) + '\n');
+    });
+    await fn({ tool, ext });
+  } finally {
+    if (ext) ext.socket.destroy();
+    p.kill();
+  }
+}
+
+test('stdio：export_package 写成文件只回路径，import_package 传 file 导回；不是 .json 的文件不读', async () => {
+  await withStdio(async ({ tool, ext }) => {
+    const e = JSON.parse((await tool('export_package', { recording: 'rec1' })).text);
+    assert.ok(e.file.endsWith('.prpkg.json'));
+    assert.ok(!e.pkg && e.note, '大包不直接给内容');
+    assert.equal(e.requests, 200);
+    assert.deepEqual(JSON.parse(readFileSync(e.file, 'utf8')), PKG);
+    const again = JSON.parse((await tool('export_package', { recording: 'rec1' })).text);
+    assert.notEqual(again.file, e.file, '再导一次不覆盖');
+    const i = JSON.parse((await tool('import_package', { file: e.file })).text);
+    assert.equal(i.id, 'new1');
+    assert.deepEqual(ext.imported, PKG);
+    const bad = await tool('import_package', { file: '/etc/hosts' });
+    assert.ok(bad.err);
+    assert.match(bad.text, /\.json 结尾/);
+  });
+});
+
+test('HTTP：export_package 照旧直接返回录制包内容', async () => {
+  await withBridge(async ({ tool }) => {
+    assert.deepEqual(JSON.parse((await tool('export_package', { recording: 'rec1' })).text), PKG);
+  });
 });

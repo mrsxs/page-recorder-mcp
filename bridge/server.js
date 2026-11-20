@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawn, execFile } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..'); // 扩展本体所在目录（npm 包根目录）
 let VERSION = '0.0.0';
@@ -39,6 +40,9 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   --port <端口>     监听端口，默认 17321              PR_BRIDGE_PORT
   --host <地址>     监听地址，默认 127.0.0.1          PR_BRIDGE_HOST
   --token <口令>    HTTP 调用需带 Authorization: Bearer <口令>   PR_BRIDGE_TOKEN
+  --no-daemon       --stdio 时不在后台起桥接，自己监听端口（旧做法）
+--stdio 时会在后台起一个桥接，之后各个 AI 工具、各次会话都复用它，扩展不用反复重连；
+启动它的程序（WorkBuddy、Cursor 等）都退出后，后台桥接自动关闭。日志在 ~/.page-recorder/。
 改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext；
 设置了 token 的话，桥接地址要写成 ws://127.0.0.1:<端口>/ext?token=<口令>。监听非本机地址时必须设置 token。
 多个浏览器资料（主 Chrome、指纹浏览器等）都装了扩展时可以同时连上，调用时用 browser 参数指定在哪个浏览器执行。
@@ -67,6 +71,13 @@ const PORT = Number(flag('port') || process.env.PR_BRIDGE_PORT || 17321);
 const HOST = flag('host') || process.env.PR_BRIDGE_HOST || '127.0.0.1';
 const TOKEN = flag('token') || process.env.PR_BRIDGE_TOKEN || ''; // 可选：设置后 HTTP 调用需带 Authorization: Bearer <token>
 const STDIO = argv.includes('--stdio');
+const DAEMON = argv.includes('--daemon'); // stdio 实例在后台起的桥接：启动它的程序都退出后自己关闭
+const NO_DAEMON = argv.includes('--no-daemon');
+// 后台桥接的日志，以及本机转发用的口令文件（PR_BRIDGE_DIR 可改，测试用）
+const STATE_DIR = process.env.PR_BRIDGE_DIR || path.join(os.homedir(), '.page-recorder');
+const STATE_FILE = path.join(STATE_DIR, `bridge-${PORT}.json`);
+// 监听端口的实例写进 STATE_FILE；转发过来的请求带上它，说明是本机 stdio 实例（AI 客户端自己起的进程）发的
+const SECRET = crypto.randomBytes(24).toString('hex');
 // 不只监听本机时必须设置 token，否则局域网里任何人都能借你的浏览器登录态执行脚本
 if (!/^(127\.\d+\.\d+\.\d+|localhost|::1)$/.test(HOST) && !TOKEN) {
   process.stderr.write(`[page-recorder-bridge] 监听 ${HOST} 会暴露给本机以外的设备，必须同时设置 --token（或 PR_BRIDGE_TOKEN）\n`);
@@ -328,16 +339,26 @@ async function pickConn(method, params, browser) {
 
 // 调用扩展：本进程持有连接则直接发；否则（端口已被另一个桥接实例占用）通过 HTTP 转发给它
 // browser：多个浏览器资料都装了扩展时指定在哪个浏览器执行（instanceId 或资料名），不传则按录制自动找
+// waitMs：扩展还没连上时最多等多久，默认按 service worker 最多每 30 秒唤醒一次重连来等
+const EXT_WAIT_MS = 35000;
 let isPrimary = false;
 let markReady;
 const ready = new Promise((r) => { markReady = r; });
-async function extCall(method, params, timeoutMs, browser) {
+async function extCall(method, params, timeoutMs, browser, waitMs) {
   timeoutMs = timeoutMs || 60000;
   browser = browser == null ? '' : String(browser).trim();
+  waitMs = waitMs == null ? EXT_WAIT_MS : waitMs;
   await ready;
-  if (!isPrimary) return forwardToPrimary(method, params, timeoutMs, browser);
-  // 扩展的 service worker 最多每 30 秒唤醒一次重连
-  if (!(await waitExt(35000))) {
+  if (!isPrimary) {
+    try {
+      return await forwardToPrimary(method, params, timeoutMs, browser, waitMs);
+    } catch (e) {
+      // 后台桥接没了（启动它的程序都退出了、被关掉了）：重新起一个再发一次
+      if (e.code !== 'ECONNREFUSED' || !STDIO || NO_DAEMON || !(await ensureBridge())) throw e;
+      return forwardToPrimary(method, params, timeoutMs, browser, waitMs);
+    }
+  }
+  if (!(await waitExt(waitMs))) {
     throw new Error('浏览器扩展未连接。请确认：1) Chrome 已打开并安装了 Page Recorder 扩展；2) 扩展设置中开启了“连接本地桥接服务”，地址为 ws://127.0.0.1:' + PORT + '/ext');
   }
   if (method === 'list') return listAll(params, timeoutMs, browser);
@@ -345,10 +366,17 @@ async function extCall(method, params, timeoutMs, browser) {
 }
 // 监听 0.0.0.0 / :: 时转发也走本机回环地址（Host 头校验只认本机地址）
 const WILDCARD = /^(0\.0\.0\.0|::|\[::\])$/.test(HOST);
-function forwardToPrimary(method, params, timeoutMs, browser) {
+const BRIDGE_HOST = WILDCARD ? '127.0.0.1' : HOST;
+// 发给监听端口的那个实例时带的请求头：token（设置了的话）和本机口令（读它写的 STATE_FILE）
+function bridgeHeaders(extra) {
+  const h = Object.assign({}, extra, TOKEN ? { authorization: 'Bearer ' + TOKEN } : {});
+  try { h['x-page-recorder-secret'] = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).secret; } catch (e) { /* 旧版桥接没写这个文件 */ }
+  return h;
+}
+function forwardToPrimary(method, params, timeoutMs, browser, waitMs) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ method, params, timeout: timeoutMs, browser: browser || undefined });
-    const req = http.request({ host: WILDCARD ? '127.0.0.1' : HOST, port: PORT, path: '/api/ext', method: 'POST', headers: Object.assign({ 'content-type': 'application/json' }, TOKEN ? { authorization: 'Bearer ' + TOKEN } : {}) }, (res) => {
+    const body = JSON.stringify({ method, params, timeout: timeoutMs, browser: browser || undefined, wait: waitMs });
+    const req = http.request({ host: BRIDGE_HOST, port: PORT, path: '/api/ext', method: 'POST', headers: bridgeHeaders({ 'content-type': 'application/json' }) }, (res) => {
       let d = '';
       res.on('data', (c) => { d += c; });
       res.on('end', () => {
@@ -358,10 +386,165 @@ function forwardToPrimary(method, params, timeoutMs, browser) {
         } catch (e) { reject(new Error('桥接服务返回异常：' + d.slice(0, 200))); }
       });
     });
-    req.on('error', (e) => reject(new Error('无法连接桥接服务：' + e.message)));
-    req.setTimeout(timeoutMs + 5000, () => req.destroy(new Error('超时')));
+    req.on('error', (e) => reject(Object.assign(new Error('无法连接桥接服务：' + e.message), { code: e.code })));
+    req.setTimeout(waitMs + timeoutMs + 5000, () => req.destroy(new Error('超时')));
     req.end(body);
   });
+}
+
+// ======================= 后台桥接（--stdio 时） =======================
+// AI 客户端可能每条消息都重起一次 MCP 进程（WorkBuddy 就是这样）。桥接如果跟着 MCP 进程走，
+// 扩展每次都要重连（最多 30 秒）。所以 stdio 实例在后台起一个独立的桥接，大家都转发给它；
+// 每个 stdio 实例向它登记「启动自己的程序」，这些程序都退出后它自己关闭。
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 端口上有没有在应答的服务（不管是不是新版）：连不上返回 false
+function bridgeUp() {
+  return new Promise((resolve) => {
+    const req = http.get({ host: BRIDGE_HOST, port: PORT, path: '/api/status', headers: bridgeHeaders() }, (res) => { res.resume(); resolve(true); });
+    req.on('error', () => resolve(false));
+    req.setTimeout(1500, () => req.destroy());
+  });
+}
+function spawnDaemon() {
+  fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  const logFile = path.join(STATE_DIR, `bridge-${PORT}.log`);
+  try { if (fs.statSync(logFile).size > 1e6) fs.truncateSync(logFile, 0); } catch (e) { /* 还没有日志 */ }
+  const out = fs.openSync(logFile, 'a');
+  // token 走环境变量，不出现在进程列表里
+  const child = spawn(process.execPath, [__filename, '--daemon', '--port', String(PORT), '--host', HOST], {
+    detached: true, windowsHide: true, stdio: ['ignore', out, out],
+    env: Object.assign({}, process.env, TOKEN ? { PR_BRIDGE_TOKEN: TOKEN } : {}),
+  });
+  child.on('error', (e) => log('后台桥接启动失败：' + e.message));
+  child.unref();
+  fs.closeSync(out);
+  log(`已在后台启动桥接（日志 ${logFile}）`);
+}
+// 保证端口上有桥接：没有就在后台起一个，等它开始监听。几个调用同时来只起一次
+let ensuring = null;
+function ensureBridge() {
+  if (!ensuring) {
+    ensuring = (async () => {
+      if (await bridgeUp()) return true;
+      spawnDaemon();
+      for (const end = Date.now() + 3000; Date.now() < end;) {
+        await sleep(100);
+        if (await bridgeUp()) return true;
+      }
+      log('后台桥接 3 秒内没有启动');
+      return false;
+    })().finally(() => { ensuring = null; });
+  }
+  return ensuring;
+}
+
+// 进程表 pid -> { ppid, path }，用来找是哪个程序启动了这个 MCP 进程
+function processTable() {
+  return new Promise((resolve) => {
+    const table = new Map();
+    const parse = (out, re) => {
+      for (const line of String(out || '').split(/\r?\n/)) {
+        const m = line.match(re);
+        if (m) table.set(Number(m[1]), { ppid: Number(m[2]), path: m[3].trim() });
+      }
+      resolve(table);
+    };
+    if (process.platform === 'win32') {
+      const ps = 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 20000, maxBuffer: 32e6 }, (e, out) => parse(out, /^(\d+)\t(\d+)\t(.*)$/));
+    } else if (process.platform === 'linux') {
+      for (const name of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+        try {
+          const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
+          let exe = '';
+          try { exe = fs.readlinkSync(`/proc/${name}/exe`); } catch (e) { /* 别人的进程读不到 */ }
+          table.set(Number(name), { ppid: Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]), path: exe });
+        } catch (e) { /* 进程刚退出 */ }
+      }
+      resolve(table);
+    } else {
+      execFile('ps', ['-A', '-o', 'pid=,ppid=,comm='], { timeout: 10000, maxBuffer: 32e6 }, (e, out) => parse(out, /^\s*(\d+)\s+(\d+)\s+(.*)$/));
+    }
+  });
+}
+// 启动链上的中间层：npx、node、shell 等，不算「启动它的程序」
+const LAUNCHERS = new Set(['node', 'npm', 'npx', 'sh', 'bash', 'zsh', 'dash', 'fish', 'login', 'env', 'cmd', 'powershell', 'pwsh', 'conhost']);
+function exeName(p) {
+  return path.basename(String(p).replace(/\\/g, '/')).replace(/^-/, '').replace(/\.exe$/i, '').toLowerCase();
+}
+// 同一个程序：macOS 看所在的 .app（主进程和各种 Helper 都在里面），其他系统看可执行文件路径
+function appKey(p) {
+  const s = String(p).replace(/\\/g, '/').toLowerCase();
+  const i = s.indexOf('.app/');
+  return i >= 0 ? s.slice(0, i + 4) : s;
+}
+// 顺着父进程往上：跳过启动链上的中间层，找到第一个程序，再往上走到同一个程序的最外层进程。
+// WorkBuddy 每条消息起的进程和主进程是同一个 .app，最后落到 WorkBuddy 主进程；终端里跑的 claude 就是 claude 自己
+function ownerPid(table) {
+  const chain = [];
+  for (let pid = process.ppid; pid > 1 && table.has(pid) && !chain.includes(pid); pid = table.get(pid).ppid) chain.push(pid);
+  // npx 起的进程会把名字改成「npm exec …」
+  const launcher = (pid) => LAUNCHERS.has(exeName(table.get(pid).path)) || /^npm\b/i.test(table.get(pid).path);
+  const i = chain.findIndex((pid) => !launcher(pid));
+  if (i < 0) return process.ppid;
+  let owner = chain[i];
+  for (const pid of chain.slice(i + 1)) {
+    if (appKey(table.get(pid).path) !== appKey(table.get(owner).path)) break;
+    owner = pid;
+  }
+  return owner;
+}
+let ownerOnce = null;
+function registerOwner() {
+  if (!ownerOnce) ownerOnce = processTable().then(ownerPid, () => process.ppid).catch(() => process.ppid);
+  return ownerOnce.then((owner) => new Promise((resolve) => {
+    const req = http.request({ host: BRIDGE_HOST, port: PORT, path: '/api/owners', method: 'POST', headers: bridgeHeaders({ 'content-type': 'application/json' }) }, (res) => { res.resume(); resolve(); });
+    req.on('error', () => resolve());
+    req.end(JSON.stringify({ pids: [process.pid, owner] }));
+  }));
+}
+// 订阅后台桥接的事件：脚本库变化、扩展连上时通知 AI 客户端重新拉工具列表。
+// 断了就重连（桥接没了就重新起一个），重连上以后重新登记、通知一次
+function watchBridge(reconnected) {
+  let retried = false;
+  const retry = () => setTimeout(async () => { if (await ensureBridge()) watchBridge(true); else retry(); }, 2000);
+  const again = () => { // end 和 error 可能都来：只重连一次
+    if (retried) return;
+    retried = true;
+    retry();
+  };
+  const req = http.get({ host: BRIDGE_HOST, port: PORT, path: '/api/events', headers: bridgeHeaders() }, (res) => {
+    if (res.statusCode !== 200) { res.resume(); return; } // 旧版桥接没有事件：不订阅
+    registerOwner();
+    if (reconnected) toolsChanged();
+    res.setEncoding('utf8');
+    let buf = '';
+    res.on('data', (d) => {
+      buf += d;
+      for (let i; (i = buf.indexOf('\n\n')) >= 0; buf = buf.slice(i + 2)) if (buf.slice(0, i).includes('event: tools')) toolsChanged();
+    });
+    res.on('end', again);
+    res.on('error', again);
+  });
+  req.on('error', again);
+}
+
+// 后台桥接：记下启动它的程序，这些程序都退出后关闭
+const owners = new Set();
+let everOwned = false;
+function alive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+if (DAEMON) {
+  const started = Date.now();
+  setInterval(() => {
+    for (const pid of owners) if (!alive(pid)) owners.delete(pid);
+    // 刚起来时给 stdio 实例 30 秒登记
+    if (!owners.size && (everOwned || Date.now() - started > 30000)) {
+      log('启动桥接的程序都已退出，桥接关闭');
+      process.exit(0);
+    }
+  }, 2000);
 }
 
 // ======================= MCP 工具 =======================
@@ -401,8 +584,8 @@ const STATIC_TOOLS = [
   },
   {
     name: 'get_recording',
-    description: '获取某个录制脚本的详细信息：每一步操作、输入参数说明（paramHelp / paramInfo：类型、格式、全部可选项、是否必填、关联的接口字段）、每个接口的 URL / 参数 / 参数说明 / 响应结构 / 响应示例 / 用途说明。分析接口用途前先调用它。',
-    inputSchema: { type: 'object', properties: { recording: { type: 'string', description: '脚本 id 或名称' }, browser: BROWSER_PARAM }, required: ['recording'] },
+    description: '获取某个录制脚本的详细信息：每一步操作、输入参数说明（paramHelp / paramInfo：类型、格式、全部可选项、是否必填、关联的接口字段）、每个接口的 URL / 参数 / 参数说明 / 响应结构 / 响应示例 / 用途说明。分析接口用途前先调用它。内容太多时先返回概要（步骤、参数、接口目录）和 result_id，某个接口的详情用 read_result 取 path="apis[序号]"，也可以直接带 result_path。',
+    inputSchema: { type: 'object', properties: { recording: { type: 'string', description: '脚本 id 或名称' }, browser: BROWSER_PARAM, ...RESULT_PROPS }, required: ['recording'] },
   },
   {
     name: 'run_recording',
@@ -442,7 +625,7 @@ const STATIC_TOOLS = [
   },
   {
     name: 'read_result',
-    description: '从上一次 run_recording / call_api / 接口工具的结果里取一部分，不会再调接口。结果太大时那些工具只返回压缩过的预览和 result_id，用这个工具按路径取具体数据：path 指到某个对象或数组（预览里省略的地方都写了路径），数组用 offset / limit 分页，fields 只留每一项里要的字段。例：path="responses[0].data.data.result.data.table.dataSource"，fields=["itemId","itemDesc.desc[0].text","managerPrice.currentPrice"]。',
+    description: '从上一次 run_recording / call_api / 接口工具 / get_recording 的结果里取一部分，不会再调接口。结果太大时那些工具只返回压缩过的预览和 result_id，用这个工具按路径取具体数据：path 指到某个对象或数组（预览里省略的地方都写了路径），数组用 offset / limit 分页，fields 只留每一项里要的字段。例：path="responses[0].data.data.result.data.table.dataSource"，fields=["itemId","itemDesc.desc[0].text","managerPrice.currentPrice"]。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -459,8 +642,19 @@ const STATIC_TOOLS = [
   },
   {
     name: 'get_script',
-    description: '获取录制脚本的完整 JavaScript 源码（可直接粘贴到浏览器控制台或用 Playwright page.evaluate 执行）。',
-    inputSchema: { type: 'object', properties: { recording: { type: 'string', description: '脚本 id 或名称' }, browser: BROWSER_PARAM }, required: ['recording'] },
+    description: '获取录制脚本的 JavaScript 源码（可直接粘贴到浏览器控制台或用 Playwright page.evaluate 执行）。源码长时按行分段返回，开头写着总行数和下一段从哪行开始；要整份源码用 to_file=true 写成文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recording: { type: 'string', description: '脚本 id 或名称' },
+        start_line: { type: 'number', description: '从第几行开始读，默认 1' },
+        line_count: { type: 'number', description: '最多读几行（还受 max_chars 限制）' },
+        max_chars: { type: 'number', description: `这次最多返回多少字符，默认 ${RESULT_CHARS}` },
+        to_file: { type: 'boolean', description: '把整份源码写到本机文件（~/.page-recorder/exports/），只返回文件路径' },
+        browser: BROWSER_PARAM,
+      },
+      required: ['recording'],
+    },
   },
   {
     name: 'save_api_docs',
@@ -477,19 +671,19 @@ const STATIC_TOOLS = [
   },
   {
     name: 'export_package',
-    description: '把录制脚本导出成录制包（JSON，已脱敏：不含密码、登录令牌等）。可以存成 <名称>.prpkg.json 文件，用来换电脑、发给同事或备份；用 import_package 或扩展弹窗「脚本库 → 导入录制包」导回。',
+    description: '把录制脚本导出成录制包（JSON，已脱敏：不含密码、登录令牌等），写成本机文件（~/.page-recorder/exports/<名称>-<时间>.prpkg.json），返回文件路径和概况；包不大时也直接带上内容（通过 HTTP /mcp 调用时直接返回内容，不写文件）。用来换电脑、发给同事或备份；用 import_package（传 file）或扩展弹窗「脚本库 → 导入录制包」导回。',
     inputSchema: { type: 'object', properties: { recording: { type: 'string', description: '脚本 id 或名称' }, browser: BROWSER_PARAM }, required: ['recording'] },
   },
   {
     name: 'import_package',
-    description: '把录制包（export_package 返回的 JSON，或扩展弹窗导出的 .prpkg.json 文件内容）导入浏览器扩展的脚本库，成为一条新脚本，返回新脚本的 id 和名称。通过 HTTP（/mcp）调用时桥接服务必须设置了 token。',
+    description: '把录制包（export_package 导出的文件，或扩展弹窗导出的 .prpkg.json）导入浏览器扩展的脚本库，成为一条新脚本，返回新脚本的 id 和名称。pkg（JSON 内容）和 file（文件路径）给一个，包大时用 file。通过 HTTP（/mcp）调用时桥接服务必须设置了 token。',
     inputSchema: {
       type: 'object',
       properties: {
         pkg: { type: 'object', description: '录制包 JSON：{ "format": "page-recorder-package", "version": 1, "name": …, "item": {…} }', additionalProperties: true },
+        file: { type: 'string', description: '录制包文件的路径（.json 结尾，如 export_package 返回的 file）' },
         browser: Object.assign({}, BROWSER_PARAM, { description: '可选。多个浏览器资料都装了扩展时，指定导入到哪个浏览器：填 instanceId 或资料名。只连着一个浏览器时不用传' }),
       },
-      required: ['pkg'],
     },
   },
 ];
@@ -577,10 +771,29 @@ function withResultProps(schema) {
   s.properties = Object.assign({}, RESULT_PROPS, s.properties || {});
   return s;
 }
-async function dynamicTools() {
+// tools/list 不能久等：WorkBuddy 等客户端拉工具列表约 10 秒就超时，超时后一个工具都不给 AI。
+// 所以 quick（tools/list）时连等后台桥接、等扩展一共最多等 6 秒，没等到先只给固定工具：
+// 扩展连上后会发 tools/list_changed；列表晚到的话先存着再发一次，客户端重新拉时直接用
+const LIST_DEADLINE_MS = 6000;
+let lateList = null; // { list, at }
+async function dynamicTools(quick) {
   dynamicMap = new Map();
   let list = [];
-  try { list = await extCall('list', {}, 15000); } catch (e) { return []; }
+  if (quick && lateList && Date.now() - lateList.at < 60000) {
+    list = lateList.list;
+    lateList = null;
+  } else if (quick) {
+    const listing = extCall('list', {}, 15000, '', 2000);
+    const late = {};
+    const got = await Promise.race([listing.catch(() => []), sleep(LIST_DEADLINE_MS).then(() => late)]);
+    if (got === late) {
+      listing.then((l) => { lateList = { list: l, at: Date.now() }; toolsChanged(); }, () => {});
+      return [];
+    }
+    list = got;
+  } else {
+    try { list = await extCall('list', {}, 15000); } catch (e) { return []; }
+  }
   const tools = [];
   const used = new Set(STATIC_TOOLS.map((t) => t.name));
   // 多个浏览器同时连着：工具说明里注明是哪个浏览器的脚本，调用时直接发给那个浏览器
@@ -632,6 +845,17 @@ function parsePkg(pkg) {
   }
   if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) throw new Error('pkg 必须是录制包 JSON 对象（export_package 或弹窗「导出录制包」得到的内容）');
   return pkg;
+}
+// 从文件读录制包：只读 .json 文件，报错时不带出文件内容
+function readPkgFile(file) {
+  const f = path.resolve(String(file).replace(/^~(?=$|[\\/])/, os.homedir()));
+  if (!/\.json$/i.test(f)) throw new Error('录制包文件要以 .json 结尾（export_package 导出的是 .prpkg.json）');
+  let st;
+  try { st = fs.statSync(f); } catch (e) { throw new Error('读不到录制包文件：' + f); }
+  if (!st.isFile() || st.size > 50 * 1024 * 1024) throw new Error('不是录制包文件，或文件超过 50MB：' + f);
+  let pkg;
+  try { pkg = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { throw new Error('录制包文件不是合法的 JSON：' + f); }
+  return parsePkg(pkg);
 }
 
 // ======================= 给 AI 的结果 =======================
@@ -936,6 +1160,59 @@ const resultNames = (own) => RESULT_ARGS.filter((k) => !(own || []).includes(k))
 const resultOpts = (args, own) => Object.fromEntries(resultNames(own).filter((k) => args[k] != null).map((k) => [k, args[k]]));
 const withoutResultArgs = (args, own) => { const drop = resultNames(own); return Object.fromEntries(Object.entries(args).filter(([k]) => !drop.includes(k))); };
 const aiResult = (result, args, own) => text(aiText(result, resultOpts(args || {}, own)));
+
+// get_recording：接口多、响应示例长时整份有十几万字符，客户端放不下。先给概要（步骤、参数、接口目录），
+// 完整内容留在桥接里，用 read_result 按 apis[i] 取某个接口；带了 result_path 等参数就直接按参数取
+function recordingDetail(full, args) {
+  const opts = resultOpts(args);
+  if (Object.keys(opts).length || jsonLen(full) <= RESULT_CHARS) return aiResult(full, args);
+  const id = saveResult(full, jsonBytes(full));
+  if (!id) return aiResult(full, args); // 留不下：按结构压缩的预览
+  const o = { result_id: id };
+  const SHOWN = ['id', 'name', 'description', 'startUrl', 'steps', 'params', 'paramHelp'];
+  for (const k of SHOWN) if (full[k] !== undefined) o[k] = full[k];
+  o.apis = (full.apis || []).map((a, i) => ({ path: `apis[${i}]`, fn: a.fn, name: a.name, title: a.title || undefined, ignore: a.ignore || undefined, count: a.count }));
+  o.tools = (full.tools || []).map((t) => t.name);
+  const rest = Object.keys(full).filter((k) => !SHOWN.includes(k) && k !== 'apis').map((k) => `"${k}"`);
+  o.note = `完整内容共 ${sizeText(jsonLen(full))}，这里只给概要。某个接口的 URL、参数、参数说明、响应结构、响应示例用 read_result 取：result_id="${id}"，path 写上面 apis 里的 path（如 "apis[0]"），只看几项加 fields（如 ["url","params","responseSchema"]）。${rest.length ? `其他部分的 path：${rest.join('、')}（paramInfo 是参数的完整说明，tools 是各接口工具的参数定义，analysisPrompt 是分析接口用的提示词）。` : ''}result_id 过期了就重新调用 get_recording 并直接带 result_path`;
+  const t = JSON.stringify(o, null, 2);
+  return t.length <= RESULT_CHARS ? text(t) : text(aiText(full, {}, { id, entry: savedResult(id) }));
+}
+// get_script：按行分段。开头一行注释写总行数和下一段从哪行开始
+function scriptPart(script, args) {
+  const budget = Math.max(2000, Math.min(400000, Math.floor(Number(args.max_chars)) || RESULT_CHARS));
+  if (args.start_line == null && args.line_count == null && script.length <= budget) return script;
+  const lines = script.split('\n');
+  const start = Math.min(lines.length, Math.max(1, Math.floor(Number(args.start_line)) || 1));
+  const want = Math.floor(Number(args.line_count)) > 0 ? Math.floor(Number(args.line_count)) : Infinity;
+  const out = [];
+  let used = 0;
+  for (let i = start - 1; i < lines.length && out.length < want; i++) {
+    let line = lines[i];
+    if (used + line.length + 1 > budget - 300) {
+      if (out.length) break;
+      line = clip(line, budget - 400); // 一行就超长：截断着给
+    }
+    out.push(line);
+    used += line.length + 1;
+  }
+  const end = start + out.length - 1;
+  const next = end < lines.length ? `接着读用 start_line=${end + 1}；` : '已经到结尾；';
+  return `// 源码共 ${lines.length} 行、${script.length} 字符，这里是第 ${start}-${end} 行。${next}要整份源码用 to_file=true 写成文件\n${out.join('\n')}`;
+}
+// 大块内容写成本机文件给 AI：放在 STATE_DIR/exports，文件名带时间不会覆盖
+function writeExport(name, ext, content) {
+  const dir = path.join(STATE_DIR, 'exports');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const base = path.join(dir, `${String(name || 'recording').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60)}-${new Date().toISOString().replace(/\D/g, '').slice(0, 17)}`);
+  for (let i = 1; ; i++) {
+    const file = base + (i > 1 ? '-' + i : '') + ext;
+    try {
+      fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
+      return file;
+    } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
+}
 // ctx.via：'stdio' = 本进程的 MCP stdio；'http' = /mcp 接口
 async function callTool(name, args, ctx) {
   args = args || {};
@@ -943,10 +1220,14 @@ async function callTool(name, args, ctx) {
   const browser = args.browser;
   switch (name) {
     case 'list_recordings': return text((await extCall('list', {}, 60000, browser)).map((r) => forAi(r, false)));
-    case 'get_recording': return text(forAi(await extCall('get', { recording: args.recording }, 60000, browser), true));
+    case 'get_recording': return recordingDetail(forAi(await extCall('get', { recording: args.recording }, 60000, browser), true), args);
     case 'get_script': {
       const r = await extCall('script', { recording: args.recording }, 60000, browser);
-      return text(r.script);
+      if (args.to_file) {
+        const lines = String(r.script || '').split('\n').length;
+        return text({ file: writeExport(r.name || args.recording, '.js', r.script || ''), lines, chars: String(r.script || '').length });
+      }
+      return text(scriptPart(String(r.script || ''), args));
     }
     case 'run_recording': {
       const timeout = Number(args.timeout_ms) || 180000;
@@ -955,7 +1236,7 @@ async function callTool(name, args, ctx) {
     case 'call_api': return aiResult(await extCall('call', { recording: args.recording, api: args.api, args: args.args || {} }, 90000, browser), args);
     case 'read_result': {
       const entry = savedResult(args.result_id);
-      if (!entry) throw new Error(`result_id ${args.result_id || '（没给）'} 已经不在了：桥接只留最近 ${RESULT_KEEP} 次、30 分钟内的结果，重启后清空。请重新调用接口`);
+      if (!entry) throw new Error(`result_id ${args.result_id || '（没给）'} 已经不在了：只留最近 ${RESULT_KEEP} 次、30 分钟内的结果，MCP 进程重启后清空（有的 AI 工具每条消息都重启一次，上一条消息的结果读不到）。请重新调用并直接带 result_path / result_fields 取要的部分；get_recording 也一样，如 result_path="apis[3]"`);
       return text(aiText(entry.raw, { result_path: args.path == null ? '' : args.path, result_fields: args.fields, result_offset: args.offset, result_limit: args.limit, result_max_chars: args.max_chars, raw: !!args.raw }, { id: String(args.result_id), entry }));
     }
     case 'save_api_docs': {
@@ -965,11 +1246,27 @@ async function callTool(name, args, ctx) {
     }
     case 'export_package': {
       const r = await extCall('exportPackage', { recording: args.recording }, 60000, browser);
-      return text(r && r.pkg ? r.pkg : r);
+      const pkg = r && r.pkg ? r.pkg : r;
+      // HTTP 调用的客户端可能在别的机器上，读不到这台机器的文件：照旧直接给内容
+      if (ctx.via === 'http') return text(pkg);
+      const body = JSON.stringify(pkg, null, 2);
+      const events = (pkg && pkg.item && pkg.item.events) || [];
+      const out = {
+        file: writeExport((pkg && pkg.name) || args.recording, '.prpkg.json', body),
+        name: pkg && pkg.name,
+        chars: body.length,
+        steps: events.filter((e) => e && e.kind === 'step').length,
+        requests: events.filter((e) => e && e.kind === 'request').length,
+      };
+      // 包不大就顺便带上内容，省得再读文件
+      if (body.length + 500 <= RESULT_CHARS) out.pkg = pkg;
+      else out.note = `录制包 ${body.length} 字符，太大不直接给：内容在 file 里。导回用 import_package 传 file`;
+      return text(out);
     }
     case 'import_package': {
       if (ctx.via === 'http' && !TOKEN) throw new Error(IMPORT_NEEDS_TOKEN);
-      return text(await extCall('importPackage', { pkg: parsePkg(args.pkg) }, 60000, browser));
+      if (args.pkg == null && !args.file) throw new Error('pkg（录制包 JSON）和 file（录制包文件路径）给一个');
+      return text(await extCall('importPackage', { pkg: args.pkg != null ? parsePkg(args.pkg) : readPkgFile(args.file) }, 60000, browser));
     }
     default: {
       if (!dynamicMap.has(name)) await dynamicTools();
@@ -997,7 +1294,7 @@ async function handleRpc(msg, ctx) {
       case 'notifications/cancelled':
         return null;
       case 'ping': return ok({});
-      case 'tools/list': return ok({ tools: STATIC_TOOLS.concat(await dynamicTools()) });
+      case 'tools/list': return ok({ tools: STATIC_TOOLS.concat(await dynamicTools(true)) });
       case 'tools/call': {
         try {
           return ok(await callTool(params.name, params.arguments, ctx));
@@ -1015,10 +1312,10 @@ async function handleRpc(msg, ctx) {
 }
 
 // ======================= HTTP 服务 =======================
-function readBody(req) {
+function readBody(req, max) {
   return new Promise((resolve, reject) => {
     let d = '';
-    req.on('data', (c) => { d += c; if (d.length > 20e6) req.destroy(); });
+    req.on('data', (c) => { d += c; if (d.length > (max || 20e6)) req.destroy(); });
     req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch (e) { reject(new Error('请求体不是合法 JSON')); } });
     req.on('error', reject);
   });
@@ -1051,6 +1348,12 @@ function hostAllowed(req) {
   if (!WILDCARD) return name === HOST.toLowerCase().replace(/^\[|\]$/g, '');
   return Object.values(os.networkInterfaces()).some((list) => (list || []).some((x) => String(x.address).toLowerCase() === name));
 }
+// 本机 stdio 实例转发来的请求：带着本实例写进 STATE_FILE 的口令
+function fromStdio(req) {
+  const got = Buffer.from(String(req.headers['x-page-recorder-secret'] || ''));
+  const want = Buffer.from(SECRET);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
 // 请求里的 browser 参数：查询串 ?browser= 或请求体里的 browser
 const browserOf = (u, b) => u.searchParams.get('browser') || (b && typeof b.browser === 'string' ? b.browser : '') || '';
 
@@ -1075,7 +1378,8 @@ async function route(req, res) {
     }
     if (p === '/' || p === '/api' || p === '/api/status') {
       return sendJson(res, 200, {
-        ok: true, name: 'page-recorder-bridge', version: VERSION, extensionConnected: instances.size > 0,
+        ok: true, name: 'page-recorder-bridge', version: VERSION, pid: process.pid, extensionConnected: instances.size > 0,
+        ...(DAEMON ? { background: true, owners: [...owners] } : {}),
         browsers: [...instances.values()].map((c) => Object.assign(browserInfo(c), { version: c.version })),
         endpoints: {
           'GET  /api/recordings': '脚本列表（含每个接口拆出的工具；多个浏览器时汇总，每条带 browser）',
@@ -1091,11 +1395,30 @@ async function route(req, res) {
         browserParam: '以上接口都可以带 ?browser=<instanceId 或资料名>（POST 也可以放在 body.browser）：多个浏览器资料都装了扩展时用来指定在哪个浏览器执行',
       });
     }
-    if (p === '/api/ext' && req.method === 'POST') {
-      // 另一个桥接进程（stdio）转发来的调用
+    if (p === '/api/events' && req.method === 'GET') {
+      // stdio 实例订阅：脚本库变化、扩展连上或断开时推一条，让它通知 AI 客户端重新拉工具列表
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+      res.write(': ok\n\n');
+      const push = () => res.write('event: tools\ndata: {}\n\n');
+      libraryListeners.add(push);
+      res.on('close', () => libraryListeners.delete(push));
+      return;
+    }
+    if (p === '/api/owners' && req.method === 'POST') {
+      // stdio 实例登记启动它的程序（后台桥接在这些程序都退出后关闭）
+      if (!fromStdio(req)) return sendJson(res, 403, { ok: false, error: 'forbidden' });
       const b = await readBody(req);
-      if (b.method === 'importPackage' && !TOKEN) return sendJson(res, 403, { ok: false, error: IMPORT_NEEDS_TOKEN });
-      return sendJson(res, 200, { ok: true, data: await extCall(b.method, b.params || {}, b.timeout, b.browser) });
+      for (const pid of Array.isArray(b.pids) ? b.pids : []) {
+        if (Number.isInteger(pid) && pid > 1 && !owners.has(pid)) { owners.add(pid); everOwned = true; }
+      }
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/api/ext' && req.method === 'POST') {
+      // 另一个桥接进程（stdio）转发来的调用。导入的录制包最大 50MB（见 readPkgFile），转成 JSON 还会变长一些
+      const b = await readBody(req, 64e6);
+      if (b.method === 'importPackage' && !TOKEN && !fromStdio(req)) return sendJson(res, 403, { ok: false, error: IMPORT_NEEDS_TOKEN });
+      const wait = Number.isFinite(b.wait) ? Math.min(Math.max(0, b.wait), EXT_WAIT_MS) : undefined;
+      return sendJson(res, 200, { ok: true, data: await extCall(b.method, b.params || {}, b.timeout, b.browser, wait) });
     }
     if (p === '/api/recordings' && req.method === 'GET') return sendJson(res, 200, { ok: true, data: await extCall('list', {}, 60000, browserOf(u)) });
     if (p === '/api/packages' && req.method === 'POST') {
@@ -1170,14 +1493,35 @@ server.on('error', (e) => {
     markReady();
     log(`端口 ${PORT} 已被另一个桥接实例占用，本实例将转发给它`);
     if (!STDIO) process.exit(1);
+    // 等不及的后台桥接后来起来了：照样订阅、登记，不然它没人登记会自己关掉
+    if (!NO_DAEMON) watchBridge(false);
   } else log('服务错误：' + e.message);
 });
-server.listen(PORT, HOST, () => {
-  isPrimary = true;
-  markReady();
-  log(`已启动：http://${HOST}:${PORT}  （MCP: /mcp，REST: /api，扩展: ws://${HOST}:${PORT}/ext）${TOKEN ? '，已启用 token' : ''}`);
-  log('等待浏览器扩展连接…（扩展最多 30 秒内自动连上）');
+function listen() {
+  server.listen(PORT, HOST, () => {
+    isPrimary = true;
+    markReady();
+    try {
+      fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, version: VERSION, secret: SECRET }), { mode: 0o600 });
+    } catch (e) { log('写入 ' + STATE_FILE + ' 失败：' + e.message); }
+    log(`已启动：http://${HOST}:${PORT}  （MCP: /mcp，REST: /api，扩展: ws://${HOST}:${PORT}/ext）${TOKEN ? '，已启用 token' : ''}${DAEMON ? '，后台运行' : ''}`);
+    log('等待浏览器扩展连接…（扩展最多 30 秒内自动连上）');
+  });
+}
+process.on('exit', () => {
+  try { if (JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).pid === process.pid) fs.unlinkSync(STATE_FILE); } catch (e) { /* 没写过或已被新实例覆盖 */ }
 });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
+if (STDIO && !NO_DAEMON) {
+  // 复用或在后台起一个桥接；起不来就退回自己监听端口
+  ensureBridge().then((up) => {
+    if (!up) return listen();
+    markReady();
+    log('转发给后台桥接');
+    watchBridge(false);
+  });
+} else listen();
 
 // ======================= MCP stdio =======================
 if (STDIO) {

@@ -153,12 +153,14 @@ npx -y page-recorder-mcp            # 或者从源码：node bridge/server.js
 ### 接入 Claude Code（MCP）
 
 ```bash
-# stdio 方式（推荐；如果桥接服务已经在运行，这个实例会自动转发给它）
+# stdio 方式（推荐，不用先手动启动桥接服务）
 claude mcp add page-recorder -- npx -y page-recorder-mcp --stdio
 
 # 或者 HTTP 方式（需要先运行 npx -y page-recorder-mcp）
 claude mcp add --transport http page-recorder http://127.0.0.1:17321/mcp
 ```
+
+stdio 方式第一次启动时会在后台起一个桥接服务，之后各个 AI 工具、各次会话都复用它，扩展一直连着，不用每次等它重连。启动过它的程序（WorkBuddy、Cursor、Claude Code 等）都退出后，后台桥接自动关闭；日志在 `~/.page-recorder/`。打开 AI 工具后第一次用时扩展可能还没连上，先只有通用工具，扩展连上后（最多 30 秒）各脚本的工具会自动出现。不想要后台进程的话加 `--no-daemon`。
 
 ### 接入 Accio
 
@@ -175,7 +177,7 @@ claude mcp add --transport http page-recorder http://127.0.0.1:17321/mcp
 }
 ```
 
-新录了脚本以后，在 Accio 里把 page-recorder 断开再连上，工具列表才会更新（通用的 `run_recording`、`call_api` 不受影响）。其他支持 MCP 的工具（Claude Desktop、Cursor 等）用同样的命令或 URL 添加。不支持 MCP 的工具，可以直接调下面的 REST API。
+新录了脚本以后，在 Accio 里把 page-recorder 断开再连上，工具列表才会更新（通用的 `run_recording`、`call_api` 不受影响）。其他支持 MCP 的工具（WorkBuddy、Claude Desktop、Cursor 等）用同样的命令或 URL 添加。不支持 MCP 的工具，可以直接调下面的 REST API。
 
 **只给 AI 用你需要的接口**：录制时会抓到很多接口，在「接口参数」页取消勾选不用的「AI 可调用」，MCP 里就只出现勾选的那几个工具。AI 调这些工具时，直接在开着的页面里发请求、拿结果，不操作页面。
 
@@ -184,13 +186,13 @@ claude mcp add --transport http page-recorder http://127.0.0.1:17321/mcp
 | 工具 | 作用 |
 |---|---|
 | `list_recordings` | 列出脚本库：名称、步骤、输入参数、每个接口拆出的工具 |
-| `get_recording` | 脚本详情：每个接口的 URL、参数、参数说明、响应结构和示例 |
+| `get_recording` | 脚本详情：每个接口的 URL、参数、参数说明、响应结构和示例。内容多时先给概要（步骤、参数、接口目录）和 `result_id`，某个接口用 `read_result` 取 `path: "apis[序号]"` |
 | `run_recording` | 运行脚本，可改 `params` 和 `api_params`，返回数据。`mode`：`api` 不操作页面、直接请求关联了输入参数的接口；`ui` 回放页面操作；默认 `auto`（能直接请求就直接请求） |
 | `call_api` | 不回放页面操作，直接调用某个接口 |
-| `read_result` | 从上一次运行 / 调用的结果里按路径、字段、分页取一部分（不会再调接口） |
-| `get_script` | 获取导出的 JS 源码 |
+| `read_result` | 从上一次运行 / 调用 / `get_recording` 的结果里按路径、字段、分页取一部分（不会再调接口） |
+| `get_script` | 获取导出的 JS 源码：长的按行分段给（`start_line` / `line_count`），`to_file: true` 写成文件 |
 | `save_api_docs` | 把 AI 对接口的分析写回：命名、函数名、用途、参数说明 |
-| `export_package` / `import_package` | 导出 / 导入录制包（HTTP 方式导入要求服务设了 `--token`） |
+| `export_package` / `import_package` | 导出 / 导入录制包：导出写成文件（`~/.page-recorder/exports/`）、返回路径（HTTP 方式照旧直接返回内容），导入可以传 `file`（HTTP 方式导入要求服务设了 `--token`） |
 | `<脚本>__run` | 每个脚本一个，用于整段回放 |
 | `<脚本>__<函数名>` | **每个接口一个独立工具**，例如 `product_search__searchProducts` |
 
