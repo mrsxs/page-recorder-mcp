@@ -44,7 +44,7 @@ function frame(text) { // 客户端帧必须带掩码
   return Buffer.concat([head, mask, Buffer.from(payload.map((b, i) => b ^ mask[i % 4]))]);
 }
 // 假扩展：list 返回脚本库；call 把收到的参数原样回来
-function fakeExt(port, lib) {
+function fakeExt(port, lib, instanceId = 'test1') {
   const s = net.connect(port, '127.0.0.1');
   let buf = Buffer.alloc(0);
   let up = false;
@@ -56,7 +56,7 @@ function fakeExt(port, lib) {
       if (i < 0) return;
       buf = buf.slice(i + 4);
       up = true;
-      s.write(frame(JSON.stringify({ type: 'hello', version: 'test', instanceId: 'test1', profile: 'main' })));
+      s.write(frame(JSON.stringify({ type: 'hello', version: 'test', instanceId, profile: 'main' })));
     }
     for (;;) { // 服务端帧不带掩码
       if (buf.length < 2) return;
@@ -73,10 +73,11 @@ function fakeExt(port, lib) {
   s.on('error', () => {});
   return s;
 }
-async function withBridge(lib, args, fn) {
+async function withBridge(lib, args, fn, lib2) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const p = spawn(process.execPath, [server, '--port', String(port), ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
   let ext = null;
+  let ext2 = null;
   try {
     await new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('启动超时')), 10000);
@@ -84,6 +85,7 @@ async function withBridge(lib, args, fn) {
       p.on('exit', (code) => { clearTimeout(t); reject(new Error('进程退出 ' + code)); });
     });
     ext = fakeExt(port, lib);
+    if (lib2) ext2 = fakeExt(port, lib2, 'test2'); // 第二个浏览器，资料名和第一个一样
     let id = 0;
     const rpc = (method, params) => new Promise((resolve, reject) => {
       const r = http.request({ host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
@@ -95,10 +97,12 @@ async function withBridge(lib, args, fn) {
       r.end(JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }));
     });
     for (let i = 0; i < 60 && !(await (await fetch(`http://127.0.0.1:${port}/api/status`)).json()).extensionConnected; i++) await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; ext2 && i < 60 && JSON.parse((await rpc('tools/call', { name: 'search_apis', arguments: { limit: 1 } })).content[0].text).total < lib.length * 5 + lib2.length * 5; i++) await new Promise((r) => setTimeout(r, 50));
     const tool = async (name, a) => { const r = await rpc('tools/call', { name, arguments: a || {} }); return { text: r.content[0].text, err: !!r.isError }; };
     await fn({ rpc, tool });
   } finally {
     if (ext) ext.destroy();
+    if (ext2) ext2.destroy();
     p.kill();
   }
 }
@@ -173,6 +177,8 @@ test('脚本库大：list_recordings 分页给概要，不超长；query 筛选'
     // 筛到整份放得下就给整份
     r = JSON.parse((await tool('list_recordings', { query: '退款 6' })).text);
     assert.ok(Array.isArray(r) && r.length && r.every((x) => /退款/.test(x.name) && x.tools.length === 5));
+    // 关键词都要有：只有一部分匹配的不算
+    assert.deepEqual(JSON.parse((await tool('list_recordings', { query: '退款 nothinglikethis' })).text), []);
   });
 });
 
@@ -185,4 +191,33 @@ test('--max-tools：调大后大脚本库照旧逐个列，0 = 总是按需', as
     const tools = (await rpc('tools/list', {})).tools;
     assert.deepEqual(tools, fixed(tools));
   });
+});
+
+test('一个接口的参数定义就超长：search_apis 仍是完整的 JSON，只给参数名', async () => {
+  const lib = library(1);
+  for (let i = 0; i < 3000; i++) lib[0].tools[0].inputSchema.properties[`filter.field${i}`] = { type: 'string', description: `筛选字段 ${i}；` + '说明'.repeat(4) };
+  await withBridge(lib, [], async ({ tool }) => {
+    const t = (await tool('search_apis', { query: 'listOrder' })).text;
+    assert.ok(t.length <= 24000, '长度 ' + t.length);
+    const r = JSON.parse(t);
+    assert.deepEqual([r.total, r.count, r.apis[0].fn], [1, 1, 'listOrder']);
+    assert.equal(r.apis[0].inputSchema, undefined);
+    assert.equal(r.apis[0].params[0], 'keyword');
+    assert.match(r.apis[0].params[r.apis[0].params.length - 1], /还有 \d+ 个/);
+    assert.match(r.note, /get_recording/);
+  });
+});
+
+test('两个浏览器资料名一样：search_apis 给的 browser 能原样填回 call_api', async () => {
+  const other = library(1).map((x) => Object.assign({}, x, { id: 'other0', name: '另一个店的订单' }));
+  await withBridge(library(1), [], async ({ tool }) => {
+    const r = JSON.parse((await tool('search_apis', { query: 'listOrder' })).text);
+    assert.equal(r.total, 2);
+    assert.deepEqual(r.apis.map((a) => a.browser).sort(), ['test1', 'test2']);
+    assert.ok(r.apis.every((a) => a.browser_name === 'main'));
+    const a = r.apis.find((x) => x.recording_id === 'other0');
+    const got = await tool('call_api', { recording: a.recording_id, api: a.api, browser: a.browser });
+    assert.ok(!got.err, got.text);
+    assert.equal(JSON.parse(got.text).got.recording, 'other0');
+  }, other);
 });

@@ -899,14 +899,30 @@ const pageArgs = (args, dflt) => ({
   offset: Math.max(0, Math.floor(Number(args.offset)) || 0),
   limit: Math.floor(Number(args.limit)) > 0 ? Math.floor(Number(args.limit)) : dflt,
 });
-// 从 offset 起尽量多放，放到 limit 条或长度上限为止（至少放一条）
+// 从 offset 起尽量多放，放到 limit 条或长度上限为止（至少放一条）。一条就超长时 wrap 的第三个参数是还能用多少字符，由它把这一条写短
 function fitPage(hits, offset, limit, wrap) {
   const page = hits.slice(offset, offset + limit);
   for (let n = page.length; n >= 1; n = n > 8 ? Math.floor(n * 0.75) : n - 1) {
     const t = JSON.stringify(wrap(page.slice(0, n), n), null, 2);
-    if (t.length <= RESULT_CHARS || n === 1) return t.length <= RESULT_CHARS ? t : clip(t, RESULT_CHARS - 40);
+    if (t.length <= RESULT_CHARS) return t;
   }
-  return JSON.stringify(wrap([], 0), null, 2);
+  if (!page.length) return JSON.stringify(wrap([], 0), null, 2);
+  for (let room = Math.floor(RESULT_CHARS / 2); ; room = Math.floor(room / 2)) {
+    const t = JSON.stringify(wrap(page.slice(0, 1), 1, room), null, 2);
+    if (t.length <= RESULT_CHARS || room < 1) return t;
+  }
+}
+// 名字列表太长时只留开头的，末尾写明还有多少
+function names(list, room) {
+  if (room == null) return list;
+  const out = [];
+  let used = 0;
+  for (const x of list) {
+    used += String(x).length + 8;
+    if (used > room) { out.push(`…还有 ${list.length - out.length} 个`); break; }
+    out.push(x);
+  }
+  return out;
 }
 function sameRecording(r, ref) {
   const x = String(ref).trim();
@@ -937,19 +953,21 @@ function searchApis(list, args) {
   const { offset, limit } = pageArgs(args, 20);
   const shown = Math.min(limit, Math.max(0, hits.length - offset));
   const detail = args.detail != null ? !!args.detail : shown > 0 && shown <= 3;
-  return fitPage(hits, offset, limit, (page, n) => {
+  return fitPage(hits, offset, limit, (page, n, room) => {
     const out = { total: hits.length, offset, count: n };
+    const full = detail && room == null; // 一个接口的参数定义就超长：只给参数名
     out.apis = page.map((e) => Object.assign(
-      { recording: e.r.name, recording_id: e.r.id, api: e.t.api, fn: e.t.name, description: clip(e.t.description, detail ? 600 : 200) },
-      multi && e.r.browser ? { browser: e.r.browser.profile || e.r.browser.instanceId } : {},
-      detail ? { inputSchema: e.schema } : { params: e.params },
+      { recording: clip(e.r.name, 200), recording_id: e.r.id, api: clip(e.t.api, 300), fn: e.t.name, description: clip(e.t.description, room != null ? Math.min(200, room) : detail ? 600 : 200) },
+      // 资料名可能重复，给 instanceId 才能原样填回 browser
+      multi && e.r.browser ? Object.assign({ browser: e.r.browser.instanceId }, e.r.browser.profile ? { browser_name: e.r.browser.profile } : {}) : {},
+      full ? { inputSchema: e.schema } : { params: names(e.params, room) },
     ));
     if (offset + n < hits.length) out.next_offset = offset + n;
     const notes = [];
     if (!hits.length) notes.push(terms.length ? `没有接口匹配「${args.query}」（共 ${entries.length} 个接口）。换个关键词，或不传 query 按顺序看全部` : '脚本库里没有可调用的接口');
     else {
       if (terms.length > 1 && !all) notes.push('没有接口同时匹配所有关键词，这里是匹配了一部分的');
-      notes.push(`调用：call_api，recording 填 recording_id，api 填接口名，args 填参数（不传的用录制值）${multi ? '，browser 填上面的 browser' : ''}。${detail ? '' : '参数的类型、说明、录制值：带 detail=true，或把关键词写具体些。'}整段运行脚本用 run_recording`);
+      notes.push(`调用：call_api，recording 填 recording_id，api 填接口名，args 填参数（不传的用录制值）${multi ? '，browser 填上面的 browser' : ''}。${full ? '' : detail ? '这个接口的参数定义太长放不下，用 get_recording 看。' : '参数的类型、说明、录制值：带 detail=true，或把关键词写具体些。'}整段运行脚本用 run_recording`);
       if (out.next_offset != null) notes.push(`还有 ${hits.length - offset - n} 个，接着看用 offset=${out.next_offset}`);
     }
     out.note = notes.join('；');
@@ -959,19 +977,20 @@ function searchApis(list, args) {
 // list_recordings：整份放得下就整份给（和以前一样）；放不下、或要求分页时给概要
 function recordingList(list, args) {
   const terms = termsOf(args.query);
-  const { hits } = rank(list, terms, (r) => [[2, lower(`${r.name} ${r.slug || ''}`)], [1, lower(`${r.description || ''} ${r.startUrl || ''}`)]]);
+  const ranked = rank(list, terms, (r) => [[2, lower(`${r.name} ${r.slug || ''}`)], [1, lower(`${r.description || ''} ${r.startUrl || ''}`)]]);
+  const hits = ranked.all ? ranked.hits : []; // 这里是筛选：关键词都要有，不像 search_apis 那样退到只匹配一部分
   const paged = args.offset != null || args.limit != null;
   if (!paged) {
     const full = JSON.stringify(hits.map((r) => forAi(r, false)), null, 2);
     if (full.length <= RESULT_CHARS) return full;
   }
   const { offset, limit } = pageArgs(args, 50);
-  return fitPage(hits, offset, limit, (page, n) => {
+  return fitPage(hits, offset, limit, (page, n, room) => {
     const out = { total: hits.length, offset, count: n };
     out.recordings = page.map((r) => Object.assign(
-      { id: r.id, name: r.name },
-      r.slug ? { slug: r.slug } : {},
-      { description: clip(r.description || (r.steps || []).slice(0, 4).join('；'), 200), startUrl: clip(r.startUrl, 120), steps: (r.steps || []).length, params: Object.keys(Object.assign({}, r.paramInfo, r.params)), apis: (r.tools || []).map((t) => t.name) },
+      { id: r.id, name: clip(r.name, 200) },
+      r.slug ? { slug: clip(r.slug, 200) } : {},
+      { description: clip(r.description || (r.steps || []).slice(0, 4).join('；'), 200), startUrl: clip(r.startUrl, 120), steps: (r.steps || []).length, params: names(Object.keys(Object.assign({}, r.paramInfo, r.params)), room), apis: names((r.tools || []).map((t) => t.name), room) },
       r.browser ? { browser: r.browser } : {},
     ));
     if (offset + n < hits.length) out.next_offset = offset + n;
