@@ -83,8 +83,10 @@ const STATE_DIR = process.env.PR_BRIDGE_DIR || path.join(os.homedir(), '.page-re
 const STATE_FILE = path.join(STATE_DIR, `bridge-${PORT}.json`);
 // 监听端口的实例写进 STATE_FILE；转发过来的请求带上它，说明是本机 stdio 实例（AI 客户端自己起的进程）发的
 const SECRET = crypto.randomBytes(24).toString('hex');
+const IS_LOOPBACK_HOST = /^(127\.\d+\.\d+\.\d+|localhost|::1|\[::1\])$/.test(HOST);
+const EXT_ID_ALLOW = new Set(String(flag('extension-id') || process.env.PR_EXTENSION_ID || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 // 不只监听本机时必须设置 token，否则局域网里任何人都能借你的浏览器登录态执行脚本
-if (!/^(127\.\d+\.\d+\.\d+|localhost|::1)$/.test(HOST) && !TOKEN) {
+if (!IS_LOOPBACK_HOST && !TOKEN) {
   process.stderr.write(`[page-recorder-bridge] 监听 ${HOST} 会暴露给本机以外的设备，必须同时设置 --token（或 PR_BRIDGE_TOKEN）\n`);
   process.exit(2);
 }
@@ -94,6 +96,8 @@ const log = (...a) => process.stderr.write('[page-recorder-bridge] ' + a.join(' 
 // 每个 Chrome 用户资料里的扩展是一个“实例”，连上后先发 hello 报 instanceId（和资料名 profile）。
 // 按 instanceId 各存一条连接：同一个实例重连只替换它自己，多个资料（主 Chrome、指纹浏览器、各店铺）可以同时在线。
 const instances = new Map(); // instanceId -> conn
+const instanceOrigins = new Map();
+const wsSockets = new Set();
 const ANON_ID = 'anonymous'; // 旧版扩展不发 hello：当成一个匿名实例（几个旧版之间仍互相替换，和以前一样）
 const HELLO_WAIT_MS = 3000;  // 连上后等 hello 的时间，超时就按匿名实例登记
 let seq = 0;
@@ -112,66 +116,125 @@ function wsFrame(data, opcode) {
   else { head = Buffer.alloc(10); head[0] = 0x80 | opcode; head[1] = 127; head.writeBigUInt64BE(BigInt(len), 2); }
   return Buffer.concat([head, payload]);
 }
-function attachWs(socket) {
+const WS_MAX_MSG = 64 * 1024 * 1024;
+function attachWs(socket, origin, head) {
   let buf = Buffer.alloc(0);
+  let used = 0;
   let fragments = [];
+  let fragLen = 0;
+  let fragmented = false;
   const conn = {
     socket,
+    origin: String(origin || '').toLowerCase(),
     instanceId: null, // 收到 hello（或等 hello 超时）后才登记
     profile: '',
     version: '',
     pending: new Map(), // 这条连接上还没返回的请求：连接断开或被替换时逐个以错误结束
     dead: false,
-    send: (obj) => { if (!socket.destroyed) socket.write(wsFrame(JSON.stringify(obj), 1)); },
+    send: (obj) => { if (!socket.destroyed && !socket.writableEnded) socket.write(wsFrame(JSON.stringify(obj), 1)); },
   };
-  socket.on('data', (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    for (;;) {
-      if (buf.length < 2) return;
-      const fin = (buf[0] & 0x80) !== 0;
-      const opcode = buf[0] & 0x0f;
-      const masked = (buf[1] & 0x80) !== 0;
-      let len = buf[1] & 0x7f;
-      let off = 2;
-      if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
-      else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
-      const maskLen = masked ? 4 : 0;
-      if (buf.length < off + maskLen + len) return;
-      let payload = buf.slice(off + maskLen, off + maskLen + len);
-      if (masked) {
-        const mask = buf.slice(off, off + 4);
-        payload = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]));
-      }
-      buf = buf.slice(off + maskLen + len);
-      if (opcode === 8) { socket.end(wsFrame('', 8)); return; }
-      if (opcode === 9) { socket.write(wsFrame(payload, 10)); continue; }
-      if (opcode === 10) continue;
-      fragments.push(payload);
-      if (!fin) continue;
-      const text = Buffer.concat(fragments).toString('utf8');
-      fragments = [];
-      onExtMessage(conn, text);
-    }
-  });
   const drop = () => {
     if (conn.dead) return; // close 和 error 可能先后各来一次
     conn.dead = true;
+    buf = Buffer.alloc(0);
+    used = 0;
+    fragments = [];
+    fragLen = 0;
     clearTimeout(conn.helloTimer);
     failPending(conn, '浏览器扩展连接已断开');
     if (conn.instanceId && instances.get(conn.instanceId) === conn) {
       instances.delete(conn.instanceId);
       recentlySeen.set(conn.instanceId, { profile: conn.profile, at: Date.now() });
+      if (recentlySeen.size > 200) recentlySeen.delete(recentlySeen.keys().next().value);
       log(`扩展已断开：${browserLabel(conn)}，还剩 ${instances.size} 个浏览器`);
       invalidateIndex();
       toolsChanged();
     }
   };
+  const failWs = () => {
+    try { socket.end(wsFrame('', 8)); } catch (e) { /* ignore */ }
+    try { socket.destroy(); } catch (e) { /* ignore */ }
+    drop();
+  };
+  conn.close = failWs;
+  const onData = (chunk) => {
+    if (conn.dead || !chunk || !chunk.length) return;
+    const capacity = WS_MAX_MSG + 14 + 65536;
+    const needed = used + chunk.length;
+    if (needed > capacity) { failWs(); return; }
+    if (needed > buf.length) {
+      const next = Buffer.allocUnsafe(Math.min(capacity, Math.max(4096, needed, buf.length * 2)));
+      buf.copy(next, 0, 0, used);
+      buf = next;
+    }
+    chunk.copy(buf, used);
+    used = needed;
+    let pos = 0;
+    while (!conn.dead) {
+      const avail = used - pos;
+      if (avail < 2) break;
+      const b0 = buf[pos];
+      const b1 = buf[pos + 1];
+      if ((b0 & 0x70) !== 0) { failWs(); return; } // RSV 必须为 0
+      const fin = (b0 & 0x80) !== 0;
+      const opcode = b0 & 0x0f;
+      const masked = (b1 & 0x80) !== 0;
+      if (!masked) { failWs(); return; } // RFC 6455: 客户端帧必须带掩码
+      let len = b1 & 0x7f;
+      let off = 2;
+      if (len === 126) { if (avail < 4) break; len = buf.readUInt16BE(pos + 2); off = 4; }
+      else if (len === 127) {
+        if (avail < 10) break;
+        const big = buf.readBigUInt64BE(pos + 2);
+        if (big > BigInt(WS_MAX_MSG)) { failWs(); return; }
+        len = Number(big);
+        off = 10;
+      }
+      const control = opcode >= 8;
+      if (len > WS_MAX_MSG ||
+          (control ? (!fin || len > 125 || opcode > 10) : (opcode !== (fragmented ? 0 : 1) || fragments.length >= 16384))) {
+        failWs();
+        return;
+      }
+      const maskLen = 4;
+      if (avail < off + maskLen + len) break;
+      const mask = buf.subarray(pos + off, pos + off + 4);
+      const raw = buf.subarray(pos + off + maskLen, pos + off + maskLen + len);
+      const payload = Buffer.allocUnsafe(len);
+      for (let i = 0; i < len; i++) payload[i] = raw[i] ^ mask[i & 3];
+      pos += off + maskLen + len;
+      if (opcode === 8) {
+        try { socket.end(wsFrame('', 8)); } catch (e) { /* ignore */ }
+        drop();
+        return;
+      }
+      if (opcode === 9) { if (!socket.destroyed && !socket.writableEnded) socket.write(wsFrame(payload, 10)); continue; }
+      if (opcode === 10) continue;
+      fragLen += payload.length;
+      if (fragLen > WS_MAX_MSG) { failWs(); return; }
+      fragments.push(payload);
+      fragmented = !fin;
+      if (!fin) continue;
+      const text = Buffer.concat(fragments, fragLen).toString('utf8');
+      fragments = [];
+      fragLen = 0;
+      onExtMessage(conn, text);
+    }
+    if (conn.dead) return;
+    if (pos > 0) {
+      used -= pos;
+      if (used) buf.copyWithin(0, pos, pos + used);
+      else if (buf.length > 65536) buf = Buffer.alloc(0);
+    }
+  };
+  socket.on('data', onData);
   socket.on('close', drop);
   socket.on('error', drop);
   // HTTP 服务的连接允许半关闭：对方直接关 TCP（浏览器退出）时只来 end 不来 close，这里也关掉并当断开处理
   socket.on('end', () => { try { socket.end(); } catch (e) { /* ignore */ } drop(); });
   // 先挂着等 hello；旧版扩展不发 hello，超时后当匿名实例
   conn.helloTimer = setTimeout(() => register(conn, ANON_ID, {}), HELLO_WAIT_MS);
+  if (head && head.length) onData(head);
 }
 // 登记实例：只替换同一个 instanceId 的旧连接，旧连接上还没返回的请求以明确的错误结束
 function register(conn, instanceId, info) {
@@ -182,6 +245,14 @@ function register(conn, instanceId, info) {
     conn.version = String(info.version || conn.version || '');
     return;
   }
+  const pinned = instanceOrigins.get(instanceId);
+  if (pinned && pinned !== conn.origin) {
+    log(`拒绝不同扩展来源 (${conn.origin}) 冒用实例标识`);
+    conn.close();
+    return;
+  }
+  if (!pinned && instanceOrigins.size >= 1024) { conn.close(); return; }
+  instanceOrigins.set(instanceId, conn.origin);
   // 等 hello 超时先按匿名登记了，后来才收到 hello：从匿名位置挪走
   if (conn.instanceId && instances.get(conn.instanceId) === conn) instances.delete(conn.instanceId);
   conn.instanceId = instanceId;
@@ -211,8 +282,11 @@ function failPending(conn, message) {
 function onExtMessage(conn, text) {
   let m;
   try { m = JSON.parse(text); } catch (e) { return; }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return;
   if (m.type === 'hello') {
-    register(conn, String(m.instanceId || '').trim() || ANON_ID, m);
+    const id = typeof m.instanceId === 'string' ? m.instanceId.trim() : '';
+    if (id.length > 128 || (conn.instanceId && conn.instanceId !== ANON_ID && conn.instanceId !== id)) { conn.close(); return; }
+    register(conn, id || ANON_ID, m);
   } else if (m.type === 'response') {
     const p = conn.pending.get(m.id);
     if (!p) return;
@@ -228,8 +302,13 @@ function toolsChanged() { libraryListeners.forEach((fn) => fn()); }
 // 等到有实例登记（连上或重连）为止，超时返回 false
 function waitChange(ms) {
   return new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), Math.max(0, ms));
-    extWaiters.push(() => { clearTimeout(t); resolve(true); });
+    const fn = () => { clearTimeout(t); resolve(true); };
+    const t = setTimeout(() => {
+      const idx = extWaiters.indexOf(fn);
+      if (idx >= 0) extWaiters.splice(idx, 1);
+      resolve(false);
+    }, Math.max(0, ms));
+    extWaiters.push(fn);
   });
 }
 function waitExt(ms) {
@@ -256,10 +335,13 @@ function findBrowser(ref) {
 const recentlySeen = new Map(); // instanceId -> { profile, at }
 function seenRecently(ref) {
   const r = String(ref).trim().toLowerCase();
+  const now = Date.now();
+  let hit = false;
   for (const [id, x] of recentlySeen) {
-    if (Date.now() - x.at < 10 * 60000 && (id.toLowerCase() === r || (x.profile && x.profile.toLowerCase() === r))) return true;
+    if (now - x.at >= 10 * 60000) { recentlySeen.delete(id); continue; }
+    if (!hit && (id.toLowerCase() === r || (x.profile && x.profile.toLowerCase() === r))) hit = true;
   }
-  return false;
+  return hit;
 }
 async function connByBrowser(ref, waitMs) {
   const end = Date.now() + (waitMs || 0);
@@ -275,7 +357,7 @@ async function connByBrowser(ref, waitMs) {
 // 脚本库索引：录制 id / 名称 → 拥有它的实例。向各实例 list 一次后缓存，脚本库变化或实例增减时作废
 let indexCache = null; // Promise<[{ conn, list: [{ id, name }] }]>
 let indexGen = 0;
-function invalidateIndex() { indexCache = null; indexGen++; }
+function invalidateIndex() { indexCache = null; lateList = null; indexGen++; }
 const brief = (list) => (Array.isArray(list) ? list : []).map((x) => ({ id: x.id, name: x.name }));
 function libraryIndex() {
   if (indexCache) return indexCache;
@@ -289,8 +371,8 @@ function libraryIndex() {
 }
 // 和扩展里找脚本的规则一致：先按 id，再按完整名称，最后按名称包含；多个实例都命中同一级时报歧义
 async function ownerOf(ref, retried) {
-  if (!ref) throw new Error('缺少 recording 参数（脚本 id 或名称）');
-  const r = String(ref).trim();
+  const r = String(ref == null ? '' : ref).trim();
+  if (!r) throw new Error('缺少 recording 参数（脚本 id 或名称）');
   const fromCache = !!indexCache;
   const idx = await libraryIndex();
   const rules = [(x) => x.id === r, (x) => x.name === r, (x) => String(x.name || '').includes(r)];
@@ -311,7 +393,7 @@ async function ownerOf(ref, retried) {
 
 // 发给某一个实例
 function callConn(conn, method, params, timeoutMs) {
-  if (conn.dead || conn.socket.destroyed) return Promise.reject(new Error('浏览器扩展连接已断开'));
+  if (conn.dead || conn.socket.destroyed || conn.socket.writableEnded) return Promise.reject(new Error('浏览器扩展连接已断开'));
   const id = ++seq;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { conn.pending.delete(id); reject(new Error('执行超时')); }, timeoutMs);
@@ -380,18 +462,24 @@ function bridgeHeaders(extra) {
 }
 function forwardToPrimary(method, params, timeoutMs, browser, waitMs) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const ok = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const fail = (e) => { if (!settled) { settled = true; reject(e); } };
     const body = JSON.stringify({ method, params, timeout: timeoutMs, browser: browser || undefined, wait: waitMs });
     const req = http.request({ host: BRIDGE_HOST, port: PORT, path: '/api/ext', method: 'POST', headers: bridgeHeaders({ 'content-type': 'application/json' }) }, (res) => {
-      let d = '';
-      res.on('data', (c) => { d += c; });
+      const chunks = [];
+      res.on('data', (c) => { chunks.push(c); });
       res.on('end', () => {
+        const d = Buffer.concat(chunks).toString('utf8');
         try {
           const j = JSON.parse(d);
-          j.ok ? resolve(j.data) : reject(new Error(j.error));
-        } catch (e) { reject(new Error('桥接服务返回异常：' + d.slice(0, 200))); }
+          j.ok ? ok(j.data) : fail(new Error(j.error));
+        } catch (e) { fail(new Error('桥接服务返回异常：' + d.slice(0, 200))); }
       });
+      res.on('error', (e) => fail(Object.assign(new Error('读取桥接响应失败：' + e.message), { code: e.code })));
+      res.on('close', () => { if (!res.complete) fail(new Error('桥接服务响应中断')); });
     });
-    req.on('error', (e) => reject(Object.assign(new Error('无法连接桥接服务：' + e.message), { code: e.code })));
+    req.on('error', (e) => fail(Object.assign(new Error('无法连接桥接服务：' + e.message), { code: e.code })));
     req.setTimeout(waitMs + timeoutMs + 5000, () => req.destroy(new Error('超时')));
     req.end(body);
   });
@@ -418,7 +506,7 @@ function spawnDaemon() {
   // token 走环境变量，不出现在进程列表里
   const child = spawn(process.execPath, [__filename, '--daemon', '--port', String(PORT), '--host', HOST, '--max-tools', String(MAX_TOOLS)], {
     detached: true, windowsHide: true, stdio: ['ignore', out, out],
-    env: Object.assign({}, process.env, TOKEN ? { PR_BRIDGE_TOKEN: TOKEN } : {}),
+    env: Object.assign({}, process.env, TOKEN ? { PR_BRIDGE_TOKEN: TOKEN } : {}, { PR_EXTENSION_ID: [...EXT_ID_ALLOW].join(',') }),
   });
   child.on('error', (e) => log('后台桥接启动失败：' + e.message));
   child.unref();
@@ -748,21 +836,24 @@ function paramHelp(info, recorded) {
   if (info.note) parts.push(String(info.note));
   return parts.join('；');
 }
+const ownValue = (obj, key) => obj && Object.hasOwn(obj, key) ? obj[key] : undefined;
 function paramHelps(r) {
-  const out = {};
+  const out = Object.create(null);
   const names = new Set(Object.keys(r.params || {}).concat(Object.keys(r.paramInfo || {})));
-  for (const k of names) out[k] = paramHelp((r.paramInfo || {})[k], (r.params || {})[k]);
+  for (const k of names) out[k] = paramHelp(ownValue(r.paramInfo, k), ownValue(r.params, k));
   return out;
 }
 // 接口工具参数说明里，关联了输入参数的字段“录制值”显示成 {{参数}}：换成真实录制值，并注明关联的参数名
 function linkedText(desc, r) {
   if (typeof desc !== 'string' || !desc.includes('{{')) return desc;
   const names = [];
-  const out = desc.replace(/\{\{\s*([^{}|]+?)\s*(?:\|[^{}]*)?\}\}/g, (m, name) => {
-    const info = (r.paramInfo || {})[name];
-    if (!info && !(r.params && name in r.params)) return m;
+  const out = desc.replace(/\{\{([^{}|]+)(?:\|[^{}]*)?\}\}/g, (m, ref) => {
+    const name = ref.trim();
+    const info = ownValue(r.paramInfo, name);
+    const param = ownValue(r.params, name);
+    if (!info && param === undefined) return m;
     if (!names.includes(name)) names.push(name);
-    const v = info && info.recorded !== undefined ? info.recorded : r.params[name];
+    const v = info && info.recorded !== undefined ? info.recorded : param;
     return v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
   });
   return names.length ? `${out}（关联输入参数${names.map((n) => `「${n}」`).join('')}，不传时跟着它走）` : desc;
@@ -805,7 +896,6 @@ function withResultProps(schema) {
 const LIST_DEADLINE_MS = 6000;
 let lateList = null; // { list, at }
 async function dynamicTools(quick) {
-  dynamicMap = new Map();
   let list = [];
   if (quick && lateList && Date.now() - lateList.at < 60000) {
     list = lateList.list;
@@ -815,13 +905,15 @@ async function dynamicTools(quick) {
     const late = {};
     const got = await Promise.race([listing.catch(() => []), sleep(LIST_DEADLINE_MS).then(() => late)]);
     if (got === late) {
-      listing.then((l) => { lateList = { list: l, at: Date.now() }; toolsChanged(); }, () => {});
+      const gen = indexGen;
+      listing.then((l) => { if (gen === indexGen) { lateList = { list: l, at: Date.now() }; toolsChanged(); } }, () => {});
       return [];
     }
     list = got;
   } else {
     try { list = await extCall('list', {}, 15000); } catch (e) { return []; }
   }
+  const nextMap = new Map();
   const tools = [];
   const used = new Set(STATIC_TOOLS.map((t) => t.name));
   // 多个浏览器同时连着：工具说明里注明是哪个浏览器的脚本，调用时直接发给那个浏览器
@@ -835,14 +927,14 @@ async function dynamicTools(quick) {
       let i = 2;
       while (used.has(n)) n = (name.slice(0, 60) + '_' + i++).slice(0, 64);
       used.add(n);
-      dynamicMap.set(n, info);
+      nextMap.set(n, info);
       tools.push(Object.assign({ name: n }, def));
     };
     // 每个参数的说明：类型、格式、可选项、是否必填、改了能不能直接请求（扩展没给 paramInfo 时退回只写录制值）
-    const props = {};
+    const props = Object.create(null);
     const required = [];
     for (const [k, v] of Object.entries(r.params || {})) {
-      const info = (r.paramInfo || {})[k];
+      const info = ownValue(r.paramInfo, k);
       // 多选参数是选项数组，复选框是 true/false
       props[k] = Array.isArray(v) ? { type: 'array', items: { type: 'string' }, description: paramHelp(info, v) } : typeof v === 'boolean' ? { type: 'boolean', description: paramHelp(info, v) } : { type: 'string', description: paramHelp(info, v) };
       if (info && (info.required || info.kind === 'secret')) required.push(k);
@@ -854,7 +946,7 @@ async function dynamicTools(quick) {
     }
     add(`${base}__run`, {
       description: `[录制脚本「${r.name}」${where}] ${r.description || (r.steps || []).slice(0, 6).join('；')}。传入参数后运行：有关联接口时直接在页面里请求接口（不操作界面），否则回放页面操作。返回接口数据与提取数据。`,
-      inputSchema: Object.assign({ type: 'object', properties: Object.assign({}, RESULT_PROPS, props), additionalProperties: true }, required.length ? { required } : {}),
+      inputSchema: Object.assign({ type: 'object', properties: Object.assign(Object.create(null), RESULT_PROPS, props), additionalProperties: true }, required.length ? { required } : {}),
     }, { kind: 'run', recording: r.id, browser, own: Object.keys(props) });
     for (const t of r.tools || []) {
       add(`${base}__${t.name}`, {
@@ -863,6 +955,7 @@ async function dynamicTools(quick) {
       }, { kind: 'call', recording: r.id, api: t.api, browser, own: Object.keys((t.inputSchema && t.inputSchema.properties) || {}) });
     }
   }
+  dynamicMap = nextMap;
   // 太多就一个都不列：只列一部分的话 AI 会以为没列出来的接口不存在。按名字调用照旧能用（dynamicMap 留着）
   return tools.length > MAX_TOOLS ? [] : tools;
 }
@@ -1011,15 +1104,28 @@ function parsePkg(pkg) {
   if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) throw new Error('pkg 必须是录制包 JSON 对象（export_package 或弹窗「导出录制包」得到的内容）');
   return pkg;
 }
-// 从文件读录制包：只读 .json 文件，报错时不带出文件内容
-function readPkgFile(file) {
-  const f = path.resolve(String(file).replace(/^~(?=$|[\\/])/, os.homedir()));
+// 从文件读录制包：只读 .json 文件，报错时不带出文件内容，HTTP 模式下限定在 exports 目录内
+function readPkgFile(file, restrictDir) {
+  const raw = String(file);
+  const f = path.resolve(raw.replace(/^~(?=$|[\\/])/, os.homedir()));
+  const shown = raw.startsWith('~') ? raw : f;
   if (!/\.json$/i.test(f)) throw new Error('录制包文件要以 .json 结尾（export_package 导出的是 .prpkg.json）');
+  if (restrictDir) {
+    const root = path.resolve(restrictDir);
+    const rel = path.relative(root, f);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('HTTP 模式下只能从导出目录导入录制包文件');
+  }
   let st;
-  try { st = fs.statSync(f); } catch (e) { throw new Error('读不到录制包文件：' + f); }
-  if (!st.isFile() || st.size > 50 * 1024 * 1024) throw new Error('不是录制包文件，或文件超过 50MB：' + f);
+  try { st = fs.statSync(f); } catch (e) { throw new Error('读不到录制包文件：' + shown); }
+  if (restrictDir) {
+    const rootReal = fs.existsSync(restrictDir) ? fs.realpathSync(restrictDir) : path.resolve(restrictDir);
+    const fileReal = fs.realpathSync(f);
+    const relReal = path.relative(rootReal, fileReal);
+    if (relReal.startsWith('..') || path.isAbsolute(relReal)) throw new Error('HTTP 模式下只能从导出目录导入录制包文件');
+  }
+  if (!st.isFile() || st.size > 50 * 1024 * 1024) throw new Error('不是录制包文件，或文件超过 50MB：' + shown);
   let pkg;
-  try { pkg = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { throw new Error('录制包文件不是合法的 JSON：' + f); }
+  try { pkg = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { throw new Error('录制包文件不是合法的 JSON：' + shown); }
   return parsePkg(pkg);
 }
 
@@ -1082,11 +1188,13 @@ const jsonObj = (x) => {
   if (typeof x !== 'string' || x.length >= 8e6 || !/^\s*[{[]/.test(x)) return x;
   try { const y = JSON.parse(x); return y && typeof y === 'object' ? y : x; } catch (e) { return x; }
 };
+const setOwn = (o, k, v) => Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true });
+const hasOwnKey = (o, t) => (Array.isArray(o) ? typeof t === 'number' && t >= 0 && t < o.length : Object.hasOwn(o, t));
 // lazy：路上遇到 JSON 字符串就解析了接着往里走
 function pathGet(v, p, lazy) {
   for (const t of pathTokens(p)) {
     if (lazy) v = jsonObj(v);
-    if (v == null || typeof v !== 'object') return undefined;
+    if (v == null || typeof v !== 'object' || !hasOwnKey(v, t)) return undefined;
     v = v[t];
   }
   return v;
@@ -1108,7 +1216,7 @@ function unwrapJson(v, notes, path, strDepth, depth) {
   if (!v || typeof v !== 'object' || depth > MAX_DEPTH) return v; // 太深的结构不再往里（免得递归爆栈）
   if (Array.isArray(v)) return v.map((x, i) => unwrapJson(x, notes, pathJoin(path, i), strDepth, depth + 1));
   const o = {};
-  for (const k of Object.keys(v)) o[k] = unwrapJson(v[k], notes, pathJoin(path, k), strDepth, depth + 1);
+  for (const k of Object.keys(v)) setOwn(o, k, unwrapJson(v[k], notes, pathJoin(path, k), strDepth, depth + 1));
   return o;
 }
 // 说明结果成败的字段：对象再宽也先留着它们
@@ -1162,8 +1270,8 @@ function compactValue(v, path, budget, depth) {
     }
   });
   const out = {};
-  shown.forEach((k, i) => { out[k] = picked[i]; });
-  if (keys.length > shown.length) out['…'] = `共 ${keys.length} 个字段，这里是 ${shown.length} 个。其余：read_result path=${JSON.stringify(path)}，fields 写字段名`;
+  shown.forEach((k, i) => { setOwn(out, k, picked[i]); });
+  if (keys.length > shown.length) setOwn(out, '…', `共 ${keys.length} 个字段，这里是 ${shown.length} 个。其余：read_result path=${JSON.stringify(path)}，fields 写字段名`);
   return out;
 }
 // build(额度) → 要发的对象。序列化后超过上限就按比例收紧了重来；实在压不进去返回 null（调用方给一句话的摘要）
@@ -1186,7 +1294,7 @@ function pickView(full, o, lazy) {
     let okPath = '';
     for (const t of pathTokens(path)) {
       if (lazy) cur = jsonObj(cur);
-      if (cur == null || typeof cur !== 'object' || !(t in cur)) break;
+      if (cur == null || typeof cur !== 'object' || !hasOwnKey(cur, t)) break;
       cur = cur[t];
       okPath = pathJoin(okPath, t);
     }
@@ -1218,7 +1326,7 @@ function compactPicked(x, itemPath, budget, fields) {
   if (!fields.length || !x || typeof x !== 'object' || Array.isArray(x) || jsonLen(x) <= budget) return compactValue(x, itemPath, budget);
   const out = {};
   const each = Math.max(40, budget / fields.length);
-  for (const f of fields) out[f] = compactValue(x[f], pathAdd(itemPath, f), each - f.length - 4);
+  for (const f of fields) setOwn(out, f, compactValue(x[f], pathAdd(itemPath, f), each - f.length - 4));
   return out;
 }
 // 结果变成发给 AI 的文字。opts：result_path / result_fields / result_offset / result_limit（只要其中一部分）、
@@ -1366,7 +1474,12 @@ function scriptPart(script, args) {
   return `// 源码共 ${lines.length} 行、${script.length} 字符，这里是第 ${start}-${end} 行。${next}要整份源码用 to_file=true 写成文件\n${out.join('\n')}`;
 }
 // 大块内容写成本机文件给 AI：放在 STATE_DIR/exports，文件名带时间不会覆盖
-function writeExport(name, ext, content) {
+let httpExportBytes = 0;
+function writeExport(name, ext, content, via) {
+  const bytes = Buffer.byteLength(content);
+  if (via === 'http' && (bytes > 16 * 1024 * 1024 || httpExportBytes + bytes > 64 * 1024 * 1024)) {
+    throw new Error('HTTP 写盘额度已满，请改用 start_line 分段读取');
+  }
   const dir = path.join(STATE_DIR, 'exports');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const base = path.join(dir, `${String(name || 'recording').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60)}-${new Date().toISOString().replace(/\D/g, '').slice(0, 17)}`);
@@ -1374,6 +1487,7 @@ function writeExport(name, ext, content) {
     const file = base + (i > 1 ? '-' + i : '') + ext;
     try {
       fs.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
+      if (via === 'http') httpExportBytes += bytes;
       return file;
     } catch (e) { if (e.code !== 'EEXIST') throw e; }
   }
@@ -1388,10 +1502,11 @@ async function callTool(name, args, ctx) {
     case 'search_apis': return text(searchApis(await extCall('list', {}, 60000, browser), args));
     case 'get_recording': return recordingDetail(forAi(await extCall('get', { recording: args.recording }, 60000, browser), true), args);
     case 'get_script': {
+      if (args.to_file && ctx.via === 'http' && !ctx.canWrite) throw new Error('HTTP 写盘需要本机认证，请改用 start_line 分段读取');
       const r = await extCall('script', { recording: args.recording }, 60000, browser);
       if (args.to_file) {
         const lines = String(r.script || '').split('\n').length;
-        return text({ file: writeExport(r.name || args.recording, '.js', r.script || ''), lines, chars: String(r.script || '').length });
+        return text({ file: writeExport(r.name || args.recording, '.js', r.script || '', ctx.via), lines, chars: String(r.script || '').length });
       }
       return text(scriptPart(String(r.script || ''), args));
     }
@@ -1432,7 +1547,8 @@ async function callTool(name, args, ctx) {
     case 'import_package': {
       if (ctx.via === 'http' && !TOKEN) throw new Error(IMPORT_NEEDS_TOKEN);
       if (args.pkg == null && !args.file) throw new Error('pkg（录制包 JSON）和 file（录制包文件路径）给一个');
-      return text(await extCall('importPackage', { pkg: args.pkg != null ? parsePkg(args.pkg) : readPkgFile(args.file) }, 60000, browser));
+      if (args.pkg == null && ctx.via === 'http' && !IS_LOOPBACK_HOST) throw new Error('非本机 HTTP 访问不支持通过 file 读取服务端本地文件，请直接传 pkg');
+      return text(await extCall('importPackage', { pkg: args.pkg != null ? parsePkg(args.pkg) : readPkgFile(args.file, ctx.via === 'http' ? path.join(STATE_DIR, 'exports') : null) }, 60000, browser));
     }
     default: {
       if (!dynamicMap.has(name)) await dynamicTools();
@@ -1484,24 +1600,72 @@ async function handleRpc(msg, ctx) {
 // ======================= HTTP 服务 =======================
 function readBody(req, max) {
   return new Promise((resolve, reject) => {
-    let d = '';
-    req.on('data', (c) => { d += c; if (d.length > (max || 20e6)) req.destroy(); });
-    req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch (e) { reject(new Error('请求体不是合法 JSON')); } });
-    req.on('error', reject);
+    const ct = String(req.headers['content-type'] || '');
+    if (req.method === 'POST' && !/^application\/json(?:\s*;|$)/i.test(ct)) {
+      req.resume();
+      return reject(Object.assign(new Error('Content-Type 必须是 application/json'), { statusCode: 415 }));
+    }
+    const limit = max || 20e6;
+    const tooLarge = () => Object.assign(new Error('请求体过大'), { statusCode: 413 });
+    if (Number(req.headers['content-length']) > limit) {
+      req.pause();
+      reject(tooLarge());
+      return;
+    }
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
+    const done = (fn, v) => { if (!settled) { settled = true; fn(v); } };
+    req.on('data', (c) => {
+      if (settled) return;
+      bytes += c.length;
+      if (bytes > limit) {
+        done(reject, tooLarge());
+        chunks.length = 0;
+        req.pause();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      const d = chunks.length ? Buffer.concat(chunks, bytes).toString('utf8') : '';
+      try { done(resolve, d ? JSON.parse(d) : {}); } catch (e) { done(reject, Object.assign(new Error('请求体不是合法 JSON'), { statusCode: 400 })); }
+    });
+    req.on('error', (e) => done(reject, e));
+    req.on('close', () => { if (!req.complete) done(reject, new Error('请求连接已中断')); });
   });
 }
 function sendJson(res, code, obj) {
-  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(code, {
+    'content-type': 'application/json; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+    'cross-origin-resource-policy': 'same-origin',
+  });
   res.end(JSON.stringify(obj, null, 2));
 }
-// 防止普通网页跨站调用本地服务：浏览器发出的跨站请求都带 Origin，只放行扩展
-function allowed(req) {
+// 防止普通网页跨站调用本地服务：校验 Origin、Sec-Fetch-Site 与可选 Token
+function sameSecret(got, want) {
+  const left = Buffer.from(String(got || ''));
+  const right = Buffer.from(want);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+function extensionOriginId(origin) {
+  return /^chrome-extension:\/\/([a-z0-9]+)$/i.exec(origin || '')?.[1].toLowerCase() || '';
+}
+const SAFE_RESPONSE = { 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' };
+function allowed(req, u) {
   const o = req.headers.origin;
-  if (o && !o.startsWith('chrome-extension://') && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(o)) return false;
+  const extId = extensionOriginId(o);
+  const isExt = !!extId;
+  if (isExt && EXT_ID_ALLOW.size && !EXT_ID_ALLOW.has(extId)) return false;
+  if (o && !isExt && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(o)) return false;
+  const sfs = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (sfs === 'cross-site' && !isExt) return false;
   if (TOKEN) {
     const auth = req.headers.authorization || '';
-    const q = new URL(req.url, 'http://x').searchParams.get('token');
-    if (auth !== 'Bearer ' + TOKEN && q !== TOKEN) return false;
+    const q = u.searchParams.get('token');
+    if (!sameSecret(auth, 'Bearer ' + TOKEN) && !sameSecret(q, TOKEN)) return false;
   }
   return true;
 }
@@ -1528,16 +1692,18 @@ function fromStdio(req) {
 const browserOf = (u, b) => u.searchParams.get('browser') || (b && typeof b.browser === 'string' ? b.browser : '') || '';
 
 async function route(req, res) {
-  const u = new URL(req.url, 'http://x');
+  let u;
+  try { u = new URL(req.url, 'http://x'); } catch (e) { return sendJson(res, 400, { ok: false, error: 'invalid url' }); }
   const p = u.pathname.replace(/\/+$/, '') || '/';
   if (!hostAllowed(req)) return sendJson(res, 403, { ok: false, error: 'forbidden host' });
-  if (!allowed(req)) return sendJson(res, 403, { ok: false, error: 'forbidden' });
-  const ctx = { via: 'http' };
+  if (!allowed(req, u)) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+  const ctx = { via: 'http', canWrite: IS_LOOPBACK_HOST && (fromStdio(req) || !!TOKEN) };
   try {
     if (p === '/mcp') {
       if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); return res.end(); }
       const body = await readBody(req);
       if (Array.isArray(body)) {
+        if (body.length > 20) return sendJson(res, 400, { ok: false, error: '批量请求最多 20 项' });
         const out = (await Promise.all(body.map((m) => handleRpc(m, ctx)))).filter(Boolean);
         if (!out.length) { res.writeHead(202); return res.end(); }
         return sendJson(res, 200, out);
@@ -1567,7 +1733,7 @@ async function route(req, res) {
     }
     if (p === '/api/events' && req.method === 'GET') {
       // stdio 实例订阅：脚本库变化、扩展连上或断开时推一条，让它通知 AI 客户端重新拉工具列表
-      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+      res.writeHead(200, { ...SAFE_RESPONSE, 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
       res.write(': ok\n\n');
       const push = () => res.write('event: tools\ndata: {}\n\n');
       libraryListeners.add(push);
@@ -1585,8 +1751,8 @@ async function route(req, res) {
     }
     if (p === '/api/ext' && req.method === 'POST') {
       // 另一个桥接进程（stdio）转发来的调用。导入的录制包最大 50MB（见 readPkgFile），转成 JSON 还会变长一些
+      if (!fromStdio(req)) return sendJson(res, 403, { ok: false, error: 'forbidden' });
       const b = await readBody(req, 64e6);
-      if (b.method === 'importPackage' && !TOKEN && !fromStdio(req)) return sendJson(res, 403, { ok: false, error: IMPORT_NEEDS_TOKEN });
       const wait = Number.isFinite(b.wait) ? Math.min(Math.max(0, b.wait), EXT_WAIT_MS) : undefined;
       return sendJson(res, 200, { ok: true, data: await extCall(b.method, b.params || {}, b.timeout, b.browser, wait) });
     }
@@ -1599,28 +1765,38 @@ async function route(req, res) {
     }
     const m = p.match(/^\/api\/recordings\/([^/]+)(?:\/(run|call|script|docs|package))?$/);
     if (m) {
-      const recording = decodeURIComponent(m[1]);
+      let recording;
+      try { recording = decodeURIComponent(m[1]).trim(); } catch (e) { return sendJson(res, 400, { ok: false, error: 'invalid recording id' }); }
+      if (!recording) return sendJson(res, 400, { ok: false, error: '缺少 recording 参数' });
       const action = m[2];
       if (!action && req.method === 'GET') return sendJson(res, 200, { ok: true, data: await extCall('get', { recording }, 60000, browserOf(u)) });
       if (action === 'script' && req.method === 'GET') {
+        // 防跨站 <script src> 窃取脚本内容（XSSI）
+        if (String(req.headers['sec-fetch-dest'] || '').toLowerCase() === 'script') return sendJson(res, 403, { ok: false, error: 'forbidden script inclusion' });
         const r = await extCall('script', { recording }, 60000, browserOf(u));
-        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+        res.writeHead(200, {
+          'content-type': 'text/javascript; charset=utf-8',
+          'x-content-type-options': 'nosniff',
+          'cross-origin-resource-policy': 'same-origin',
+        });
         return res.end(r.script);
       }
       if (action === 'package' && req.method === 'GET') {
         const r = await extCall('exportPackage', { recording }, 60000, browserOf(u));
         const pkg = r && r.pkg ? r.pkg : r;
         const file = String((pkg && pkg.name) || recording).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 80) + '.prpkg.json';
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-disposition': `attachment; filename="package.prpkg.json"; filename*=UTF-8''${encodeURIComponent(file).replace(/['()*!]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}` });
+        res.writeHead(200, { ...SAFE_RESPONSE, 'content-type': 'application/json; charset=utf-8', 'content-disposition': `attachment; filename="package.prpkg.json"; filename*=UTF-8''${encodeURIComponent(file).replace(/['()*!]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}` });
         return res.end(JSON.stringify(pkg, null, 2));
       }
       if (req.method === 'POST') {
         const b = await readBody(req);
         const browser = browserOf(u, b);
         if (action === 'run') {
-          const timeout = Number(b.timeout) || 180000;
-          const params = Object.assign({}, b, { recording, timeout });
-          delete params.browser;
+          const timeout = Math.max(1000, Math.min(900000, Number(b.timeout) || 180000));
+          const params = { recording, timeout };
+          for (const key of ['params', 'apiParams', 'mode', 'newTab', 'fresh', 'keepTab', 'active', 'capture', 'realInput']) {
+            if (Object.hasOwn(b, key)) params[key] = b[key];
+          }
           return sendJson(res, 200, { ok: true, data: await extCall('run', params, timeout + 30000, browser) });
         }
         if (action === 'call') return sendJson(res, 200, { ok: true, data: await extCall('call', { recording, api: b.api, args: b.args || {}, params: b.params, apiParams: b.apiParams }, 90000, browser) });
@@ -1633,19 +1809,34 @@ async function route(req, res) {
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
   } catch (e) {
-    return sendJson(res, 500, { ok: false, error: e.message });
+    if (res.headersSent) { try { res.end(); } catch (_) { /* ignore */ } return; }
+    if (e.statusCode === 413) res.setHeader('Connection', 'close');
+    return sendJson(res, e.statusCode || 500, { ok: false, error: e.message });
   }
 }
 
-const server = http.createServer((req, res) => { route(req, res); });
-server.on('upgrade', (req, socket) => {
-  const u = new URL(req.url, 'http://x');
-  const origin = req.headers.origin || '';
+const server = http.createServer((req, res) => {
+  route(req, res).catch((e) => {
+    try { if (!res.headersSent) sendJson(res, 500, { ok: false, error: String((e && e.message) || e) }); else res.end(); } catch (_) { /* ignore */ }
+  });
+});
+server.on('upgrade', (req, socket, head) => {
+  socket.on('error', () => { try { socket.destroy(); } catch (e) { /* ignore */ } });
+  let u;
+  try { u = new URL(req.url, 'http://x'); } catch (e) {
+    socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    return;
+  }
+  const origin = String(req.headers.origin || '');
+  const extId = extensionOriginId(origin);
   // Origin 只能挡住网页，挡不住本机/局域网里的其他程序：设置了 token 时扩展也要带上（桥接地址写成 ws://…/ext?token=口令）
-  if (u.pathname !== '/ext' || !hostAllowed(req) || !origin.startsWith('chrome-extension://') || !req.headers['sec-websocket-key'] || (TOKEN && u.searchParams.get('token') !== TOKEN)) {
+  if (u.pathname !== '/ext' || !hostAllowed(req) || !extId || (EXT_ID_ALLOW.size && !EXT_ID_ALLOW.has(extId)) || !req.headers['sec-websocket-key'] || (TOKEN && !sameSecret(u.searchParams.get('token'), TOKEN))) {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
     return;
   }
+  if (wsSockets.size >= 32) { socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n'); return; }
+  wsSockets.add(socket);
+  socket.once('close', () => wsSockets.delete(socket));
   socket.write([
     'HTTP/1.1 101 Switching Protocols',
     'Upgrade: websocket',
@@ -1655,7 +1846,7 @@ server.on('upgrade', (req, socket) => {
   ].join('\r\n'));
   socket.setNoDelay(true);
   socket.setKeepAlive(true, 15000);
-  attachWs(socket);
+  attachWs(socket, origin, head);
 });
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {

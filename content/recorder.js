@@ -1,6 +1,15 @@
 // Content script (ISOLATED world)：记录用户操作，转发 hook.js 抓到的请求，显示录制浮层。
 (() => {
   if (window.__PAGE_RECORDER_CONTENT__) return;
+  // 同源的 about:blank / srcdoc iframe（富文本编辑器等）由外层页面的 blankFrameDocs 统一录制（带 frameChain）；
+  // 沙箱或跨域的 about:blank iframe 访问不了外层，继续往下走以便和 hook.js 配对
+  try {
+    if (/^about:/.test(location.href) && window.parent !== window) {
+      let w = window.parent;
+      while (/^about:/.test(w.location.href) && w.parent !== w) w = w.parent;
+      if (/^(https?|file|blob):/i.test(w.location.href)) return;
+    }
+  } catch (e) { /* 沙箱/跨域 iframe 按独立页面处理 */ }
   window.__PAGE_RECORDER_CONTENT__ = true;
   // iframe（包括跨域的）里也录制操作和接口；页面跳转、地址变化只记顶层的，浮层也只在顶层显示
   const IS_TOP = window.top === window;
@@ -33,7 +42,7 @@
   }
   const dynamicClass = (s, all) => !s || s.length > 40 || /^(css|sc|jsx|svelte|emotion|tw|ng)-/i.test(s) || /__[A-Za-z0-9_-]{5,}$/.test(s)
     || /--[A-Za-z0-9_]{5,}$/.test(s) || /\d{3,}/.test(s) || /[A-Z0-9]{4,}/.test(s) || /^(active|hover|focus|selected|is-|has-|ng-|v-)/.test(s) || hashedClass(s, all);
-  const cssAttr = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\a ') + '"';
+  const cssAttr = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\a ').replace(/\r/g, '\\d ').replace(/\f/g, '\\c ') + '"';
   const rootOf = (el) => (el.getRootNode ? el.getRootNode() : document);
 
   function unique(sel, el) {
@@ -76,20 +85,26 @@
     let cur = el;
     while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
       if (cur !== el) {
-        if (cur.id && !dynamicId(cur.id)) { parts.unshift('#' + CSS.escape(cur.id)); const s = parts.join(' > '); return s; }
+        if (cur.id && !dynamicId(cur.id)) {
+          const s = ['#' + CSS.escape(cur.id), ...parts].join(' > ');
+          if (unique(s, el)) return s;
+        }
         const tid = cur.getAttribute('data-testid');
-        if (tid) { parts.unshift(`[data-testid=${cssAttr(tid)}]`); return parts.join(' > '); }
+        if (tid) {
+          const s = [`[data-testid=${cssAttr(tid)}]`, ...parts].join(' > ');
+          if (unique(s, el)) return s;
+        }
       }
       let seg = cur.tagName.toLowerCase();
-      const parent = cur.parentElement;
-      if (parent) {
+      const parent = cur.parentNode;
+      if (parent && parent.children) {
         const sibs = [...parent.children].filter((c) => c.tagName === cur.tagName);
         if (sibs.length > 1) seg += `:nth-of-type(${sibs.indexOf(cur) + 1})`;
       }
       parts.unshift(seg);
       const sel = parts.join(' > ');
       if (unique(sel, el)) return sel;
-      cur = parent;
+      cur = parent && parent.nodeType === 1 ? parent : null;
     }
     return parts.join(' > ');
   }
@@ -350,7 +365,7 @@
   // 见过一次是密码框就一直按密码处理（点“显示密码”小眼睛后 type 变成 text，内容还是密码）
   const everSensitive = new WeakSet();
   const isSensitive = (el) => {
-    if (el.type === 'password' || /^(one-time-code|current-password|new-password)$/.test(el.autocomplete || '')) { everSensitive.add(el); return true; }
+    if (el.type === 'password' || /(?:^|\s)(one-time-code|current-password|new-password)(?:$|\s)/i.test(el.autocomplete || '') || /^(password|passwd|passcode|otp|pin|verification_?code)$/i.test(el.name || el.id || '')) { everSensitive.add(el); return true; }
     return everSensitive.has(el);
   };
   const visibleEl = (el) => !!(el && el.isConnected && (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length));
@@ -367,8 +382,8 @@
   // 输入：合并连续输入，只记录最终值
   let pending = null;
   let pendingTimer = null;
-  const lastValue = new WeakMap();
-  const fillOf = new WeakMap(); // 输入框 → 键入它的那一步（之后页面格式化了值，就改这一步的值）
+  let lastValue = new WeakMap();
+  let fillOf = new WeakMap(); // 输入框 → 键入它的那一步（之后页面格式化了值，就改这一步的值）
   function flushInput() {
     clearTimeout(pendingTimer);
     if (!pending) return;
@@ -386,8 +401,8 @@
     const commitTs = p0.last;
     // 密码明文只交给扩展后台的内存：之后请求里出现同一个值就换成占位符（关联到密码参数），不进存储、不进导出
     const reuse = lastStep && lastStep.type === 'fill' && lastStep.el === el;
-    const sid = reuse ? lastStep.id : uid();
-    if (sensitive && v) send({ type: 'secret', id: sid, value: v });
+    const sid = reuse ? lastStep.id : p0.id || uid();
+    if (sensitive && v && p0.sent !== v) send({ type: 'secret', id: sid, value: v });
     if (reuse) {
       send({ type: 'updateEvent', id: lastStep.id, patch: Object.assign({ value, sensitive, commitTs }, sensitive ? { secretId: sid } : {}) });
       fillOf.set(el, { id: lastStep.id, ts: Date.now(), value: v });
@@ -418,9 +433,17 @@
     const el = deepTarget(e);
     if (!isTextField(el)) return;
     noteRoot(el);
-    isSensitive(el); // 键入时就登记是不是密码框（之后点了显示密码也还算）
+    const sensitive = isSensitive(el) && settings.maskPasswords !== false;
     if (pending && pending.el !== el) flushInput();
     if (!pending) pending = { el, ts: Date.now() };
+    if (sensitive) {
+      pending.id ||= lastStep?.type === 'fill' && lastStep.el === el ? lastStep.id : uid();
+      const value = valueOf(el);
+      if (value && pending.sent !== value) {
+        pending.sent = value;
+        send({ type: 'secret', id: pending.id, value });
+      }
+    }
     pending.last = Date.now();
     clearTimeout(pendingTimer);
     pendingTimer = setTimeout(flushInput, 1500);
@@ -487,7 +510,7 @@
     }
   }
   const fieldKey = (el) => (/^(checkbox|radio)$/i.test(el.type) ? 'c' + el.checked : el.tagName === 'SELECT' ? 's' + [...el.selectedOptions].map((o) => o.value).join('\u0001') : 'v' + el.value);
-  const known = new WeakMap();
+  let known = new WeakMap();
   let lastReqScan = 0;
   function allFields() {
     const out = [...document.querySelectorAll(FIELD_SEL)];
@@ -641,7 +664,7 @@
   }
   const claimed = new Set(); // 已经归到某个语义步骤下的原始操作
   const hiddenField = (el) => !visibleEl(el) || tinyEl(el);
-  const hiddenMulti = new WeakMap(); // 藏起来的多选原生下拉框 → 正在累加选项的那一步
+  let hiddenMulti = new WeakMap(); // 藏起来的多选原生下拉框 → 正在累加选项的那一步
   const nearField = (a, f) => { for (let n = f, d = 0; n && d < 8; n = n.parentElement, d++) if (n.contains(a)) return compactWidget(n) || d <= 2; return false; };
   const inOverlay = (a) => { for (let n = a; n && n.nodeType === 1; n = up(n)) if (overlayNode(n)) return true; return false; };
   // 刚才那几下点击是不是在给这个字段选值：从最近一次点击往回，取点在浮层里、或者点在这个字段旁边的连续点击；
@@ -1043,6 +1066,7 @@
   listen('focusin', (e) => {
     if (!recording || !e.isTrusted) return;
     const t = deepTarget(e);
+    noteRoot(t);
     if (!t.matches || !t.matches(FIELD_SEL) || (session && (session.fields.has(t) || inSessionUI(t)))) return;
     const near = widgetNear(t);
     if (near) startSession(near);
@@ -1170,6 +1194,7 @@
     if (e.isComposing || e.keyCode === 229) return; // 输入法组字中
     if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key)) userScrollTs = Date.now();
     const t = deepTarget(e);
+    noteRoot(t);
     const el = t && t !== document.body && t !== document.documentElement && t.nodeType === 1 ? t : null;
     const typing = el && isTextField(el);
     const popup = !!(el && (el.getAttribute('aria-expanded') === 'true' || el.hasAttribute('aria-activedescendant') || session));
@@ -1233,100 +1258,69 @@
 
   window.addEventListener('pagehide', () => { flushInput(); endSession(); }, true);
 
-  // 本框架左上角在顶层视口里的位置：逐级问父框架里对应 iframe 元素的内容区位置（跨域也行）
-  function frameOffset() {
-    if (IS_TOP) return Promise.resolve({ x: 0, y: 0 });
-    return new Promise((resolve) => {
-      const id = uid();
-      const done = (v) => { removeEventListener('message', on); clearTimeout(t); resolve(v); };
-      const on = (e) => { const d = e.data; if (e.source === window.parent && d && d[TAG] === 'offsetRes' && d.id === id) done(d.offset || null); };
-      const t = setTimeout(() => done(null), 3000);
-      addEventListener('message', on);
-      window.parent.postMessage({ [TAG]: 'offsetReq', id }, '*');
-    });
-  }
-  function frameElementOf(win) {
-    const all = [...document.querySelectorAll('iframe,frame')];
-    return all.find((f) => { try { return f.contentWindow === win; } catch (e) { return false; } }) || null;
-  }
-  // 回放引擎请求真实输入：坐标换算成顶层视口坐标后交给扩展用调试接口发送
-  async function relayInput(d) {
-    const req = Object.assign({}, d.req);
-    // 坐标只能落在本框架里面：iframe 里的页面不能借扩展点到外层页面
-    const inside = (x, y) => typeof x === 'number' && typeof y === 'number' && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
-    if (('x' in req && !inside(req.x, req.y)) || ('tx' in req && !inside(req.tx, req.ty))) return { ok: false, error: '坐标不在页面可视区域内' };
-    // 键盘输入发给整个标签页里有焦点的地方：只有焦点就在本框架里（不在别的框架、也不在子框架里）才发
+  // Chrome 将真实输入的调用入口保留在 ISOLATED world。
+  window.__pageRecorderInput = async (token, req) => {
+    if (!IS_TOP) return { ok: false, error: '子框架使用模拟输入' };
+    const inside = (x, y) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+      const hit = document.elementFromPoint(x, y);
+      return hit && !/^(IFRAME|FRAME)$/.test(hit.tagName);
+    };
+    if (('x' in req && !inside(req.x, req.y)) || ('tx' in req && !inside(req.tx, req.ty))) {
+      return { ok: false, error: '坐标不在顶层页面的可操作区域内' };
+    }
     if (req.type === 'key' || req.type === 'text') {
       const a = deepActive();
-      // 焦点在子框架里：只有同源的 about:blank / srcdoc 编辑器框架（由本页面操作的）可以
-      const blank = (f) => { try { return !f.contentWindow.__PAGE_RECORDER_CONTENT__ && !!f.contentDocument; } catch (e) { return false; } };
-      if (!document.hasFocus() || (a && /^(IFRAME|FRAME)$/.test(a.tagName) && !blank(a))) return { ok: false, error: '焦点不在这个页面里' };
+      if (!document.hasFocus() || (a && /^(IFRAME|FRAME)$/.test(a.tagName))) return { ok: false, error: '焦点不在顶层页面' };
     }
-    if ('x' in req || 'tx' in req) {
-      const off = await frameOffset();
-      if (!off) return { ok: false, error: '算不出 iframe 在页面里的位置' };
-      if ('x' in req) { req.x += off.x; req.y += off.y; }
-      if ('tx' in req) { req.tx += off.x; req.ty += off.y; }
-    }
-    return (await send({ type: 'realInput', token: d.token, req })) || { ok: false, error: '扩展没有响应' };
-  }
+    return (await send({ type: 'realInput', token, req })) || { ok: false, unknown: true, error: '扩展没有响应' };
+  };
 
-  // 转发 hook.js 抓到的请求
-  window.addEventListener('message', (e) => {
-    const d = e.data;
-    // 回放引擎的断点，转给扩展（跨源跳转后以扩展收到的为准）
-    if (e.source === window && d && d[TAG] === 'progress' && typeof d.token === 'string') {
-      send({ type: 'replayProgress', token: d.token, data: d.data });
+  let hookPort = null;
+  let hookBound = false;
+  let stateKnown = false;
+  function sendHook(msg) {
+    if (!hookBound) return;
+    try { hookPort.postMessage(msg); } catch (e) { /* ignore */ }
+  }
+  function onHookMessage(d) {
+    if (!d || typeof d !== 'object') return;
+    if (d[TAG] === 'initAck') {
+      hookBound = true;
+      hookState();
       return;
     }
+    if (!hookBound) return;
     // 页面弹了原生弹窗：记到触发它的那一步上（回放时提前装好同样的应答）
-    if (e.source === window && d && d[TAG] === 'dialog' && recording) {
+    if (d[TAG] === 'dialog' && recording) {
       if (lastStep) {
         lastStep.dialogs.push({ kind: d.kind, message: String(d.message || '').slice(0, 300), result: d.result });
         send({ type: 'updateEvent', id: lastStep.id, patch: { dialogs: lastStep.dialogs } });
       }
       return;
     }
-    if (e.source === window && d && d[TAG] === 'reqstart') { if (Date.now() - lastReqScan > 150) { lastReqScan = Date.now(); scan(); } return; }
+    if (d[TAG] === 'reqstart') { if (Date.now() - lastReqScan > 150) { lastReqScan = Date.now(); scan(); } return; }
     // 没挂到页面上的文件框选了文件（hook.js 报告）：记成上传，目标是刚才点的那个“上传”按钮，回放时点它、拦下选文件对话框设文件
-    if (e.source === window && d && d[TAG] === 'filepick' && recording && Array.isArray(d.files)) {
+    if (d[TAG] === 'filepick' && recording && Array.isArray(d.files)) {
       const s = lastStep && lastStep.type === 'click' && Date.now() - lastStep.ts < 30000 && lastStep.el && lastStep.el.isConnected ? lastStep : null;
       if (s) record({ type: 'upload', chooser: true, target: describe(s.el), files: d.files.map(String).slice(0, 20) }, s.el);
       return;
     }
-    if (e.source === window && d && d[TAG] === 'input' && typeof d.token === 'string' && d.req) {
-      relayInput(d).then((res) => window.postMessage({ [TAG]: 'inputRes', id: d.id, res }, '*'));
-      return;
-    }
-    // 子框架问自己的位置：找到对应的 iframe 元素，加上它的边框和内边距，再加上本框架自己的位置
-    if (d && d[TAG] === 'offsetReq' && e.source && e.source !== window) {
-      const f = frameElementOf(e.source);
-      if (!f) return;
-      const src = e.source;
-      (async () => {
-        // iframe 所在的弹窗还在滑入、淡入：等它停稳再量位置
-        let last = '';
-        for (let k = 0; k < 16; k++) {
-          const q = f.getBoundingClientRect();
-          const key = [q.left, q.top].map(Math.round).join(',');
-          let moving = false;
-          for (let n = f; n && n.nodeType === 1 && !moving; n = n.parentElement) moving = !!(n.getAnimations && n.getAnimations().some((a) => a.playState === 'running' && !(a.effect && a.effect.getTiming && a.effect.getTiming().iterations === Infinity)));
-          if (!moving && key === last) break;
-          last = key;
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        const r = f.getBoundingClientRect();
-        const cs = getComputedStyle(f);
-        const own = { x: r.left + f.clientLeft + (parseFloat(cs.paddingLeft) || 0), y: r.top + f.clientTop + (parseFloat(cs.paddingTop) || 0) };
-        const upOff = await frameOffset();
-        src.postMessage({ [TAG]: 'offsetRes', id: d.id, offset: upOff ? { x: own.x + upOff.x, y: own.y + upOff.y } : null }, '*');
-      })();
-      return;
-    }
-    if (e.source !== window || !d || d[TAG] !== 'net' || !(recording || capturing)) return;
+    if (d[TAG] !== 'net' || !(recording || capturing)) return;
     const r = d.data;
-    r.kind = 'request';
-    send({ type: 'event', event: r }).then(updateCounts);
+    if (!r || typeof r !== 'object') return;
+    send({ type: 'event', event: { ...r, kind: 'request' } }).then(updateCounts);
+  }
+  function connectHook() {
+    if (hookPort) return;
+    const ch = new MessageChannel();
+    hookPort = ch.port1;
+    hookPort.onmessage = (ev) => onHookMessage(ev.data);
+    window.postMessage({ [TAG]: 'init' }, '*', [ch.port2]);
+  }
+
+  window.addEventListener('message', (e) => {
+    if (e.isTrusted && e.source === window && e.data?.[TAG] === 'ready') connectHook();
   });
 
   function updateCounts(res) {
@@ -1335,15 +1329,42 @@
 
   // 抓包模式：扩展回放这个标签页时只转发接口请求和返回，不记录操作、不显示浮层
   let capturing = false;
-  const hookState = () => window.postMessage({ [TAG]: 'state', recording: recording || capturing, maxBody: (settings.maxBodyKB || 512) * 1024 }, '*');
-  function setCapture(on) { capturing = !!on; hookState(); }
+  const hookState = () => {
+    if (stateKnown) sendHook({ [TAG]: 'state', recording: recording || capturing, maxBody: (settings.maxBodyKB || 512) * 1024 });
+  };
+  let stateVersion = 0;
+  let captureVersion = 0;
+  function setCapture(on) { capturing = !!on; if (capturing) stateKnown = true; hookState(); }
+  function resetRecordingState(clearRoots) {
+    lastStep = null;
+    recentSteps.length = 0;
+    lastValue = new WeakMap();
+    fillOf = new WeakMap();
+    hiddenMulti = new WeakMap();
+    known = new WeakMap();
+    claimed.clear();
+    lastTrigger = null;
+    gesture = null;
+    pressInfo = null;
+    hoverTrail.length = 0;
+    scanTimers.forEach(clearTimeout);
+    scanTimers = [];
+    for (const tm of scrollTimers.values()) clearTimeout(tm);
+    scrollTimers.clear();
+    if (clearRoots) {
+      for (const r of knownRoots) { try { r.removeEventListener('change', onChange, true); } catch (e) { /* ignore */ } }
+      knownRoots.clear();
+    }
+  }
   function setRecording(on, s, c) {
+    stateKnown = true;
     if (s) settings = s;
     if (c) counts = c;
     if (!on) { flushInput(); endSession(); }
     const starting = on && !recording;
     recording = !!on;
-    if (starting) scan(); // 记下所有字段的初始值
+    if (!on) resetRecordingState(true);
+    else if (starting) { resetRecordingState(false); scan(); } // 重置状态并记下所有字段的初始值
     lastScroll = { x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
     hookState();
     if (recording) showUI(); else hideUI();
@@ -1351,16 +1372,25 @@
 
   if (alive()) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-      if (msg && msg.type === 'state') { setRecording(msg.recording, msg.settings, msg.counts); sendResponse({ ok: true }); }
-      if (msg && msg.type === 'capture') { setCapture(msg.on); sendResponse({ ok: true }); }
+      if (sender.id !== chrome.runtime.id) return false;
+      if (msg?.type === 'state') {
+        stateVersion++;
+        setRecording(msg.recording, msg.settings, msg.counts);
+        sendResponse({ ok: true });
+      }
+      if (msg?.type === 'capture') { captureVersion++; setCapture(msg.on); sendResponse({ ok: true }); }
       return false;
     });
   }
 
+  window.postMessage({ [TAG]: 'helloHook' }, '*');
   function hello() {
+    const version = stateVersion;
+    const captureAt = captureVersion;
     send({ type: 'hello', url: location.href, title: document.title }).then((res) => {
-      capturing = !!(res && res.capture);
-      setRecording(!!(res && res.recording), res && res.settings, res && res.counts);
+      if (!res) return;
+      if (captureAt === captureVersion) setCapture(res.capture);
+      if (version === stateVersion) setRecording(!!res.recording, res.settings, res.counts);
     });
   }
   hello();
