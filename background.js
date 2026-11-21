@@ -1047,10 +1047,19 @@ function changedParams(b, given) {
   return out;
 }
 // 页面回放校准过的参数：{ 录制 id: { savedAt, params: { 参数: 'ok' | 'mismatch' } } }。录制改过（savedAt 变了）就作废
-async function verifiedOf(item) {
+// 每个参数的校准结论和“这个名字现在对应哪个步骤、哪些接口字段”绑在一起：起名规则变了、名字换了主人，旧结论不再算数
+function paramSig(b, k) {
+  const steps = b.recording.steps.filter((st) => tplNames([st.value, st.checked]).includes(k)).map((st) => [st.type, st.desc, ((st.target && st.target.selectors) || []).join('|')]);
+  const apis = Object.entries(b.apiParams || {}).filter(([, v]) => tplNames(v).includes(k)).map(([n, v]) => [n, v]);
+  return JSON.stringify([steps, apis]);
+}
+async function verifiedOf(item, b) {
   try {
     const v = ((await chrome.storage.local.get('directVerified')).directVerified || {})[item.id];
-    return v && v.savedAt === item.savedAt ? v.params || {} : {};
+    if (!v || v.savedAt !== item.savedAt) return {};
+    const out = {};
+    for (const [k, r] of Object.entries(v.params || {})) if (v.sigs && b && v.sigs[k] === paramSig(b, k)) out[k] = r;
+    return out;
   } catch (e) { return {}; }
 }
 // 直接请求被服务端明确拒绝（签名、登录态要页面现算，比如淘宝 mtop 的 sign）：一天内这条录制不再先试直接请求
@@ -1068,14 +1077,21 @@ async function directRejectedOf(item) {
     return v && v.savedAt === item.savedAt && v.rejectedAt && Date.now() - v.rejectedAt < 24 * 3600 * 1000 ? v.rejectedReason || '直接请求最近被服务端拒绝' : null;
   } catch (e) { return null; }
 }
-async function saveVerified(item, verdicts) {
+async function saveVerified(item, verdicts, b) {
   const got = Object.entries(verdicts || {}).filter(([, r]) => r === 'ok' || r === 'mismatch');
   if (!got.length) return;
   try {
     const all = (await chrome.storage.local.get('directVerified')).directVerified || {};
-    const cur = all[item.id] && all[item.id].savedAt === item.savedAt ? all[item.id].params || {} : {};
-    for (const [k, r] of got) cur[k] = cur[k] === 'mismatch' ? 'mismatch' : r;
-    all[item.id] = { savedAt: item.savedAt, params: cur };
+    const same = all[item.id] && all[item.id].savedAt === item.savedAt;
+    const cur = same ? all[item.id].params || {} : {};
+    const sigs = same ? all[item.id].sigs || {} : {};
+    for (const [k, r] of got) {
+      const sig = paramSig(b, k);
+      // 名字换了主人：旧结论作废，用这次的
+      cur[k] = sigs[k] === sig && cur[k] === 'mismatch' ? 'mismatch' : r;
+      sigs[k] = sig;
+    }
+    all[item.id] = Object.assign({}, same ? all[item.id] : {}, { savedAt: item.savedAt, params: cur, sigs });
     const keys = Object.keys(all);
     for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k];
     await chrome.storage.local.set({ directVerified: all });
@@ -1167,7 +1183,7 @@ async function runRecording(item, opts) {
       return callable.some((a) => JSON.stringify(b.apiParams[a.name] || {}).includes(`{{${k}|opt`)) && !tbl.some((o) => String(o[0]) === v || squash(o[1]) === v);
     });
     if (noOpt.length) reasons.push(`参数 ${noOpt.join('、')} 的值不在录到的选项里，换不出接口要的编码`);
-    const ver = await verifiedOf(item);
+    const ver = await verifiedOf(item, b);
     const rejected = mode === 'auto' ? await directRejectedOf(item) : null;
     if (rejected) reasons.push(`直接请求最近被服务端拒绝过（${rejected}），一天内先用页面回放`);
     const mism = changed.filter((k) => ver[k] === 'mismatch');
@@ -1195,7 +1211,7 @@ async function runRecording(item, opts) {
   }
   const ui = await runUi(item, b, opts, calibrateNames, required);
   if (route) ui.route = route;
-  if (ui.calibration) await saveVerified(item, ui.calibration.params);
+  if (ui.calibration) await saveVerified(item, ui.calibration.params, b);
   return ui;
 }
 async function runUi(item, b, opts, calibrateNames, required) {

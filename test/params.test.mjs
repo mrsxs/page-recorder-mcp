@@ -26,3 +26,25 @@ test('复选框和已有参数同名时，已有参数保留原名，复选框�
   assert.equal(p.Agree, 'yes', JSON.stringify(p));
   assert.equal(p.Agree_2, true, JSON.stringify(p));
 });
+
+test('起出来的带后缀名字不和已有的同名字段撞上', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const zip = step('a', 2, { type: 'fill', target: tgt('#zip', 'ZIP code', 'Shipping'), value: '10001' });
+  const cb = step('b', 3, { type: 'check', target: tgt('#ship', 'Shipping', 'Shipping', 'input', 'checkbox'), checked: true });
+  const other = step('c', 4, { type: 'fill', target: tgt('#s2', 'Shipping_2', ''), value: 'x' });
+  const p = PR_EXPORTER.analyze([nav, zip, cb, other], {}, {}).params;
+  assert.equal(Object.keys(p).length, 3, JSON.stringify(p));
+  assert.equal(p.Shipping, '10001');
+  assert.equal(p.Shipping_2, 'x');
+  assert.ok(Object.values(p).includes(true), JSON.stringify(p));
+});
+
+test('同一个下拉框先单选后多选：前一次记成被后一次覆盖', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const sel = (id, ts, value) => step(id, ts, { type: 'select', target: tgt('#region', 'Region', '', 'select'), value, options: [['north', 'North'], ['south', 'South']] });
+  const a = PR_EXPORTER.analyze([nav, sel('a', 2, 'north'), sel('b', 3, ['south'])], {}, {});
+  const first = a.steps.find((s) => s.id === 'a');
+  const last = a.steps.find((s) => s.id === 'b');
+  assert.ok(last.param, JSON.stringify(a.params));
+  assert.equal(first.overwrittenBy, last.param);
+});
