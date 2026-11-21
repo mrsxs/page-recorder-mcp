@@ -1007,6 +1007,14 @@ function linkedApis(b) {
   return b.recording.apis.filter((a) => !a.ignore && tplNames(b.apiParams[a.name] || {}).length);
 }
 // 这次实际用的参数里，和最初录到的值不一样的（弹窗里改过的默认值也算改了；下拉框填选项文字和录制的选项值是同一个就不算改）
+// 单选按参数找选项（和 lib/runtime.js 的 radioFor 同一个规则）：显示文字唯一就是它，否则值唯一就是它，否则 -1（没有或分不清）
+function radioPick(options, token) {
+  const t = String(token == null ? '' : token);
+  const byText = options.map((o, i) => (String(o[1]).trim() === t.trim() ? i : -1)).filter((i) => i >= 0);
+  if (byText.length === 1) return byText[0];
+  const byVal = options.map((o, i) => (o[0] === t ? i : -1)).filter((i) => i >= 0);
+  return byVal.length === 1 ? byVal[0] : -1;
+}
 function changedParams(b, given) {
   const out = [];
   const eff = Object.assign({}, b.params, given || {});
@@ -1014,10 +1022,17 @@ function changedParams(b, given) {
   for (const [k, v] of Object.entries(eff)) {
     let x = v == null ? '' : String(v);
     const s = b.recording.steps.find((st) => st.type === 'select' && st.value === `{{${k}}}` && Array.isArray(st.options));
-    if (s && !Array.isArray(v)) { const o = s.options.find((op) => op[0] === x) || s.options.find((op) => String(op[1]).trim() === x.trim()); if (o) x = String(o[0]); }
-    // 单选：填值和填文字是同一个选项就不算改（基准是文字）；复选框：1/0 和 true/false 一样
+    // 多选：每一项按值或文字对到选项，和录制时选中的那组比（不看顺序）；对不上的项算改了
+    if (s && Array.isArray(rec[k])) {
+      const ids = [].concat(v == null ? [] : v).map((t) => { const o = s.options.find((op) => op[0] === String(t)) || s.options.find((op) => String(op[1]).trim() === String(t).trim()); return o ? o[0] : null; });
+      if (ids.includes(null) || ids.slice().sort().join('\u0001') !== rec[k].map(String).sort().join('\u0001')) out.push(k);
+      continue;
+    }
+    if (s) { const o = s.options.find((op) => op[0] === x) || s.options.find((op) => String(op[1]).trim() === x.trim()); if (o) x = String(o[0]); }
+    // 单选：和回放同一个规则（radioPick）对到选项，比选项是不是同一个；对不上或分不清的算改了
     const r = b.recording.steps.find((st) => st.type === 'check' && st.value === `{{${k}}}` && Array.isArray(st.options));
-    if (r) { const o = r.options.find((op) => String(op[1]).trim() === x.trim()) || r.options.find((op) => op[0] === x); if (o) x = String(o[1]); }
+    if (r) { const i = radioPick(r.options, v), ri = radioPick(r.options, rec[k]); if (i < 0 || ri < 0 || i !== ri) out.push(k); continue; }
+    // 复选框：1/0 和 true/false 一样
     if (b.recording.steps.some((st) => st.type === 'check' && st.checked === `{{${k}}}`)) x = { 1: 'true', 0: 'false' }[x] || x;
     if (x !== String(rec[k] == null ? '' : rec[k])) out.push(k);
   }
@@ -1707,13 +1722,12 @@ async function handle(msg, sender) {
           let opt = Number.isInteger(msg.index) ? ev.options[msg.index] : null;
           if (!opt) {
             const t = String(msg.value == null ? '' : msg.value).trim();
-            const byText = ev.options.filter((o) => o[1] === t);
-            const byVal = ev.options.filter((o) => o[0] === t);
-            opt = byText.length === 1 ? byText[0] : byText.length ? null : byVal.length === 1 ? byVal[0] : null;
-            if (!opt && (byText.length || byVal.length)) throw new Error(`单选项「${t}」对应好几个选项，分不清是哪个（可选：${listed()}）`);
+            const i = radioPick(ev.options, t);
+            opt = i >= 0 ? ev.options[i] : null;
+            if (!opt && ev.options.some((o) => String(o[1]).trim() === t || o[0] === t)) throw new Error(`单选项「${t}」对应好几个选项，分不清是哪个（可选：${listed()}）`);
           }
           if (!opt) throw new Error(`单选项里没有「${msg.value}」（可选：${listed()}）`);
-          if (ev.recordedText === undefined) ev.recordedText = ev.optionText;
+          if (ev.recordedText === undefined) { ev.recordedText = ev.optionText; ev.recordedRadio = ev.value; }
           ev.value = opt[0];
           ev.optionText = opt[1];
         } else {
