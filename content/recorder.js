@@ -669,8 +669,8 @@
   const pressedOption = (t, field) => {
     if (!t || t.nodeType !== 1) return false;
     const opt = t.closest('[role=option],[role=treeitem],li,dd');
-    const ctl = t.closest('button,[role=button],input,textarea');
-    return !!(opt && (!ctl || ctl === opt) && (!t.isConnected || inOverlay(t) || nearField(t, field)));
+    const ctl = t.closest('button,[role=button],a[href],input,textarea');
+    return !!(opt && (!ctl || ctl.matches('[role=option],[role=treeitem]')) && (!t.isConnected || inOverlay(t) || nearField(t, field)));
   };
   const notePressPick = (id, members, el) => {
     pressPick = id && gesture && pressedOption(gesture.target, el) ? { id, members, el, g: gesture } : null;
