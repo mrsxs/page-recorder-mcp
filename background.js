@@ -1735,7 +1735,7 @@ async function handle(msg, sender) {
             if (opt) msg.index = i;
             if (!opt && ev.options.some((o) => String(o[1]).trim() === t || o[0] === t)) throw new Error(`单选项「${t}」对应好几个选项，分不清是哪个（可选：${listed()}）`);
           }
-          if (!opt) throw new Error(`单选项里没有「${msg.value}」（可选：${listed()}）`);
+          if (!opt) throw new Error(`单选项里没有「${msg.value != null ? msg.value : `第 ${Number(msg.index) + 1} 个`}」（可选：${listed()}）`);
           if (ev.recordedText === undefined) { ev.recordedText = ev.optionText; ev.recordedRadio = ev.value; ev.recordedIndex = ev.optionIndex; }
           ev.optionIndex = msg.index;
           ev.value = opt[0];
