@@ -683,7 +683,8 @@ test('runtime: MAIN world 的那份替 ISOLATED world 的回放执行组件适�
   const handlers = new Map();
   win.addEventListener = (type, fn) => handlers.set(type, fn);
   win.removeEventListener = (type) => handlers.delete(type);
-  win.CustomEvent = CustomEvent;
+  // Node 18 没有全局的 CustomEvent
+  win.CustomEvent = class extends Event { constructor(type, init) { super(type, init); this.detail = init?.detail; } };
   const calls = [];
   win.layui = { form: { render: (kind) => calls.push(kind) } };
   const name = 'pr:0123456789abcdef';
