@@ -666,10 +666,12 @@
   // 按下鼠标就选中的组件（Chosen 在 mouseup 时选中）：选择那一步已经录好，这一下按完浏览器还会补来 click，并进那一步
   let pressPick = null;
   // 只认按在这个下拉自己的选项上的那一下（不是弹层里的「确定」之类按钮让组件失焦时才提交的值）
-  const pressedOption = (t, field) => !!(t && t.nodeType === 1 &&
-    !t.closest('button,[role=button],a[href],input,textarea') &&
-    t.closest('[role=option],[role=treeitem],li,dd') &&
-    (!t.isConnected || inOverlay(t) || nearField(t, field)));
+  const pressedOption = (t, field) => {
+    if (!t || t.nodeType !== 1) return false;
+    const opt = t.closest('[role=option],[role=treeitem],li,dd');
+    const ctl = t.closest('button,[role=button],input,textarea');
+    return !!(opt && (!ctl || ctl === opt) && (!t.isConnected || inOverlay(t) || nearField(t, field)));
+  };
   const notePressPick = (id, members, el) => {
     pressPick = id && gesture && pressedOption(gesture.target, el) ? { id, members, el, g: gesture } : null;
   };
