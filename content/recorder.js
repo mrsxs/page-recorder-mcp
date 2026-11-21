@@ -446,6 +446,18 @@
       flushInput();
       remember(el);
       if (el.type === 'radio') for (const r of allFields()) if (r.type === 'radio' && r.name === el.name) remember(r); // 同组被联动取消的不单独录
+      if (el.type === 'radio') {
+        // 单选：记下同组的所有选项（值、显示文字），回放时可以换成组里别的选项
+        const text = (r) => norm([...(r.labels || [])].map((l) => l.textContent).join(' ')) || r.value;
+        const group = el.name ? allFields().filter((r) => r.type === 'radio' && r.name === el.name && r.form === el.form) : [el];
+        // 组名：包住整组的元素去掉各个选项后剩下的文字（“水果：”），没有就用 name
+        let box = el.parentElement;
+        while (box && !group.every((r) => box.contains(r))) box = box.parentElement;
+        let groupLabel = '';
+        if (box) { const c = box.cloneNode(true); c.querySelectorAll('label,input').forEach((x) => x.remove()); groupLabel = norm(c.textContent).replace(/[:：]\s*$/, '').slice(0, 20); }
+        record({ type: 'check', target: describe(el), checked: el.checked, value: el.value, optionText: text(el), options: group.slice(0, 200).map((r) => [r.value, text(r)]), optionIndex: group.indexOf(el), groupLabel: groupLabel || el.name || '' }, el);
+        return;
+      }
       record({ type: 'check', target: describe(el), checked: el.checked }, el);
       return;
     }
@@ -770,8 +782,15 @@
   // 多选下拉把选中的每一项显示成一个标签（带自己的“删除”小按钮）
   const TAG_CLASS = /(^|[-_\s])(tag|chip|token|selection-item|select-item)([-_\s]|$)/i;
   const isTag = (n) => TAG_CLASS.test(typeof n.className === 'string' ? n.className : '');
+  // 已选标签：看得见，且标签到外壳之间没有菜单行、列表（antd 的 ant-select-item-option 也带 select-item）
+  const LIST_ROW = '[role=option],[role=listbox],[class*=option],[class*=dropdown],[class*=popup]';
+  const isShownTag = (n, root) => {
+    if (!isTag(n) || !n.getClientRects().length || getComputedStyle(n).visibility === 'hidden') return false;
+    for (let a = n; a && a !== root; a = a.parentElement) if (a.matches(LIST_ROW)) return false;
+    return true;
+  };
   function shownTags(root) {
-    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item],[class*=select-item]')].filter(isTag);
+    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item],[class*=select-item]')].filter((t) => isShownTag(t, root));
     return tags.filter((t) => !tags.some((o) => o !== t && o.contains(t))).map(tagText).filter(Boolean);
   }
   // 标签上的文字，不算它的删除按钮（有的写成 × 字符）
@@ -818,6 +837,7 @@
     for (let t = w.nextNode(); t; t = w.nextNode()) if (!hidden(t.parentElement) && !(t.parentElement !== root && tinyEl(t.parentElement))) out += ' ' + t.nodeValue;
     return norm(out);
   }
+  const HAS_CHILDREN = '[class*=has-children],[class*=expand],[aria-haspopup=true],[aria-expanded]';
   const OPTION_SEL = '[role=option],[role=treeitem],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],li,dd,[class*=option],[class*=item],[class*=node]';
   const dateText = (v) => /\d{4}\s*[-/.年]\s*\d{1,2}/.test(v) || /\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(v);
   const dateish = (n) => /(^|[-_\s])(date|datepicker|date-picker|picker|calendar|range)([-_\s]|$)/i.test(typeof n.className === 'string' ? n.className : '');
@@ -843,7 +863,8 @@
     const optText = textOf(item.contains(el) ? el : item);
     if (!optText || optText.length > 60) { lastTrigger = null; return; }
     // 下拉还算开着：多选接着点下一项、级联点下一级都要接得上（用户点得快，350ms 的确认还没回来）
-    const entry = { id, text: optText, el: item, at, done: false };
+    // col：点的时候所在的那一列（组件可能在确认前就把选项从列里拿掉）
+    const entry = { id, text: optText, el: item, col: item.parentElement, at, done: false };
     lt.chain.push(entry);
     lt.ts = at;
     setTimeout(() => settleChoice(lt, entry), 350);
@@ -855,6 +876,31 @@
     const tags = shownTags(lt.el);
     const added = tags.includes(optText) && !(lt.tags || []).includes(optText);
     if (now === lt.text && !added) return; // 显示没变：级联的中间一级，或者点了已经选着的那一项
+    // 级联点得慢：上一级点完显示就先变成了它（已经录成一步），这一下点的是下一列：把那一步改成整条路径
+    const cs = lt.cascStep;
+    if (cs && entry.col !== cs.cols[cs.cols.length - 1] && !claimed.has(entry.id)) {
+      // 按列记路径：这次之前还没并进来的几下（显示没变的中间一级、回到前面某列换了分支）按时间顺序过一遍，
+      // 点在已有的第 d 列就把第 d 级及以下换掉，点在新列就接在后面；原始点击都留在 members 里给原样回放
+      const steps = lt.chain.filter((e) => e !== entry && !e.done && !claimed.has(e.id) && e.at > cs.lastAt && e.at <= entry.at).concat(entry);
+      for (const e of steps) {
+        const col = e.col;
+        // 不知道是哪一列的（没记下来）当成新的一列，不截断已有路径
+        let d = col ? cs.cols.indexOf(col) : -1;
+        if (d < 0) d = cs.cols.length;
+        cs.cols.length = d;
+        cs.texts.length = d;
+        cs.cols.push(col);
+        cs.texts.push(e.text);
+        cs.members.push(e.id);
+        claimed.add(e.id);
+        e.done = true;
+      }
+      cs.lastAt = entry.at;
+      send({ type: 'updateEvent', id: cs.id, patch: { value: cs.texts.join(' / '), members: cs.members, commitTs: entry.at } });
+      lt.text = now;
+      if (!entry.el.matches(HAS_CHILDREN) && lastTrigger === lt) lastTrigger = null;
+      return;
+    }
     const idx = lt.chain.indexOf(entry);
     const later = idx < lt.chain.length - 1;
     // 之前点过、显示没跟着变的几下（级联的上几级，在别的列里）
@@ -917,6 +963,9 @@
     lt.tags = multi ? (lt.tags || []).concat(value) : tags;
     lt.again = true;
     if (pick === 'date' && sid) lt.dateStep = { id: sid, members: members.slice() };
+    // 点的是级联里有下一级的节点：下拉还开着，接着点的下一列并进这一步
+    // 前面几级在哪一列不确定（点击顺序不一定是层级顺序），先用占位，不会被匹配上截断路径
+    if (!multi && pick === 'choice' && entry.el.matches(HAS_CHILDREN) && sid) { const texts = String(value).split(' / '); lt.cascStep = { id: sid, members: members.slice(), texts, cols: texts.slice(1).map(() => ({})).concat(entry.col || {}), lastAt: entry.at }; return; }
     // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的；单选选完就结束
     if (!multi && pick !== 'date' && lastTrigger === lt) lastTrigger = null;
   }

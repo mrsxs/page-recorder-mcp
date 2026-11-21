@@ -843,7 +843,8 @@ async function dynamicTools(quick) {
     const required = [];
     for (const [k, v] of Object.entries(r.params || {})) {
       const info = (r.paramInfo || {})[k];
-      props[k] = { type: 'string', description: paramHelp(info, v) };
+      // 多选参数是选项数组，复选框是 true/false
+      props[k] = Array.isArray(v) ? { type: 'array', items: { type: 'string' }, description: paramHelp(info, v) } : typeof v === 'boolean' ? { type: 'boolean', description: paramHelp(info, v) } : { type: 'string', description: paramHelp(info, v) };
       if (info && (info.required || info.kind === 'secret')) required.push(k);
     }
     for (const [k, info] of Object.entries(r.paramInfo || {})) {
