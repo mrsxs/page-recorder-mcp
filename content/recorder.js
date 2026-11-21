@@ -446,6 +446,18 @@
       flushInput();
       remember(el);
       if (el.type === 'radio') for (const r of allFields()) if (r.type === 'radio' && r.name === el.name) remember(r); // 同组被联动取消的不单独录
+      if (el.type === 'radio') {
+        // 单选：记下同组的所有选项（值、显示文字），回放时可以换成组里别的选项
+        const text = (r) => norm([...(r.labels || [])].map((l) => l.textContent).join(' ')) || r.value;
+        const group = el.name ? allFields().filter((r) => r.type === 'radio' && r.name === el.name && r.form === el.form) : [el];
+        // 组名：包住整组的元素去掉各个选项后剩下的文字（“水果：”），没有就用 name
+        let box = el.parentElement;
+        while (box && !group.every((r) => box.contains(r))) box = box.parentElement;
+        let groupLabel = '';
+        if (box) { const c = box.cloneNode(true); c.querySelectorAll('label,input').forEach((x) => x.remove()); groupLabel = norm(c.textContent).replace(/[:：]\s*$/, '').slice(0, 20); }
+        record({ type: 'check', target: describe(el), checked: el.checked, value: el.value, optionText: text(el), options: group.slice(0, 200).map((r) => [r.value, text(r)]), groupLabel: groupLabel || el.name || '' }, el);
+        return;
+      }
       record({ type: 'check', target: describe(el), checked: el.checked }, el);
       return;
     }

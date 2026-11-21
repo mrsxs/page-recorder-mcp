@@ -323,23 +323,35 @@ const SEC_NAME = { path: '路径', query: 'Query', body: 'Body' };
 function renderParams(A) {
   const box = $('#paramBox');
   if (box.contains(document.activeElement)) return;
-  const fills = A.steps.filter((s) => s.param && (s.type === 'fill' || s.type === 'select' || s.type === 'upload'));
+  const fills = A.steps.filter((s) => s.param && (s.type === 'fill' || s.type === 'select' || s.type === 'upload' || s.type === 'check'));
   box.hidden = !fills.length;
   if (!fills.length) return;
   box.innerHTML = '<div class="ptitle">输入参数<span>回放时填进输入框，接口里关联的字段会跟着变。想搜别的内容改这里</span></div>' + fills.map((s) => {
     const n = A.steps.indexOf(s) + 1;
-    return `<label class="prow"><span class="pname" title="${esc(s.desc)}">${esc(s.param)}</span>
+    const from = `<span class="pfrom">步骤 ${n}${s.frame ? ' · iframe' : ''}</span>`;
+    const name = `<span class="pname" title="${esc(s.desc)}">${esc(s.param)}</span>`;
+    // 单选、复选框、多选下拉框只能选组件里已有的选项：用下拉/勾选列表，不让手填
+    const opt = (v, t, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(t)}</option>`;
+    if (s.type === 'check' && Array.isArray(s.options)) return `<label class="prow">${name}<select data-param-step="${esc(s.id)}">${s.options.map(([v, t]) => opt(v, t, v === s.value)).join('')}</select>${from}</label>`;
+    if (s.type === 'check') return `<label class="prow">${name}<select data-param-step="${esc(s.id)}">${opt('true', '勾选', s.checked)}${opt('false', '不勾选', !s.checked)}</select>${from}</label>`;
+    if (s.type === 'select' && Array.isArray(s.value)) {
+      return `<div class="prow">${name}<span class="pmulti" data-param-multi="${esc(s.id)}">${(s.options || []).map(([v, t]) => `<label><input type="checkbox" value="${esc(v)}"${s.value.includes(v) ? ' checked' : ''} />${esc(t)}</label>`).join('')}</span>${from}</div>`;
+    }
+    return `<label class="prow">${name}
       <input data-param-step="${esc(s.id)}" value="${esc(s.sensitive ? '' : s.type === 'select' ? s.optionText || s.value || '' : s.value || '')}"${s.sensitive ? ' disabled placeholder="密码不保存，回放时通过参数传入"' : s.type === 'upload' ? ' placeholder="本机文件完整路径，多个用 | 分隔"' : s.type === 'select' ? ` title="${esc((s.options || []).map((o) => o[1]).join('、'))}"` : ''} />
       <span class="pfrom">步骤 ${n}${s.frame ? ' · iframe' : ''}</span></label>`;
   }).join('');
 }
 $('#paramBox').addEventListener('change', async (e) => {
-  const inp = e.target.closest('input[data-param-step]');
+  const multi = e.target.closest('[data-param-multi]');
+  const inp = multi ? e.target : e.target.closest('input[data-param-step],select[data-param-step]');
   if (!inp) return;
-  const r = await send({ type: 'setParam', id: inp.dataset.paramStep, value: inp.value });
+  const value = multi ? [...multi.querySelectorAll('input:checked')].map((x) => x.value) : inp.value;
+  const r = await send({ type: 'setParam', id: multi ? multi.dataset.paramMulti : inp.dataset.paramStep, value });
   if (r && r.error) { showNotice(esc(r.error), 'error'); return; }
   inp.blur();
-  toast(`已改成「${inp.value}」，回放和导出的脚本都会用这个值`);
+  const shown = multi ? [...multi.querySelectorAll('input:checked')].map((x) => x.parentElement.textContent).join('、') : inp.tagName === 'SELECT' ? inp.selectedOptions[0].textContent : inp.value;
+  toast(`已改成「${shown}」，回放和导出的脚本都会用这个值`);
   await refresh(true);
   renderApis();
 });

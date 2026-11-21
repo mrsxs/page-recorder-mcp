@@ -1677,9 +1677,35 @@ async function handle(msg, sender) {
     }
     case 'setParam': {
       // 修改输入参数的默认值 = 修改对应输入步骤录下的值（导出脚本的 PARAMS、回放、关联的接口字段都跟着变）
-      const ev = c.events.find((e) => e.id === msg.id && e.kind === 'step' && /^(fill|select|upload)$/.test(e.type));
+      const ev = c.events.find((e) => e.id === msg.id && e.kind === 'step' && /^(fill|select|upload|check)$/.test(e.type));
       if (!ev) throw new Error('找不到这个输入步骤');
       if (ev.sensitive) throw new Error('密码类参数不保存，回放时通过参数传入');
+      // 只接受组件里已有的选项：单选填组里的选项，复选框填 true/false，多选下拉框填选项列表
+      const optOf = (x) => { const t = String(x == null ? '' : x); return (ev.options || []).find((o) => o[0] === t) || (ev.options || []).find((o) => o[1] === t.trim()); };
+      const listed = () => (ev.options || []).slice(0, 20).map((o) => o[1]).join('、');
+      if (ev.type === 'check' || (ev.type === 'select' && Array.isArray(ev.value))) {
+        if (ev.type === 'check' && !Array.isArray(ev.options)) {
+          const b = { true: true, false: false, 1: true, 0: false }[String(msg.value)];
+          if (b === undefined) throw new Error(`复选框只能填 true（勾选）或 false（不勾选）`);
+          ev.checked = b;
+        } else if (ev.type === 'check') {
+          const opt = optOf(msg.value);
+          if (!opt) throw new Error(`单选项里没有「${msg.value}」（可选：${listed()}）`);
+          ev.value = opt[0];
+          ev.optionText = opt[1];
+        } else {
+          const list = Array.isArray(msg.value) ? msg.value : [];
+          const opts = list.map(optOf);
+          const miss = list.filter((x, i) => !opts[i]);
+          if (miss.length) throw new Error(`下拉框里没有选项：${miss.join('、')}（可选：${listed()}）`);
+          if (ev.recordedValue === undefined) ev.recordedValue = ev.value;
+          ev.value = opts.map((o) => o[0]);
+          ev.optionText = opts.map((o) => o[1]).join(', ');
+        }
+        await persist(true);
+        if (!c.state.recording) await syncLibrary(c);
+        return { ok: true };
+      }
       let v = String(msg.value == null ? '' : msg.value);
       // 下拉框：填选项文字或值都行，存成选项的值
       if (ev.type === 'select') {
