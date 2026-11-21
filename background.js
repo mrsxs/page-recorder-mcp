@@ -1681,19 +1681,6 @@ async function handle(msg, sender) {
       if (!ev) throw new Error('找不到这个输入步骤');
       if (ev.sensitive) throw new Error('密码类参数不保存，回放时通过参数传入');
       let v = String(msg.value == null ? '' : msg.value);
-      // 多选下拉框：逗号分隔的几项，每项填选项文字或值都行，存成选项值的数组
-      if (ev.type === 'select' && Array.isArray(ev.value)) {
-        const parts = Array.isArray(msg.value) ? msg.value.map(String) : v.split(/\s*[,，]\s*/).filter(Boolean);
-        const opts = parts.map((p) => (ev.options || []).find((o) => o[0] === p) || (ev.options || []).find((o) => o[1] === p.trim()));
-        const miss = parts.filter((p, i) => !opts[i]);
-        if (miss.length) throw new Error(`下拉框里没有「${miss.join('、')}」这个选项（可选：${(ev.options || []).slice(0, 20).map((o) => o[1]).join('、')}）`);
-        if (ev.recordedValue === undefined) ev.recordedValue = ev.value;
-        ev.value = opts.map((o) => o[0]);
-        ev.optionText = opts.map((o) => o[1]).join(', ');
-        await persist(true);
-        if (!c.state.recording) await syncLibrary(c);
-        return { ok: true };
-      }
       // 下拉框：填选项文字或值都行，存成选项的值
       if (ev.type === 'select') {
         const opt = (ev.options || []).find((o) => o[0] === v) || (ev.options || []).find((o) => o[1] === v.trim());
