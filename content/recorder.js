@@ -359,7 +359,8 @@
     return {
       value: el.multiple ? opts.map((o) => o.value) : el.value,
       optionText: opts.map((o) => norm(o.text)).join(', '),
-      options: [...el.options].slice(0, 200).map((o) => [o.value, norm(o.text)]),
+      // 选项表只存前 200 个，但选中的一定要在里面（不然在弹窗里改参数时会把它丢掉）
+      options: [...el.options].filter((o, i) => i < 200 || o.selected).map((o) => [o.value, norm(o.text)]),
     };
   }
 
