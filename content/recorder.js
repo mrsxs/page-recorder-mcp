@@ -818,6 +818,7 @@
     for (let t = w.nextNode(); t; t = w.nextNode()) if (!hidden(t.parentElement) && !(t.parentElement !== root && tinyEl(t.parentElement))) out += ' ' + t.nodeValue;
     return norm(out);
   }
+  const HAS_CHILDREN = '[class*=has-children],[class*=expand],[aria-haspopup=true],[aria-expanded]';
   const OPTION_SEL = '[role=option],[role=treeitem],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],li,dd,[class*=option],[class*=item],[class*=node]';
   const dateText = (v) => /\d{4}\s*[-/.年]\s*\d{1,2}/.test(v) || /\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(v);
   const dateish = (n) => /(^|[-_\s])(date|datepicker|date-picker|picker|calendar|range)([-_\s]|$)/i.test(typeof n.className === 'string' ? n.className : '');
@@ -855,6 +856,19 @@
     const tags = shownTags(lt.el);
     const added = tags.includes(optText) && !(lt.tags || []).includes(optText);
     if (now === lt.text && !added) return; // 显示没变：级联的中间一级，或者点了已经选着的那一项
+    // 级联点得慢：上一级点完显示就先变成了它（已经录成一步），这一下点的是下一列：把那一步改成整条路径
+    const cs = lt.cascStep;
+    if (cs && entry.el.parentElement !== cs.col && !claimed.has(entry.id)) {
+      cs.texts.push(optText);
+      cs.col = entry.el.parentElement;
+      cs.members.push(entry.id);
+      claimed.add(entry.id);
+      entry.done = true;
+      send({ type: 'updateEvent', id: cs.id, patch: { value: cs.texts.join(' / '), members: cs.members, commitTs: entry.at } });
+      lt.text = now;
+      if (!entry.el.matches(HAS_CHILDREN) && lastTrigger === lt) lastTrigger = null;
+      return;
+    }
     const idx = lt.chain.indexOf(entry);
     const later = idx < lt.chain.length - 1;
     // 之前点过、显示没跟着变的几下（级联的上几级，在别的列里）
@@ -917,6 +931,8 @@
     lt.tags = multi ? (lt.tags || []).concat(value) : tags;
     lt.again = true;
     if (pick === 'date' && sid) lt.dateStep = { id: sid, members: members.slice() };
+    // 点的是级联里有下一级的节点：下拉还开着，接着点的下一列并进这一步
+    if (!multi && pick === 'choice' && entry.el.matches(HAS_CHILDREN) && sid) { lt.cascStep = { id: sid, members: members.slice(), texts: String(value).split(' / '), col: entry.el.parentElement }; return; }
     // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的；单选选完就结束
     if (!multi && pick !== 'date' && lastTrigger === lt) lastTrigger = null;
   }
