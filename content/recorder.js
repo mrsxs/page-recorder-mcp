@@ -665,7 +665,14 @@
   const claimed = new Set(); // 已经归到某个语义步骤下的原始操作
   // 按下鼠标就选中的组件（Chosen 在 mouseup 时选中）：选择那一步已经录好，这一下按完浏览器还会补来 click，并进那一步
   let pressPick = null;
-  const notePressPick = (id, members, el) => { if (id && gesture) pressPick = { id, members, el, g: gesture }; };
+  // 只认按在这个下拉自己的选项上的那一下（不是弹层里的「确定」之类按钮让组件失焦时才提交的值）
+  const pressedOption = (t, field) => !!(t && t.nodeType === 1 &&
+    !t.closest('button,[role=button],a[href],input,textarea') &&
+    t.closest('[role=option],[role=treeitem],li,dd') &&
+    (!t.isConnected || inOverlay(t) || nearField(t, field)));
+  const notePressPick = (id, members, el) => {
+    pressPick = id && gesture && pressedOption(gesture.target, el) ? { id, members, el, g: gesture } : null;
+  };
   const hiddenField = (el) => !visibleEl(el) || tinyEl(el);
   let hiddenMulti = new WeakMap(); // 藏起来的多选原生下拉框 → 正在累加选项的那一步
   const nearField = (a, f) => { for (let n = f, d = 0; n && d < 8; n = n.parentElement, d++) if (n.contains(a)) return compactWidget(n) || d <= 2; return false; };
