@@ -676,7 +676,10 @@
         const mem = retroMembers(el);
         mem.forEach((m) => claimed.add(m.id));
         const data = selectData(el);
-        if (prev && Date.now() - prev.at < 15000) {
+        // 只并接连的几次选择（中间的点击都是打开这个下拉的）；中间做了别的（点了“应用”）就另起一步
+        const k = prev ? recentSteps.findIndex((x) => x.id === prev.id) : -1;
+        const consecutive = k >= 0 && recentSteps.slice(k + 1).every((x) => claimed.has(x.id));
+        if (prev && consecutive && Date.now() - prev.at < 15000) {
           prev.members.push(...mem.map((m) => m.id));
           prev.at = Date.now();
           send({ type: 'updateEvent', id: prev.id, patch: Object.assign({ members: prev.members, commitTs: gesture.ts }, data) });
