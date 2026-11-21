@@ -1013,7 +1013,10 @@ function radioPick(options, token) {
   const byText = options.map((o, i) => (String(o[1]).trim() === t.trim() ? i : -1)).filter((i) => i >= 0);
   if (byText.length === 1) return byText[0];
   const byVal = options.map((o, i) => (o[0] === t ? i : -1)).filter((i) => i >= 0);
-  return byVal.length === 1 ? byVal[0] : -1;
+  if (byVal.length === 1) return byVal[0];
+  // 文字和值都分不清时用序号（#2 = 第 2 个选项）
+  const n = !byText.length && !byVal.length && t.match(/^#(\d+)$/);
+  return n && +n[1] >= 1 && +n[1] <= options.length ? +n[1] - 1 : -1;
 }
 function changedParams(b, given) {
   const out = [];
@@ -1024,6 +1027,8 @@ function changedParams(b, given) {
     const s = b.recording.steps.find((st) => st.type === 'select' && st.value === `{{${k}}}` && Array.isArray(st.options));
     // 多选：每一项按值或文字对到选项，和录制时选中的那组比（不看顺序）；对不上的项算改了
     if (s && Array.isArray(rec[k])) {
+      // 和录制时的值原样相同就是没改（选项表只存了前 200 个，后面的对不上）
+      if ([].concat(v == null ? [] : v).map(String).sort().join('\u0001') === rec[k].map(String).sort().join('\u0001')) continue;
       const ids = [].concat(v == null ? [] : v).map((t) => { const o = s.options.find((op) => op[0] === String(t)) || s.options.find((op) => String(op[1]).trim() === String(t).trim()); return o ? o[0] : null; });
       if (ids.includes(null) || ids.slice().sort().join('\u0001') !== rec[k].map(String).sort().join('\u0001')) out.push(k);
       continue;
