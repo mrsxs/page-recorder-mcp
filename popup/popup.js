@@ -334,7 +334,7 @@ function renderParams(A) {
     const opt = (v, t, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(t)}</option>`;
     // 单选按序号提交：值可能重复（没写 value 的单选框都是 on）
     if (s.type === 'check' && Array.isArray(s.options)) {
-      let cur = s.options.findIndex(([v, t]) => t === s.optionText && v === s.value);
+      let cur = Number.isInteger(s.optionIndex) && s.options[s.optionIndex] ? s.optionIndex : s.options.findIndex(([v, t]) => t === s.optionText && v === s.value);
       if (cur < 0) cur = s.options.findIndex(([, t]) => t === s.optionText);
       return `<label class="prow">${name}<select data-param-step="${esc(s.id)}" data-param-index="1">${s.options.map(([, t], i) => opt(i, t, i === cur)).join('')}</select>${from}</label>`;
     }

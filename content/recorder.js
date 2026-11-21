@@ -455,7 +455,7 @@
         while (box && !group.every((r) => box.contains(r))) box = box.parentElement;
         let groupLabel = '';
         if (box) { const c = box.cloneNode(true); c.querySelectorAll('label,input').forEach((x) => x.remove()); groupLabel = norm(c.textContent).replace(/[:：]\s*$/, '').slice(0, 20); }
-        record({ type: 'check', target: describe(el), checked: el.checked, value: el.value, optionText: text(el), options: group.slice(0, 200).map((r) => [r.value, text(r)]), groupLabel: groupLabel || el.name || '' }, el);
+        record({ type: 'check', target: describe(el), checked: el.checked, value: el.value, optionText: text(el), options: group.slice(0, 200).map((r) => [r.value, text(r)]), optionIndex: group.indexOf(el), groupLabel: groupLabel || el.name || '' }, el);
         return;
       }
       record({ type: 'check', target: describe(el), checked: el.checked }, el);

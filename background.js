@@ -1028,9 +1028,12 @@ function changedParams(b, given) {
     // 多选：每一项按值或文字对到选项，和录制时选中的那组比（不看顺序）；对不上的项算改了
     if (s && Array.isArray(rec[k])) {
       // 和录制时的值原样相同就是没改（选项表只存了前 200 个，后面的对不上）
-      if ([].concat(v == null ? [] : v).map(String).sort().join('\u0001') === rec[k].map(String).sort().join('\u0001')) continue;
+      const supplied = [].concat(v == null ? [] : v).map(String).sort();
+      const recorded = rec[k].map(String).sort();
+      if (supplied.length === recorded.length && supplied.every((x2, i) => x2 === recorded[i])) continue;
       const ids = [].concat(v == null ? [] : v).map((t) => { const o = s.options.find((op) => op[0] === String(t)) || s.options.find((op) => String(op[1]).trim() === String(t).trim()); return o ? o[0] : null; });
-      if (ids.includes(null) || ids.slice().sort().join('\u0001') !== rec[k].map(String).sort().join('\u0001')) out.push(k);
+      const got = ids.slice().sort();
+      if (ids.includes(null) || got.length !== recorded.length || got.some((x2, i) => x2 !== recorded[i])) out.push(k);
       continue;
     }
     if (s) { const o = s.options.find((op) => op[0] === x) || s.options.find((op) => String(op[1]).trim() === x.trim()); if (o) x = String(o[0]); }
@@ -1729,10 +1732,12 @@ async function handle(msg, sender) {
             const t = String(msg.value == null ? '' : msg.value).trim();
             const i = radioPick(ev.options, t);
             opt = i >= 0 ? ev.options[i] : null;
+            if (opt) msg.index = i;
             if (!opt && ev.options.some((o) => String(o[1]).trim() === t || o[0] === t)) throw new Error(`单选项「${t}」对应好几个选项，分不清是哪个（可选：${listed()}）`);
           }
           if (!opt) throw new Error(`单选项里没有「${msg.value}」（可选：${listed()}）`);
-          if (ev.recordedText === undefined) { ev.recordedText = ev.optionText; ev.recordedRadio = ev.value; }
+          if (ev.recordedText === undefined) { ev.recordedText = ev.optionText; ev.recordedRadio = ev.value; ev.recordedIndex = ev.optionIndex; }
+          ev.optionIndex = msg.index;
           ev.value = opt[0];
           ev.optionText = opt[1];
         } else {
