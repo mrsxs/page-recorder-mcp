@@ -770,8 +770,15 @@
   // 多选下拉把选中的每一项显示成一个标签（带自己的“删除”小按钮）
   const TAG_CLASS = /(^|[-_\s])(tag|chip|token|selection-item|select-item)([-_\s]|$)/i;
   const isTag = (n) => TAG_CLASS.test(typeof n.className === 'string' ? n.className : '');
+  // 已选标签：看得见，且标签到外壳之间没有菜单行、列表（antd 的 ant-select-item-option 也带 select-item）
+  const LIST_ROW = '[role=option],[role=listbox],[class*=option],[class*=dropdown],[class*=popup]';
+  const isShownTag = (n, root) => {
+    if (!isTag(n) || !n.getClientRects().length || getComputedStyle(n).visibility === 'hidden') return false;
+    for (let a = n; a && a !== root; a = a.parentElement) if (a.matches(LIST_ROW)) return false;
+    return true;
+  };
   function shownTags(root) {
-    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item],[class*=select-item]')].filter(isTag);
+    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item],[class*=select-item]')].filter((t) => isShownTag(t, root));
     return tags.filter((t) => !tags.some((o) => o !== t && o.contains(t))).map(tagText).filter(Boolean);
   }
   // 标签上的文字，不算它的删除按钮（有的写成 × 字符）
