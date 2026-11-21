@@ -352,6 +352,14 @@ test('get_script 按行分段，写明下一段从哪行开始；to_file 写整�
     const f = JSON.parse((await tool('get_script', { recording: 'rec1', to_file: true })).text);
     assert.equal(readFileSync(f.file, 'utf8'), SCRIPT);
     assert.equal(f.lines, 3000);
+  }, { PR_BRIDGE_TOKEN: 'test-export-token' });
+});
+
+test('未认证的 HTTP 调用不能写入脚本文件', async () => {
+  await withBridge(async ({ tool }) => {
+    const result = await tool('get_script', { recording: 'rec1', to_file: true });
+    assert.equal(result.err, true);
+    assert.match(result.text, /需要本机认证/);
   });
 });
 

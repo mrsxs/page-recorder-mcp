@@ -1,12 +1,14 @@
 /* global PR_EXPORTER */
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const send = (msg) => chrome.runtime.sendMessage(msg);
+const send = (msg) => chrome.runtime.sendMessage(msg).catch((e) => ({ error: String((e && e.message) || e) }));
 
 let data = null;
 let tab = null;
 let activeTab = 'steps';
 let lastEventSig = '';
+let refreshSeq = 0;
+let savingOverrides = false;
 
 // 显示时长按文字长度算，长消息停留更久；点击可提前关闭
 function toast(text, ms) {
@@ -21,12 +23,17 @@ function toast(text, ms) {
 }
 
 async function refresh(force) {
-  data = await send({ type: 'getData' });
-  if (!data) return;
+  if (!force && savingOverrides) return;
+  const seq = ++refreshSeq;
+  const next = await send({ type: 'getData' });
+  if (!next || next.error || seq !== refreshSeq || (!force && savingOverrides)) return;
+  data = next;
   renderHeader();
   renderAiStatus();
-  // 语义步骤的成员是录完之后才归组的（事件数不变），所以归组数变了也要重画
-  const sig = data.events.length + ':' + data.events.reduce((n, e) => n + (e.groupedIn ? 1 : 0), 0);
+  // 语义步骤的成员是录完之后才归组的（事件数不变），所以归组数/脚本库/末尾事件变更也要重画
+  const tail = data.events[data.events.length - 1];
+  const libSig = (data.libIndex || []).map((x) => `${x.id}:${x.savedAt}`).join(',');
+  const sig = `${data.events.length}:${data.events.reduce((n, e) => n + (e.groupedIn ? 1 : 0), 0)}:${tail ? `${tail.id}:${tail.value ?? ''}:${tail.commitTs ?? ''}` : ''}:${libSig}`;
   if (force || sig !== lastEventSig) {
     lastEventSig = sig;
     renderTimeline();
@@ -368,7 +375,7 @@ function renderApis() {
   // 不带手动修改时的接口参数：用来判断某个字段原本是不是关联着输入参数
   const base = Object.keys(data.apiOverrides || {}).length ? PR_EXPORTER.analyze(data.events, data.settings, data.state, {}, data.aiDocs) : A;
   const baseOf = (name) => base.apis.find((x) => x.name === name);
-  const linkOf = (v) => { const m = typeof v === 'string' && v.match(/^\{\{\s*(.+?)\s*\}\}$/); return m ? m[1].split('|')[0].trim() : null; };
+  const linkOf = (v) => { const m = typeof v === 'string' && v.match(/^\{\{([^{}]+)\}\}$/); return m ? m[1].split('|')[0].trim() : null; };
   renderParams(A);
   $('#apiEmpty').hidden = A.apis.length > 0;
   const info = $('#aiInfo');
@@ -455,41 +462,47 @@ $('#apiList').addEventListener('change', async (e) => {
   const a = renderApis.cache.apis[+inp.dataset.api];
   const { sec, key } = inp.dataset;
   const v = parseVal(inp.value, (a.params[sec] || {})[key]);
-  setOverride(a, sec, key, v);
-  inp.classList.add('mod');
-  inp.closest('.api').classList.add('changed');
-  await saveOverrides();
+  savingOverrides = true;
+  try {
+    setOverride(a, sec, key, v);
+    inp.classList.add('mod');
+    inp.closest('.api').classList.add('changed');
+    await saveOverrides();
+  } finally { savingOverrides = false; }
 });
 $('#apiList').addEventListener('click', async (e) => {
   const t = e.target;
   const A = renderApis.cache;
-  if (t.dataset.reset != null) {
-    delete data.apiOverrides[A.apis[+t.dataset.reset].name];
-  } else if (t.dataset.relink != null) {
-    const a = A.apis[+t.dataset.relink];
-    const { sec, key } = t.dataset;
-    const o = data.apiOverrides[a.name];
-    if (o && o[sec]) {
-      delete o[sec][key];
-      if (!Object.keys(o[sec]).length) delete o[sec];
-      if (!Object.keys(o).length) delete data.apiOverrides[a.name];
-    }
-    toast('已恢复关联输入参数');
-  } else if (t.dataset.rm != null) {
-    const a = A.apis[+t.dataset.rm];
-    const { sec, key } = t.dataset;
-    if ((a.params[sec] || {})[key] !== undefined) setOverride(a, sec, key, { __deleted: true });
-    else { const o = data.apiOverrides[a.name]; if (o && o[sec]) delete o[sec][key]; }
-  } else if (t.dataset.add != null) {
-    const ai = t.dataset.add;
-    const a = A.apis[+ai];
-    const sec = $(`[data-addsec="${ai}"]`).value;
-    const key = $(`[data-addkey="${ai}"]`).value.trim();
-    if (!key) return toast('请填写参数名');
-    setOverride(a, sec, key, parseVal($(`[data-addval="${ai}"]`).value, 0));
-  } else return;
-  await saveOverrides();
-  renderApis();
+  savingOverrides = true;
+  try {
+    if (t.dataset.reset != null) {
+      delete data.apiOverrides[A.apis[+t.dataset.reset].name];
+    } else if (t.dataset.relink != null) {
+      const a = A.apis[+t.dataset.relink];
+      const { sec, key } = t.dataset;
+      const o = data.apiOverrides[a.name];
+      if (o && o[sec]) {
+        delete o[sec][key];
+        if (!Object.keys(o[sec]).length) delete o[sec];
+        if (!Object.keys(o).length) delete data.apiOverrides[a.name];
+      }
+      toast('已恢复关联输入参数');
+    } else if (t.dataset.rm != null) {
+      const a = A.apis[+t.dataset.rm];
+      const { sec, key } = t.dataset;
+      if ((a.params[sec] || {})[key] !== undefined) setOverride(a, sec, key, { __deleted: true });
+      else { const o = data.apiOverrides[a.name]; if (o && o[sec]) delete o[sec][key]; }
+    } else if (t.dataset.add != null) {
+      const ai = t.dataset.add;
+      const a = A.apis[+ai];
+      const sec = $(`[data-addsec="${ai}"]`).value;
+      const key = $(`[data-addkey="${ai}"]`).value.trim();
+      if (!key) return toast('请填写参数名');
+      setOverride(a, sec, key, parseVal($(`[data-addval="${ai}"]`).value, 0));
+    } else return;
+    await saveOverrides();
+    renderApis();
+  } finally { savingOverrides = false; }
 });
 
 // ---------------- 设置 ----------------
@@ -502,14 +515,17 @@ function renderSettings() {
 document.querySelectorAll('[data-k]').forEach((el) => {
   el.addEventListener('change', async () => {
     const v = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
-    if (el.dataset.k === 'aiProvider') {
-      const base = $('[data-k=aiBaseUrl]');
-      base.value = v === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1';
-      await send({ type: 'saveSettings', settings: { aiBaseUrl: base.value } });
-    }
+    const settings = { [el.dataset.k]: v };
+    if (el.dataset.k === 'aiProvider') settings.aiBaseUrl = v === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1';
     if (el.dataset.k === 'excludePattern' && v) { try { new RegExp(v); } catch (e) { toast('正则表达式无效'); return; } }
-    const r = await send({ type: 'saveSettings', settings: { [el.dataset.k]: v } });
+    const r = await send({ type: 'saveSettings', settings });
+    if (!r?.settings || r.error || !data) {
+      if (data) renderSettings();
+      toast(r?.error || '保存失败');
+      return;
+    }
     data.settings = r.settings;
+    renderSettings();
     toast('已保存');
   });
 });
@@ -528,6 +544,7 @@ document.querySelectorAll('.tabs button').forEach((b) => {
 
 // ---------------- 控制 ----------------
 async function start(fresh) {
+  if (!data || !tab) return;
   if (fresh && data.events.length && !confirm('重新录制会清空当前录制内容，确定吗？')) return;
   const r = await send({ type: 'start', tabId: tab.id, fresh });
   if (r && r.error) { showNotice(esc(r.error), 'error'); return; }
@@ -541,6 +558,7 @@ $('#btnStart').onclick = () => start(true);
 $('#btnContinue').onclick = () => start(false);
 $('#btnStop').onclick = async () => { await send({ type: 'stop' }); if (!$('#notice').classList.contains('error')) hideNotice(); refresh(true); };
 $('#btnClear').onclick = async () => {
+  if (!data) return;
   if (data.events.length && !confirm('确定清空所有录制内容？')) return;
   await send({ type: 'clear' });
   refresh(true);
@@ -603,6 +621,7 @@ $('#btnAi').onclick = async () => {
 };
 $('#btnPrompt').onclick = async () => {
   const r = await send({ type: 'getPrompt' });
+  if (!r || r.error || !r.prompt) { showNotice('生成提示词失败：' + esc((r && r.error) || '后台没有响应'), 'error'); return; }
   await navigator.clipboard.writeText(r.prompt);
   toast('提示词已复制，发给 AI 后把返回的 JSON 粘贴回来');
 };
@@ -656,7 +675,9 @@ $('#libList').addEventListener('click', async (e) => {
     if (r.error) return toast(r.error);
     toast('已打开为当前录制');
   } else if (act === 'export') {
-    const { item } = await send({ type: 'libGet', id });
+    const r = await send({ type: 'libGet', id });
+    if (!r || r.error || !r.item) { toast('读取脚本失败：' + ((r && r.error) || '未知错误')); return; }
+    const { item } = r;
     const out = PR_EXPORTER.build(item.events, item.settings, item.state, item.apiOverrides, item.aiDocs);
     download(out.script, (item.name || 'recording').replace(/[\\/:*?"<>|\s]+/g, '_') + '.js', 'text/javascript');
     return;
@@ -679,10 +700,18 @@ $('#libList').addEventListener('click', async (e) => {
       card.querySelector('.lib-out').innerHTML = `<pre class="result">${esc(`失败：参数 ${bad} 是多选，要填 JSON 数组，比如 ["选项1","选项2"]`)}</pre>`;
       return;
     }
-    const r = await send({ type: 'libRun', id, params, mode: act === 'query' ? 'api' : 'ui' });
-    b.disabled = false;
-    b.textContent = label;
-    card.querySelector('.lib-out').innerHTML = `<pre class="result">${esc(r.error ? '失败：' + r.error : JSON.stringify(r.result, null, 2))}</pre>`;
+    let r;
+    try {
+      r = await send({ type: 'libRun', id, params, mode: act === 'query' ? 'api' : 'ui' });
+    } catch (err) {
+      r = { error: String((err && err.message) || err) };
+    } finally {
+      b.disabled = false;
+      b.textContent = label;
+    }
+    const targetCard = card.isConnected ? card : [...document.querySelectorAll('#libList .lib')].find((el) => el.dataset.id === id);
+    const outEl = targetCard && targetCard.querySelector('.lib-out');
+    if (outEl) outEl.innerHTML = `<pre class="result">${esc(!r || r.error ? '失败：' + ((r && r.error) || '后台没有响应') : JSON.stringify(r.result, null, 2))}</pre>`;
     return;
   }
   await refresh(true);
@@ -724,13 +753,13 @@ $('#btnReconnect').onclick = async () => {
 
 (async () => {
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  // 在标签页里打开（popup.html?tab=library）：直接切到对应页签
   const initTab = new URLSearchParams(location.search).get('tab');
-  if (initTab) {
-    document.body.classList.add('in-tab');
-    const b = document.querySelector(`.tabs button[data-tab="${initTab}"]`);
+  if (initTab) document.body.classList.add('in-tab');
+  await refresh(true);
+  // 在标签页里打开（popup.html?tab=library）：等数据加载完再切页签，避免 data 为 null 崩溃
+  if (initTab && data) {
+    const b = [...document.querySelectorAll('.tabs button')].find((x) => x.dataset.tab === initTab);
     if (b) b.click();
   }
-  await refresh(true);
-  setInterval(() => refresh(false), 800);
+  setInterval(() => { refresh(false).catch(() => {}); }, 800);
 })();

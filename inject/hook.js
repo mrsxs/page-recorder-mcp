@@ -17,16 +17,21 @@
   let state = null; // null = 尚未得知(先缓冲) | true = 录制中 | false = 未录制
   let buffer = [];
   let maxBody = 512 * 1024;
+  let port = null; // 只传录制遥测，MAIN world 不持有扩展权限或凭据
   // xml 只认 /xml、+xml（xlsx 的类型名 …openxmlformats… 里也有 xml 这几个字母，那是二进制文件）
   const TEXT_CT = /json|^text\/|[/+]xml\b|javascript|ecmascript|x-www-form-urlencoded|graphql|event-stream|csv|yaml/i;
   const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
-  function post(data) {
+  function sendToContent(msg) {
+    if (!port) return;
     try {
-      window.postMessage({ [TAG]: 'net', data }, '*');
+      port.postMessage(msg);
     } catch (e) {
-      try { window.postMessage({ [TAG]: 'net', data: JSON.parse(JSON.stringify(data)) }, '*'); } catch (e2) { /* ignore */ }
+      try { port.postMessage(JSON.parse(JSON.stringify(msg))); } catch (e2) { /* ignore */ }
     }
+  }
+  function post(data) {
+    sendToContent({ [TAG]: 'net', data });
   }
   function emit(data) {
     if (state === true) post(data);
@@ -35,15 +40,38 @@
       if (buffer.length > 300) buffer.shift();
     }
   }
-  window.addEventListener('message', (e) => {
+  function onContentMsg(d) {
+    if (!d || typeof d !== 'object') return;
+    if (d[TAG] === 'state') {
+      state = !!d.recording;
+      if (d.maxBody) maxBody = d.maxBody;
+      if (state) buffer.forEach(post);
+      buffer = [];
+      syncObservers();
+    }
+  }
+  const announce = () => window.postMessage({ [TAG]: 'ready' }, '*');
+  const onInit = (e) => {
     const d = e.data;
-    if (e.source !== window || !d || d[TAG] !== 'state') return;
-    state = !!d.recording;
-    if (d.maxBody) maxBody = d.maxBody;
-    if (state) buffer.forEach(post);
-    buffer = [];
-    syncObservers();
-  });
+    if (!e.isTrusted || e.source !== window || !d) return;
+    if (d[TAG] === 'helloHook' && !port) { announce(); return; }
+    if (d[TAG] !== 'init' || !e.ports?.[0] || port) return;
+    e.stopImmediatePropagation();
+    port = e.ports[0];
+    window.removeEventListener('message', onInit, true);
+    port.onmessage = (ev) => onContentMsg(ev.data);
+    sendToContent({ [TAG]: 'initAck' });
+  };
+  window.addEventListener('message', onInit, true);
+  announce();
+  // 兜底：若 10 秒内没有任何 content script 接管（如极端沙箱帧），停止缓冲并释放内存
+  setTimeout(() => {
+    if (state === null) {
+      state = false;
+      buffer = [];
+      syncObservers();
+    }
+  }, 10000);
   const active = () => state !== false;
 
   function parseText(text, ct) {
@@ -108,21 +136,24 @@
   }
 
   // 以流的方式读取响应副本：超过上限或超时(长连接/SSE)就截断，不影响页面自身读取
-  async function readStream(res, ct) {
+  async function readStream(res, ct, maxMs) {
     if (!res.body) return parseText(await res.text(), ct);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let text = '';
     let truncated = false;
-    const deadline = Date.now() + 30000;
+    const limitMs = maxMs || (/event-stream/i.test(ct || '') ? 5000 : 30000);
+    const deadline = Date.now() + limitMs;
     try {
       for (;;) {
         const remain = deadline - Date.now();
         if (remain <= 0) { truncated = true; break; }
+        let tid = null;
         const r = await Promise.race([
           reader.read(),
-          new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), remain)),
+          new Promise((resolve) => { tid = setTimeout(() => resolve({ timeout: true }), remain); }),
         ]);
+        if (tid !== null) clearTimeout(tid);
         if (r.timeout) { truncated = true; break; }
         if (r.done) break;
         text += decoder.decode(r.value, { stream: true });
@@ -137,110 +168,6 @@
     return out;
   }
 
-  // ---------------- 页面自己最新的请求头 ----------------
-  // 页面代码给请求加的头（Authorization、token、签名、CSRF 等）随登录、时间变化，录下的值会过期。
-  // 这里始终记着页面最近一次发请求时用的值（只在页面内存里，不发到任何地方），扩展直接调用接口时用它补上。
-  // 只有会话级的鉴权头（Authorization、CSRF、token）在同一个源的不同路径之间共用，并按每个头的更新时间取最新；
-  // 其他头（签名、租户、业务头）只认同一路径，免得把别的路径、别的身份的值带过去
-  const STD_HDR = /^(accept|accept-language|content-type|content-length|content-language|cache-control|pragma)$/i;
-  const SHARED_HDR = /^(authorization|x-csrf-token|x-xsrf-token|x-csrftoken|csrf-token|csrftoken|x-token|token|x-auth-token|x-access-token|access-token)$/i;
-  const live = new Map(); // origin+path 或 origin → { 头名: [值, 序号] }
-  let seq = 0; // 递增序号表示先后（同一毫秒里的多次更新也分得清）
-  function noteHeaders(url, headers) {
-    try {
-      const u = new URL(url, location.href);
-      const now = ++seq;
-      const h = Object.entries(headers || {}).filter(([k, v]) => !STD_HDR.test(k) && typeof v === 'string').map(([k, v]) => [k.toLowerCase(), v]);
-      if (!h.length) return;
-      const put = (key, sharedOnly) => {
-        const cur = live.get(key) || {};
-        live.delete(key); // 重新插入，保持最近使用的在后面
-        for (const [k, v] of h) if (!sharedOnly || SHARED_HDR.test(k)) cur[k] = [v, now];
-        if (Object.keys(cur).length) live.set(key, cur);
-      };
-      put(u.origin + u.pathname, false);
-      put(u.origin, true);
-      while (live.size > 300) live.delete(live.keys().next().value);
-    } catch (e) { /* ignore */ }
-  }
-  try {
-    Object.defineProperty(window, '__PR_LIVE_HEADERS__', {
-      value: (url) => {
-        try {
-          const u = new URL(url, location.href);
-          const out = Object.assign({}, live.get(u.origin + u.pathname));
-          for (const [k, x] of Object.entries(live.get(u.origin) || {})) if (!out[k] || out[k][1] < x[1]) out[k] = x;
-          return Object.fromEntries(Object.entries(out).map(([k, x]) => [k, x[0]]));
-        } catch (e) { return {}; }
-      },
-    });
-  } catch (e) { /* ignore */ }
-
-  // ---------------- 页面自己最新的令牌字段 ----------------
-  // 查询参数、请求体里名字像令牌、签名、CSRF 的字段（录制时会脱敏），同样记着页面最近一次发的值，直接调用时补上。
-  // 会话级的（csrf、token、session）同源各路径共用，其余只认同一路径
-  const SENS_PART = /password|passwd|pwd|passcode|secret|token|csrf|xsrf|credential|captcha|apikey|signature|sessionid|authcode|authkey|otp$|smscode|verifycode/;
-  const SENS_WORD = /^(pass|pin|sign|sid|auth|session|ticket|vcode|otp)$/;
-  const SHARED_FIELD = /csrf|xsrf|token|session|^sid$|^auth$/;
-  const sensName = (k) => { const n = String(k).toLowerCase().replace(/[_\-\s]/g, ''); return !!n && (SENS_PART.test(n) || SENS_WORD.test(n)); };
-  // 和导出时的路径写法一致：a.b[0].c，键名本身带点号、方括号的转义
-  const escKey = (k) => String(k).replace(/[\\.[\]]/g, '\\$&');
-  const liveFields = new Map(); // origin+path 或 origin → { 字段: [值, 序号] }
-  function noteFields(url, body) {
-    try {
-      const u = new URL(url, location.href);
-      const found = [];
-      u.searchParams.forEach((v, k) => { if (v && sensName(k)) found.push([k, k, v]); });
-      let text = null;
-      if (typeof body === 'string') text = body;
-      else if (body && tagOf(body) === 'URLSearchParams') text = body.toString();
-      else if (body && tagOf(body) === 'FormData') body.forEach((v, k) => { if (typeof v === 'string' && v && sensName(k)) found.push([k, k, v]); });
-      if (text && text.length < 200000) {
-        const t = text.trim();
-        let o = null;
-        if (/^[[{]/.test(t)) { try { o = JSON.parse(t); } catch (e) { o = null; } }
-        if (o && typeof o === 'object') {
-          const walk = (v, path, depth) => {
-            if (depth > 8 || !v || typeof v !== 'object') return;
-            for (const [k, x] of Object.entries(v)) {
-              const p = Array.isArray(v) ? `${path}[${k}]` : path ? `${path}.${escKey(k)}` : escKey(k);
-              if (x && typeof x === 'object') walk(x, p, depth + 1);
-              else if (x != null && x !== '' && !Array.isArray(v) && sensName(k)) found.push([p, k, String(x)]);
-            }
-          };
-          walk(o, '', 0);
-        } else if (/^[^=&\s]+=[^&]*(&|$)/.test(t)) new URLSearchParams(t).forEach((v, k) => { if (v && sensName(k)) found.push([k, k, v]); });
-      }
-      if (!found.length) return;
-      const now = ++seq;
-      const put = (key, shared) => {
-        const cur = liveFields.get(key) || {};
-        liveFields.delete(key);
-        for (const [p, k, v] of found) {
-          if (shared && !SHARED_FIELD.test(String(k).toLowerCase().replace(/[_\-\s]/g, ''))) continue;
-          cur[p] = [v, now];
-          if (p !== k) cur[k] = [v, now];
-        }
-        if (Object.keys(cur).length) liveFields.set(key, cur);
-      };
-      put(u.origin + u.pathname, false);
-      put(u.origin, true);
-      while (liveFields.size > 300) liveFields.delete(liveFields.keys().next().value);
-    } catch (e) { /* ignore */ }
-  }
-  try {
-    Object.defineProperty(window, '__PR_LIVE_FIELDS__', {
-      value: (url) => {
-        try {
-          const u = new URL(url, location.href);
-          const out = Object.assign({}, liveFields.get(u.origin + u.pathname));
-          for (const [k, x] of Object.entries(liveFields.get(u.origin) || {})) if (!out[k] || out[k][1] < x[1]) out[k] = x;
-          return Object.fromEntries(Object.entries(out).map(([k, x]) => [k, x[0]]));
-        } catch (e) { return {}; }
-      },
-    });
-  } catch (e) { /* ignore */ }
-
   // ---------------- 没挂到页面上的文件框 ----------------
   // document.createElement('input') 后直接 .click() 选文件（VueUse useFileDialog、编辑器的上传按钮）：
   // change 事件不经过 document，录制端收不到，这里替它报告选了哪些文件
@@ -252,7 +179,7 @@
       input.addEventListener('change', () => {
         if (state !== true) return;
         const files = [...(input.files || [])].map((f) => f.name);
-        if (files.length) window.postMessage({ [TAG]: 'filepick', files, multiple: !!input.multiple, accept: input.accept || '' }, '*');
+        if (files.length) sendToContent({ [TAG]: 'filepick', files, multiple: !!input.multiple, accept: input.accept || '' });
       });
     };
     for (const name of ['click', 'showPicker']) {
@@ -270,13 +197,13 @@
     window[kind] = function (message) {
       const result = orig.apply(this, arguments);
       if (state === true) {
-        try { window.postMessage({ [TAG]: 'dialog', kind, message: String(message == null ? '' : message).slice(0, 300), result: kind === 'alert' ? true : result }, '*'); } catch (e) { /* ignore */ }
+        try { sendToContent({ [TAG]: 'dialog', kind, message: String(message == null ? '' : message).slice(0, 300), result: kind === 'alert' ? true : result }); } catch (e) { /* ignore */ }
       }
       return result;
     };
   }
   // 发请求的那一刻通知录制端核对字段值（选完日期立刻发请求时，请求里的值就是这一刻的）
-  const reqStart = () => { if (state === true) window.postMessage({ [TAG]: 'reqstart' }, '*'); };
+  const reqStart = () => { if (state === true) sendToContent({ [TAG]: 'reqstart' }); };
 
   // ---------------- JSONP ----------------
   // <script src="…?callback=fn"> 这种请求不走 fetch / XHR（淘宝、1688 的 mtop，老系统的跨域接口）：
@@ -326,19 +253,31 @@
         const cur = holder[prop];
         if (typeof cur === 'function') {
           // 页面自己的存取器、只读属性、继承来的属性不动（只记请求，没有返回）
-          if (plain) holder[prop] = wrap(cur);
+          if (plain) {
+            const wrapped = wrap(cur);
+            holder[prop] = wrapped;
+            restore = () => {
+              try { if (holder[prop] === wrapped) holder[prop] = cur; } catch (e) { /* ignore */ }
+            };
+          }
         } else if ((!desc && !inherited) || (plain && desc.configurable)) {
-          // 回调在脚本插入之后才定义：临时换成存取器，等它被赋值时包上；请求结束后还原成普通属性
+          // 回调在脚本插入之后才定义：临时换成存取器，等它被赋值时包上；请求结束后还原成原始函数/普通属性
           let val = cur;
+          let rawVal = cur;
           const get = () => val;
-          Object.defineProperty(holder, prop, { configurable: true, enumerable: desc ? desc.enumerable : true, get, set(v) { val = typeof v === 'function' && !done ? wrap(v) : v; } });
+          Object.defineProperty(holder, prop, {
+            configurable: true,
+            enumerable: desc ? desc.enumerable : true,
+            get,
+            set(v) { rawVal = v; val = typeof v === 'function' && !done ? wrap(v) : v; },
+          });
           restore = () => {
             try {
               const now = Object.getOwnPropertyDescriptor(holder, prop);
               if (!now || now.get !== get) return; // 页面已经删掉或自己重新定义了
               // 原来没有这个属性、之后也一直没被赋值：删掉，不给页面留下多余的全局属性
-              if (!desc && val === undefined) delete holder[prop];
-              else Object.defineProperty(holder, prop, { configurable: true, enumerable: desc ? desc.enumerable : true, writable: true, value: val });
+              if (!desc && rawVal === undefined) delete holder[prop];
+              else Object.defineProperty(holder, prop, { configurable: true, enumerable: desc ? desc.enumerable : true, writable: true, value: rawVal });
             } catch (e) { /* ignore */ }
           };
         }
@@ -359,10 +298,17 @@
       if (state !== false) obs.observe(W.document, { childList: true, subtree: true });
     } catch (e) { /* ignore */ }
   }
-  // 不在录制时不观察页面变化（省开销），开始录制再接上
+  // 不在录制时不观察页面变化（省开销），开始录制再接上；同时清理已销毁的 iframe 文档引用
   function syncObservers() {
-    for (const [obs, doc] of observers) {
-      try { obs.disconnect(); if (state !== false) obs.observe(doc, { childList: true, subtree: true }); } catch (e) { /* 文档已经没了 */ }
+    for (let i = observers.length - 1; i >= 0; i--) {
+      const [obs, doc] = observers[i];
+      const win = doc && doc.defaultView;
+      if (!doc || !win || win.closed) {
+        try { obs.disconnect(); } catch (e) { /* ignore */ }
+        observers.splice(i, 1);
+        continue;
+      }
+      try { obs.disconnect(); if (state !== false) obs.observe(doc, { childList: true, subtree: true }); } catch (e) { observers.splice(i, 1); }
     }
   }
 
@@ -384,13 +330,6 @@
     if (typeof origFetch === 'function') {
       W.fetch = function (input, init) {
         const req = input && tagOf(input) === 'Request' ? input : null;
-        try {
-          if (!(init && init.__prNoRewrite)) {
-            const url = abs(req ? req.url : input);
-            noteHeaders(url, Object.assign(headersToObj(req && req.headers), headersToObj(init && init.headers)));
-            noteFields(url, init ? init.body : null);
-          }
-        } catch (e) { /* ignore */ }
         if (!active()) return origFetch.apply(this, arguments);
         reqStart();
         const rec = { id: uid(), via: 'fetch', ts: Date.now(), pageUrl: location.href };
@@ -402,25 +341,34 @@
           rec.credentials = (init && init.credentials) || (req && req.credentials) || 'same-origin';
           if (init && init.body != null) reqBodyP = serializeBody(init.body);
           else if (req && !/^(GET|HEAD)$/.test(rec.method) && !req.bodyUsed) {
-            const ct = req.headers.get('content-type');
-            reqBodyP = req.clone().text().then((t) => parseText(t, ct)).catch(() => null);
+            const ct = req.headers.get('content-type') || '';
+            const cl = Number(req.headers.get('content-length') || 0);
+            if ((ct && !TEXT_CT.test(ct)) || cl > maxBody) {
+              reqBodyP = Promise.resolve({ type: 'binary', mime: ct, size: cl || undefined });
+            } else {
+              try {
+                const reqClone = req.clone();
+                reqBodyP = readStream(reqClone, ct, 5000).catch(() => null);
+              } catch (e) { reqBodyP = Promise.resolve(null); }
+            }
           }
         } catch (e) { /* ignore */ }
         const p = origFetch.apply(this, arguments);
         p.then(
           (res) => {
+            const ct = res.headers.get('content-type') || '';
+            const skipBody = res.type === 'opaque' || res.status === 204 || res.status === 304 || (ct && !TEXT_CT.test(ct));
             let clone = null;
-            try { clone = res.clone(); } catch (e) { /* body already used */ }
+            if (!skipBody) { try { clone = res.clone(); } catch (e) { /* body already used */ } }
             (async () => {
               rec.status = res.status;
               rec.statusText = res.statusText;
               rec.responseHeaders = headersToObj(res.headers);
-              const ct = res.headers.get('content-type') || '';
-              if (!clone || res.type === 'opaque' || res.status === 204 || res.status === 304) rec.responseBody = null;
+              if (res.type === 'opaque' || res.status === 204 || res.status === 304) rec.responseBody = null;
               else if (ct && !TEXT_CT.test(ct)) {
                 rec.responseBody = { type: 'binary', mime: ct, size: +res.headers.get('content-length') || undefined };
-                clone.body && clone.body.cancel().catch(() => {});
-              } else {
+              } else if (!clone) rec.responseBody = null;
+              else {
                 try { rec.responseBody = await readStream(clone, ct); } catch (e) { rec.responseBody = { type: 'error', value: String(e) }; }
               }
               rec.requestBody = await reqBodyP;
@@ -456,7 +404,6 @@
     };
     XHR.send = function (body) {
       const info = this.__pr;
-      if (info) { noteHeaders(info.url, info.headers); noteFields(info.url, body); }
       if (info && active()) {
         reqStart();
         const rec = { id: uid(), via: 'xhr', ts: Date.now(), pageUrl: location.href, method: info.method, url: info.url, requestHeaders: info.headers, credentials: this.withCredentials ? 'include' : 'same-origin' };
@@ -491,7 +438,7 @@
           if (xhr.status === 0) rec.error = 'network error / aborted';
           rec.requestBody = await reqBodyP;
           emit(rec);
-        });
+        }, { once: true });
       }
       return oSend.apply(this, arguments);
     };

@@ -29,7 +29,13 @@ const DEFAULT_SETTINGS = {
 const TRACKING = /google-analytics\.com|googletagmanager\.com|analytics\.google\.com|doubleclick\.net|googlesyndication|hm\.baidu\.com|cnzz\.com|umeng\.com|umengcloud|sentry\.io|ingest\.sentry|\/sentry\/api|hotjar\.|segment\.(io|com)|mixpanel\.com|amplitude\.com|clarity\.ms|facebook\.com\/tr|connect\.facebook\.net|bat\.bing\.com|newrelic\.com|nr-data\.net|datadoghq|browser-intake|growingio|sensorsdata|arms-retcode|mmstat\.com|zhugeio|fullstory\.com|intercom\.io|bytedance\.com\/.*\/(log|monitor)|mcs\.zijieapi|snssdk\.com\/.*log|log\.zhihu|\/collect\?v=|\/gen_204|\/log204|beacon/i;
 const STATIC_CT = /^(image|font|audio|video)\/|text\/css|wasm/i;
 
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+// 令牌、回放编号、offsetId 都靠它生成：用密码学随机数，不能被页面预测
+const uid = () => {
+  const b = new Uint8Array(8);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('') + Date.now().toString(36);
+};
+const BAD_KEY = (k) => k === '__proto__' || k === 'constructor' || k === 'prototype';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ======================= 存储 =======================
@@ -69,15 +75,37 @@ function persist(now) {
 
 // 录制中输入过的密码（只在内存 / 会话存储里，停止录制就清掉）
 let secretCache = null;
+let secretLoad = null;
+let secretGen = 0;
 async function secretsOf() {
-  if (!secretCache) {
-    try { secretCache = (await chrome.storage.session.get('secrets')).secrets || []; } catch (e) { secretCache = []; }
+  if (secretCache) return secretCache;
+  if (!secretLoad) {
+    const gen = secretGen;
+    secretLoad = chrome.storage.session.get('secrets').then((d) => {
+      if (gen === secretGen && !secretCache) secretCache = d.secrets || [];
+      return secretCache || [];
+    }).catch(() => {
+      if (gen === secretGen && !secretCache) secretCache = [];
+      return secretCache || [];
+    }).finally(() => { secretLoad = null; });
   }
-  return secretCache;
+  return secretLoad;
 }
 function clearSecrets() {
+  secretGen++;
   secretCache = [];
+  secretLoad = null;
   chrome.storage.session.remove('secrets').catch(() => {});
+}
+// 对同一 storage key 的读改写串行化，防止并发覆盖
+const storageLocks = new Map();
+function withLock(key, fn) {
+  const prev = storageLocks.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  // tail 只用来排队：吞掉 rejection（调用方从 next 拿到错误），免得出现未处理的 Promise 拒绝
+  const tail = next.then(() => {}, () => {}).finally(() => { if (storageLocks.get(key) === tail) storageLocks.delete(key); });
+  storageLocks.set(key, tail);
+  return next;
 }
 function counts(c) {
   let steps = 0, requests = 0;
@@ -142,7 +170,7 @@ async function syncLibrary(c) {
   try {
     const A = PR_EXPORTER.analyze(c.events, c.settings, c.state, c.apiOverrides, c.aiDocs);
     params = A.params;
-    direct = A.apis.some((a) => !a.ignore && /\{\{[^}]+\}\}/.test(JSON.stringify(a.editParams || {})));
+    direct = A.apis.some((a) => !a.ignore && /\{\{[^{}]+\}\}/.test(JSON.stringify(a.editParams || {})));
   } catch (e) { /* ignore */ }
   const entry = { id: item.id, name: item.name, description: item.description, startUrl: c.state.startUrl, savedAt: item.savedAt, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(c.aiDocs && (c.aiDocs.title || Object.values(c.aiDocs.apis || {}).some((d) => d.fn || d.title || d.description))), params, direct };
   c.libIndex = [entry, ...c.libIndex.filter((x) => x.id !== item.id)];
@@ -150,8 +178,8 @@ async function syncLibrary(c) {
   bridgeNotify('libraryChanged');
 }
 async function getLibItem(c, ref) {
-  if (!ref) throw new Error('缺少 recording 参数（脚本 id 或名称）');
-  const r = String(ref).trim();
+  const r = ref == null ? '' : String(ref).trim();
+  if (!r) throw new Error('缺少 recording 参数（脚本 id 或名称）');
   const e = c.libIndex.find((x) => x.id === r) || c.libIndex.find((x) => x.name === r) || c.libIndex.find((x) => x.name.includes(r));
   if (!e) throw new Error(`脚本库中没有「${ref}」。可用：${c.libIndex.map((x) => x.name).join('、') || '（空）'}`);
   const d = await chrome.storage.local.get('lib:' + e.id);
@@ -273,13 +301,19 @@ function netEvent(r, c) {
   return ev;
 }
 // 对账：钩子抓到了同一条（方法、地址相同，时间相近）就以钩子的为准，没抓到的补记
-async function netFlush(all) {
+let netFlushChain = Promise.resolve();
+function netFlush(all, onlyTabId) {
+  netFlushChain = netFlushChain.then(() => doNetFlush(all, onlyTabId), () => doNetFlush(all, onlyTabId));
+  return netFlushChain;
+}
+async function doNetFlush(all, onlyTabId) {
   const c = await load();
   const now = Date.now();
   const wait = [];
   for (const r of netDone.splice(0)) {
+    if (onlyTabId != null && r.tabId !== onlyTabId) { wait.push(r); continue; }
     if (!netTabs(c).includes(r.tabId)) continue;
-    if (!all && now - r.endTs < 2500) { wait.push(r); continue; }
+    if (!all && onlyTabId == null && now - r.endTs < 2500) { wait.push(r); continue; }
     try {
       // 先按入库的方式脱敏再比：钩子那条存的是脱敏后的地址（sign=…已经换成标记），拿原始地址比永远对不上
       const ev = PR_EXPORTER.scrubRequest(netEvent(r, c), await secretsOf(), c.settings.maskPasswords !== false, c.settings.maskHeaders !== false);
@@ -320,6 +354,8 @@ function netListen(on) {
     wr.onHeadersReceived.removeListener(netOnResponse);
     wr.onCompleted.removeListener(netOnEnd);
     wr.onErrorOccurred.removeListener(netOnEnd);
+    clearTimeout(netTimer);
+    netTimer = null;
     netSeen.clear();
     netDone = [];
     pairedIds.clear();
@@ -364,7 +400,8 @@ function setBadge(on) {
   chrome.action.setBadgeBackgroundColor({ color: '#e5484d' });
 }
 async function notifyTab(tabId, c, injectIfMissing) {
-  const msg = { type: 'state', recording: !!(c.state.recording && c.state.tabId === tabId), settings: c.settings, counts: counts(c) };
+  const { maxBodyKB, maskPasswords, altExtract, recordScroll } = c.settings;
+  const msg = { type: 'state', recording: !!(c.state.recording && c.state.tabId === tabId), settings: { maxBodyKB, maskPasswords, altExtract, recordScroll }, counts: counts(c) };
   try {
     await chrome.tabs.sendMessage(tabId, msg, { frameId: 0 });
     chrome.tabs.sendMessage(tabId, msg).catch(() => {}); // 页面里的 iframe 也要知道录制状态
@@ -375,9 +412,17 @@ async function notifyTab(tabId, c, injectIfMissing) {
     await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content/recorder.js'] }).catch(() => {});
   }
 }
+let recGen = 0;
+let stopInFlight = null;
+let recKeep = null;
+function setRecKeep(on) {
+  if (on && !recKeep) recKeep = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+  else if (!on && recKeep) { clearInterval(recKeep); recKeep = null; }
+}
 async function start(c, tabId, fresh) {
   const tab = await chrome.tabs.get(tabId);
   if (!/^(https?|file):/i.test(tab.url || '')) throw new Error('当前页面不支持录制（仅支持 http/https/file 页面）');
+  recGen++;
   const prevTab = c.state.recording ? c.state.tabId : null;
   if (fresh || !c.events.length) {
     clearSecrets();
@@ -389,6 +434,7 @@ async function start(c, tabId, fresh) {
     c.state = { ...c.state, recording: true, tabId, childTabs: (c.state.childTabs || []).filter((id) => id !== tabId) };
   }
   netListen(true);
+  setRecKeep(true);
   const last = lastStep(c);
   if (!(last && last.type === 'navigate' && last.url === tab.url)) {
     addEvent(c, { kind: 'step', type: 'navigate', id: uid(), ts: Date.now(), url: tab.url, title: tab.title });
@@ -399,18 +445,28 @@ async function start(c, tabId, fresh) {
   await notifyTab(tabId, c, true);
 }
 async function stop(c) {
-  // 刚结束的请求：页面钩子的那条可能还在路上，等一下再对账，免得补记成没有返回内容的
-  await sleep(350);
-  await netFlush(true);
-  netListen(false);
-  clearSecrets();
-  const tabId = c.state.tabId;
-  for (const id of c.state.childTabs || []) chrome.tabs.sendMessage(id, { type: 'capture', on: false }).catch(() => {});
-  c.state = { ...c.state, recording: false, stoppedAt: Date.now(), childTabs: [] };
-  await persist(true);
-  setBadge(false);
-  if (tabId != null) notifyTab(tabId, c, false);
-  await syncLibrary(c); // 停止后自动存入脚本库
+  const gen = recGen;
+  if (stopInFlight?.gen === gen) return stopInFlight.promise;
+  const promise = (async () => {
+    // 刚结束的请求：页面钩子的那条可能还在路上，等一下再对账，免得补记成没有返回内容的
+    await sleep(350);
+    if (gen !== recGen) return;
+    await netFlush(true);
+    if (gen !== recGen) return;
+    netListen(false);
+    setRecKeep(false);
+    clearSecrets();
+    const tabId = c.state.tabId;
+    for (const id of c.state.childTabs || []) chrome.tabs.sendMessage(id, { type: 'capture', on: false }).catch(() => {});
+    c.state = { ...c.state, recording: false, stoppedAt: Date.now(), childTabs: [] };
+    await persist(true);
+    if (gen !== recGen) return;
+    setBadge(false);
+    if (tabId != null) notifyTab(tabId, c, false);
+    await syncLibrary(c); // 停止后自动存入脚本库
+  })().finally(() => { if (stopInFlight?.gen === gen) stopInFlight = null; });
+  stopInFlight = { gen, promise };
+  return promise;
 }
 
 // ======================= AI 解读接口 =======================
@@ -622,51 +678,94 @@ async function waitTabComplete(tabId, timeout) {
   return chrome.tabs.get(tabId);
 }
 // 返回注入的文档 id（Chrome 106+），之后用它判断框架里是不是还是同一个页面
-async function injectRuntime(tabId, frameId) {
-  const r = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId || 0] }, files: ['lib/runtime.js'], world: 'MAIN' });
+async function injectRuntime(tabId, frameId, world = 'ISOLATED') {
+  const r = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId || 0] }, files: ['lib/runtime.js'], world });
   return (r && r[0] && r[0].documentId) || null;
 }
-// 以下两个函数会被序列化后在页面主环境中执行
+// 回放在扩展的 ISOLATED world 执行，页面主环境仅装网络观测和改写。
 // seg = { from, to }：只执行这一段步骤（同一个框架里的连续步骤）；resume：扩展收到的最新断点
-async function pageReplay(rec, params, apiParams, config, from, opened, seg, resume, skip, token) {
-  window.__PR_TOKEN__ = token; // 断点回传时带上，扩展据此归到这次回放
-  await window.__pageRecorderRuntime(rec, params, apiParams, Object.assign({}, config, { autoRun: false }));
-  return window.__PR__.replay(Object.assign({ segment: seg, skip }, from === null ? { resume: resume || undefined } : { from, opened }));
+async function pageReplay(rec, params, apiParams, config, from, opened, seg, resume, skip, token, probeId) {
+  window.__PR_ALIVE__ = probeId;
+  const send = (msg) => chrome.runtime.sendMessage({ ...msg, token });
+  const hooks = {
+    progress: (data) => send({ type: 'replayProgress', data }).catch(() => {}),
+    network: () => send({ type: 'replayNetwork' }).then((r) => r?.entries || [], () => []),
+  };
+  if (window.__pageRecorderInput) hooks.input = (req) => window.__pageRecorderInput(token, req);
+  const runtime = await window.__pageRecorderRuntime(rec, params, apiParams, {
+    ...config, autoRun: false, expose: false, netLog: false, rewriteRequests: false,
+  }, hooks);
+  window.__pageRecorderCancel = runtime.cancel;
+  try {
+    return await runtime.replay(Object.assign({ segment: seg, skip }, from === null ? { resume: resume || undefined } : { from, opened }));
+  } finally {
+    if (window.__pageRecorderCancel === runtime.cancel) delete window.__pageRecorderCancel;
+  }
 }
 // 回放中页面回传的断点：回放段 → 最新的断点（时间戳最大的）
 const replayProgress = new Map();
+const replayContexts = new Map();
 // 页面在 executeScript 等待期间整页跳转时，Chrome 不会让这个 Promise 返回（会一直挂起），
 // 所以每秒探测一次：框架里的文档换了（或者框架已经没了），就说明已经跳转，交给下一轮从断点继续
 async function execReplay(tabId, frameId, docId, runId, args, deadline) {
   const token = runId + '|' + uid();
-  // 真实输入只接受这一段回放所在的框架、文档发来的、带这个令牌的请求
+  const probeId = uid();
+  const fid = frameId || 0;
+  const target = docId ? { tabId, documentIds: [docId] } : { tabId, frameIds: [fid] };
+  const probeTarget = { tabId, frameIds: [fid] };
   const rs = realTabs.get(tabId);
-  if (rs) Object.assign(rs, { token, frameId: frameId || 0, docId });
-  const target = docId ? { tabId, documentIds: [docId] } : { tabId, frameIds: [frameId || 0] };
-  const probeTarget = { tabId, frameIds: [frameId || 0] };
+  if (rs) Object.assign(rs, { token, frameId: fid, docId });
+  replayContexts.set(token, { tabId, frameId: fid, docId, target, runId });
   let settled = null;
-  chrome.scripting.executeScript({ target, world: 'MAIN', func: pageReplay, args: [...args, token] })
-    .then((r) => { settled = { result: r && r[0] && r[0].result }; }, (e) => { settled = { error: e }; });
-  let failures = 0;
-  while (!settled && Date.now() < deadline) {
-    await sleep(1000);
-    if (settled) break;
-    const alive = await Promise.race([
-      chrome.scripting.executeScript({ target: probeTarget, world: 'MAIN', func: (t) => window.__PR_TOKEN__ === t, args: [token] })
-        .then((r) => (docId && r && r[0] && r[0].documentId ? r[0].documentId === docId : r && r[0] && r[0].result), () => 'error'),
-      sleep(3000).then(() => null),
-    ]);
-    failures = alive === 'error' ? failures + 1 : 0;
-    if ((alive === false || failures >= 2) && !settled) return { navigated: true };
+  try {
+    const [rec, params, apiParams] = args;
+    // 两个 world 之间转交组件适配用的事件名（见 runtime.js 的 pageOp），每次回放随机生成
+    const config = { ...args[3], pageBridge: 'pr:' + uid() };
+    await chrome.scripting.executeScript({ target, world: 'MAIN', files: ['lib/runtime.js'] });
+    const rewriteParams = Object.fromEntries(tplNames(apiParams).filter((key) => Object.hasOwn(params, key)).map((key) => [key, params[key]]));
+    const pageRec = { ...rec, steps: config.realInput ? [] : rec.steps.map((step) => ({
+      dialogs: step.dialogs, members: step.members?.map((member) => ({ dialogs: member.dialogs })),
+    })) };
+    await chrome.scripting.executeScript({
+      target, world: 'MAIN', func: (rec, params, apiParams, config) => {
+        const net = window.__PR_NET__;
+        if (net) net.log.length = 0;
+        return window.__pageRecorderRuntime(rec, params, apiParams, {
+          ...config, autoRun: false, expose: false, realInput: false, networkOnly: true, pageDialogs: !config.realInput,
+        }).then((runtime) => { window.__pageRecorderFinishNetwork = runtime.finish; });
+      }, args: [pageRec, rewriteParams, apiParams, config],
+    });
+    const isolateConfig = { ...config, realInput: !!config.realInput && fid === 0 };
+    chrome.scripting.executeScript({ target, world: 'ISOLATED', func: pageReplay, args: [rec, params, apiParams, isolateConfig, ...args.slice(4), token, probeId] })
+      .then((r) => { settled = { result: r && r[0] && r[0].result }; }, (e) => { settled = { error: e }; });
+    let failures = 0;
+    while (!settled && Date.now() < deadline) {
+      await sleep(1000);
+      if (settled) break;
+      const alive = await Promise.race([
+        chrome.scripting.executeScript({ target: probeTarget, world: 'ISOLATED', func: (p) => window.__PR_ALIVE__ === p, args: [probeId] })
+          .then((r) => (docId && r && r[0] && r[0].documentId ? r[0].documentId === docId : r && r[0] && r[0].result), () => 'error'),
+        sleep(3000).then(() => null),
+      ]);
+      failures = alive === 'error' ? failures + 1 : 0;
+      if ((alive === false || failures >= 2) && !settled) return { navigated: true };
+    }
+    if (!settled) {
+      // 超时：让页面里的回放停下，避免用户重试时出现两份操作
+      await chrome.scripting.executeScript({ target: probeTarget, world: 'ISOLATED', func: () => { window.__pageRecorderCancel?.(); } }).catch(() => {});
+      await sleep(1000); // 给页面里正在等待/输入的步骤一点时间停下来
+      throw new Error('超时');
+    }
+    if (settled.error) throw settled.error;
+    return settled;
+  } finally {
+    replayContexts.delete(token);
+    if (rs?.token === token) rs.token = null;
+    await chrome.scripting.executeScript({ target, world: 'MAIN', func: () => {
+      window.__pageRecorderFinishNetwork?.();
+      delete window.__pageRecorderFinishNetwork;
+    } }).catch(() => {});
   }
-  if (!settled) {
-    // 超时：让页面里的回放停下，避免用户重试时出现两份操作
-    await chrome.scripting.executeScript({ target: probeTarget, world: 'MAIN', func: () => { if (window.__PR__ && window.__PR__.cancel) window.__PR__.cancel(); } }).catch(() => {});
-    await sleep(1000); // 给页面里正在等待/输入的步骤一点时间停下来
-    throw new Error('超时');
-  }
-  if (settled.error) throw settled.error;
-  return settled;
 }
 
 // ---------- 真实输入：通过浏览器调试接口发鼠标、键盘事件 ----------
@@ -686,7 +785,7 @@ function recordedDialogs(b) {
 }
 function matchDialog(list, type, message) {
   const m = String(message || '').slice(0, 120);
-  const i = list.findIndex((d) => d.kind === type && (d.message === m || (d.message && (m.startsWith(d.message.slice(0, 40)) || d.message.startsWith(m.slice(0, 40))))));
+  const i = list.findIndex((d) => d.kind === type && (d.message === m || (m && d.message && (m.startsWith(d.message.slice(0, 40)) || d.message.startsWith(m.slice(0, 40))))));
   return i < 0 ? null : list.splice(i, 1)[0];
 }
 async function attachReal(tabId, runId, files, dialogs) {
@@ -699,7 +798,8 @@ async function attachReal(tabId, runId, files, dialogs) {
   // 回放期间拦下系统的选文件对话框（点“上传”按钮不会弹出一个没人关的对话框），由上传步骤把参数里的文件设进去
   await cdp(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true }).catch(() => {});
   await sleep(300); // 调试提示条出现会改变视口高度，等它出现后再算坐标
-  return true;
+  const st = realTabs.get(tabId);
+  return !!(st && st.runId === runId);
 }
 async function detachReal(tabId) {
   const st = realTabs.get(tabId);
@@ -841,10 +941,14 @@ async function realInputAction(tabId, a) {
     let node = st.lastChooser && Date.now() - st.lastChooser.ts < 60000 ? st.lastChooser.backendNodeId : null;
     st.lastChooser = null;
     if (!node) {
-      const opened = new Promise((resolve) => { st.pendingFiles = { resolve }; });
-      await realMouse(tabId, { type: 'click', x: a.x, y: a.y });
-      const p = await Promise.race([opened, sleep(5000).then(() => null)]);
-      st.pendingFiles = null;
+      let p = null;
+      try {
+        const opened = new Promise((resolve) => { st.pendingFiles = { resolve }; });
+        await realMouse(tabId, { type: 'click', x: a.x, y: a.y });
+        p = await Promise.race([opened, sleep(5000).then(() => null)]);
+      } finally {
+        st.pendingFiles = null;
+      }
       if (!p) throw Object.assign(new Error('点了上传按钮，但页面没有打开选文件对话框'), { unknown: false });
       node = p.backendNodeId;
     }
@@ -903,9 +1007,10 @@ async function findFrame(tabId, url, timeout) {
     await sleep(400);
   }
 }
+const navigatingTabs = new Set(); // 正在被 callApi 切换地址的复用标签页，导航完成前不让其他调用选中
 async function findOriginFrame(origin, siteOrigin) {
-  // 正在回放的标签页不用：在里面初始化接口调用会覆盖回放用的运行时
-  const tabs = (await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] })).filter((t) => !runningTabs.has(t.id));
+  // 正在回放或正在导航的标签页不用：在里面初始化接口调用会覆盖回放用的运行时
+  const tabs = (await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] })).filter((t) => !runningTabs.has(t.id) && !navigatingTabs.has(t.id));
   const own = tabs.find((t) => t.url && t.url.startsWith(origin + '/'));
   if (own) return { tabId: own.id, frameId: 0 };
   for (const t of tabs.filter((x) => siteOrigin && x.url && x.url.startsWith(siteOrigin + '/'))) {
@@ -914,26 +1019,26 @@ async function findOriginFrame(origin, siteOrigin) {
   }
   return null;
 }
-async function pageCall(rec, params, apiParams, config, api, args) {
-  // 直接调用不开启请求改写、也不记录页面请求：这个页面之后用户自己的操作不能被改成这次的参数、不能被留在内存里
+async function pageCall(rec, params, apiParams, config, api, args, live) {
   try {
-    await window.__pageRecorderRuntime(rec, params, apiParams, Object.assign({}, config, { autoRun: false, verbose: false, rewriteRequests: false, netLog: false }));
-    if (window.__PR_NET__) { window.__PR_NET__.rewrite = null; window.__PR_NET__.active = false; }
+    const runtime = await window.__pageRecorderRuntime(rec, params, apiParams, {
+      ...config, expose: false, autoRun: false, verbose: false, rewriteRequests: false, netLog: false,
+    }, { live });
+    return await runtime.api.call(api, args || {});
   } catch (e) {
-    return { ok: false, rejected: true, notSent: true, error: '页面里准备调用时出错：' + String((e && e.message) || e) };
-  }
-  try {
-    return await window.__PR__.api.call(api, args || {});
-  } catch (e) {
-    // call() 只在发请求之前抛错（找不到接口、参数换算不了）；发出之后的错误它自己按“结果未知”返回
     return { ok: false, rejected: true, notSent: true, error: String((e && e.message) || e) };
   }
 }
 function mergeApiParams(base, extra) {
-  const out = JSON.parse(JSON.stringify(base || {}));
-  for (const [name, secs] of Object.entries(extra || {})) {
-    out[name] = out[name] || {};
-    for (const [sec, kv] of Object.entries(secs || {})) out[name][sec] = Object.assign({}, out[name][sec] || {}, kv);
+  const out = Object.create(null);
+  for (const source of [base, extra]) for (const [name, sections] of Object.entries(source || {})) {
+    if (BAD_KEY(name) || !sections || typeof sections !== 'object') continue;
+    const api = out[name] ||= Object.create(null);
+    for (const section of ['path', 'query', 'body']) {
+      if (!Object.hasOwn(sections, section) || !sections[section] || typeof sections[section] !== 'object') continue;
+      const fields = api[section] ||= Object.create(null);
+      for (const [key, value] of Object.entries(sections[section])) if (!BAD_KEY(key)) fields[key] = value;
+    }
   }
   return out;
 }
@@ -943,7 +1048,9 @@ async function pickTab(url, opts) {
     let origin = '';
     try { origin = new URL(url).origin; } catch (e) { /* ignore */ }
     const tabs = await chrome.tabs.query({});
-    const t = tabs.find((x) => x.url && x.url.startsWith(origin));
+    const t = tabs.find((x) => {
+      try { return origin && new URL(x.url).origin === origin; } catch (e) { return false; }
+    });
     if (t) return { tabId: t.id, created: false };
   }
   const t = await chrome.tabs.create({ url, active: !!opts.active });
@@ -970,27 +1077,38 @@ async function reusedTab(key, url) {
   const all = await ourTabs();
   const site = siteOf(url);
   const list = [all[key], ...Object.entries(all).filter(([k, x]) => k !== key && x && x.site === site).map(([, x]) => x)].filter(Boolean);
-  let dirty = false;
+  const deadIds = new Set();
+  const pruneDead = () => {
+    if (!deadIds.size) return Promise.resolve();
+    return withLock('ourTabs', async () => {
+      const latest = await ourTabs();
+      let changed = false;
+      for (const [k, v] of Object.entries(latest)) if (v && deadIds.has(v.tabId)) { delete latest[k]; changed = true; }
+      if (changed) await chrome.storage.local.set({ ourTabs: latest }).catch(() => {});
+    });
+  };
   for (const x of list) {
     let t = null;
     try { t = await chrome.tabs.get(x.tabId); } catch (e) { /* 已关闭 */ }
-    if (!t) { for (const [k, v] of Object.entries(all)) if (v && v.tabId === x.tabId) { delete all[k]; dirty = true; } continue; }
-    if (siteOf(t.url || t.pendingUrl || '') !== site || runningTabs.has(t.id)) continue;
-    if (dirty) await chrome.storage.local.set({ ourTabs: all });
+    if (!t) { deadIds.add(x.tabId); continue; }
+    if (siteOf(t.url || t.pendingUrl || '') !== site || runningTabs.has(t.id) || navigatingTabs.has(t.id)) continue;
+    await pruneDead();
     if (t.discarded || t.status === 'unloaded') await chrome.tabs.reload(t.id).catch(() => {});
     return t;
   }
-  if (dirty) await chrome.storage.local.set({ ourTabs: all });
+  await pruneDead();
   return null;
 }
 async function rememberTab(key, tabId, url) {
   // 留着复用的标签页不让浏览器在后台丢弃（丢弃后每次调用都要重新加载整页）
   chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
-  const all = await ourTabs();
-  all[key] = { tabId, site: siteOf(url), ts: Date.now() };
-  const keys = Object.keys(all).sort((a, b) => all[b].ts - all[a].ts);
-  for (const k of keys.slice(100)) delete all[k];
-  try { await chrome.storage.local.set({ ourTabs: all }); } catch (e) { /* ignore */ }
+  await withLock('ourTabs', async () => {
+    const all = await ourTabs();
+    all[key] = { tabId, site: siteOf(url), ts: Date.now() };
+    const keys = Object.keys(all).sort((a, b) => all[b].ts - all[a].ts);
+    for (const k of keys.slice(100)) delete all[k];
+    try { await chrome.storage.local.set({ ourTabs: all }); } catch (e) { /* ignore */ }
+  });
 }
 // 接口调用占用中的标签页（可以同时有多个调用）；回放要独占，等调用结束再用
 const callingTabs = new Map();
@@ -1000,7 +1118,7 @@ const callEnd = (id) => { const n = (callingTabs.get(id) || 1) - 1; if (n > 0) c
 // 页面复用规则同 call_api：第一次在后台打开并留着，之后直接在里面发请求
 const tplNames = (v) => {
   const out = new Set();
-  JSON.stringify(v === undefined ? null : v).replace(/\{\{\s*([^}|]+?)\s*(\|[^}]*)?\}\}/g, (m, n) => { out.add(n.trim()); return m; });
+  JSON.stringify(v === undefined ? null : v).replace(/\{\{([^{}|]+)(?:\|[^{}]*)?\}\}/g, (m, n) => { const k = n.trim(); if (k) out.add(k); return m; });
   return [...out];
 };
 function linkedApis(b) {
@@ -1064,12 +1182,14 @@ async function verifiedOf(item, b) {
 }
 // 直接请求被服务端明确拒绝（签名、登录态要页面现算，比如淘宝 mtop 的 sign）：一天内这条录制不再先试直接请求
 async function markDirectRejected(item, reason) {
-  try {
-    const all = (await chrome.storage.local.get('directVerified')).directVerified || {};
-    const cur = all[item.id] && all[item.id].savedAt === item.savedAt ? all[item.id] : { savedAt: item.savedAt, params: {} };
-    all[item.id] = Object.assign(cur, { rejectedAt: Date.now(), rejectedReason: String(reason || '').slice(0, 200) });
-    await chrome.storage.local.set({ directVerified: all });
-  } catch (e) { /* ignore */ }
+  await withLock('directVerified', async () => {
+    try {
+      const all = (await chrome.storage.local.get('directVerified')).directVerified || {};
+      const cur = all[item.id] && all[item.id].savedAt === item.savedAt ? all[item.id] : { savedAt: item.savedAt, params: {} };
+      all[item.id] = Object.assign(cur, { rejectedAt: Date.now(), rejectedReason: String(reason || '').slice(0, 200) });
+      await chrome.storage.local.set({ directVerified: all });
+    } catch (e) { /* ignore */ }
+  });
 }
 async function directRejectedOf(item) {
   try {
@@ -1080,27 +1200,30 @@ async function directRejectedOf(item) {
 async function saveVerified(item, verdicts, b) {
   const got = Object.entries(verdicts || {}).filter(([, r]) => r === 'ok' || r === 'mismatch');
   if (!got.length) return;
-  try {
-    const all = (await chrome.storage.local.get('directVerified')).directVerified || {};
-    const same = all[item.id] && all[item.id].savedAt === item.savedAt;
-    const cur = same ? all[item.id].params || {} : {};
-    const sigs = same ? all[item.id].sigs || {} : {};
-    for (const [k, r] of got) {
-      const sig = paramSig(b, k);
-      // 名字换了主人：旧结论作废，用这次的
-      cur[k] = sigs[k] === sig && cur[k] === 'mismatch' ? 'mismatch' : r;
-      sigs[k] = sig;
-    }
-    all[item.id] = Object.assign({}, same ? all[item.id] : {}, { savedAt: item.savedAt, params: cur, sigs });
-    const keys = Object.keys(all);
-    for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k];
-    await chrome.storage.local.set({ directVerified: all });
-  } catch (e) { /* ignore */ }
+  await withLock('directVerified', async () => {
+    try {
+      const all = (await chrome.storage.local.get('directVerified')).directVerified || {};
+      const same = all[item.id] && all[item.id].savedAt === item.savedAt;
+      const cur = same ? all[item.id].params || {} : {};
+      const sigs = same ? all[item.id].sigs || {} : {};
+      for (const [k, r] of got) {
+        const sig = paramSig(b, k);
+        // 名字换了主人：旧结论作废，用这次的
+        cur[k] = sigs[k] === sig && cur[k] === 'mismatch' ? 'mismatch' : r;
+        sigs[k] = sig;
+      }
+      all[item.id] = Object.assign({}, same ? all[item.id] : {}, { savedAt: item.savedAt, params: cur, sigs });
+      const keys = Object.keys(all);
+      for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k];
+      await chrome.storage.local.set({ directVerified: all });
+    } catch (e) { /* ignore */ }
+  });
 }
 async function runApiMode(item, b, apis, opts) {
   const t0 = Date.now();
   const deadline = t0 + (opts.timeout || 180000);
-  const out = { ok: true, mode: 'api', recording: b.name, params: Object.assign({}, b.params, opts.params || {}), responses: [], extracted: {}, log: [] };
+  const out = { ok: true, mode: 'api', recording: b.name, params: PR_EXPORTER.maskDeep(Object.assign({}, b.params, opts.params || {}), true), responses: [], extracted: {}, log: [] };
+  for (const [key, info] of Object.entries(b.paramInfo || {})) if (info.kind === 'secret') delete out.params[key];
   for (const a of apis) {
     const left = deadline - Date.now();
     if (left <= 0) { out.ok = false; out.error = '超时，后面的接口没有调用'; break; }
@@ -1110,7 +1233,7 @@ async function runApiMode(item, b, apis, opts) {
         params: opts.params, apiParams: opts.apiParams, tabId: opts.tabId, active: opts.active, deadline,
         reuseTab: opts.newTab ? false : undefined, keepTab: opts.keepTab,
       });
-      out.responses.push({ api: a.name, fn: a.fn, status: r.status, ok: r.ok, url: r.url, data: r.data, error: r.error });
+      out.responses.push({ api: a.name, fn: a.fn, status: r.status, ok: r.ok, url: PR_EXPORTER.maskUrl(r.url, true), data: PR_EXPORTER.maskDeep(r.data, true), error: r.error });
       out.log.push({ api: a.name, ok: !!r.ok, status: r.status, error: r.error, notSent: r.notSent || undefined });
       if (r.tab) out.tab = r.tab;
       if (r.ok) { out.succeeded = (out.succeeded || 0) + 1; continue; }
@@ -1148,7 +1271,7 @@ async function runRecording(item, opts) {
     given[k] = a.map(String);
   }
   opts = Object.assign({}, opts, { params: given });
-  const unknownNames = Object.keys(given).filter((k) => !(k in b.params));
+  const unknownNames = Object.keys(given).filter((k) => !Object.hasOwn(b.params, k));
   if (unknownNames.length) throw new Error(`这条录制没有这些输入参数：${unknownNames.join('、')}。可用的参数：${Object.keys(b.params).join('、') || '（无）'}`);
   const changed = changedParams(b, given);
   const linked = linkedApis(b);
@@ -1233,13 +1356,20 @@ async function runUi(item, b, opts, calibrateNames, required) {
   try {
     let old = reuse ? await reusedTab('run:' + item.id, b.recording.startUrl) : null;
     for (let k = 0; old && callingTabs.has(old.id) && k < 50; k++) await sleep(100);
-    if (old && (runningTabs.has(old.id) || callingTabs.has(old.id))) old = null; // 拿到后同步复查再占用
+    if (old) old = await chrome.tabs.get(old.id).catch(() => null);
+    if (old && (runningTabs.has(old.id) || callingTabs.has(old.id) || navigatingTabs.has(old.id))) old = null; // 拿到后同步复查再占用
     if (old) {
       runningTabs.add(old.id);
       locked = old.id;
       if (capture) startCapture(old.id);
-      // 默认不刷新（最快）；fresh: true 时回到起始页面重新加载，从干净的页面状态开始
-      if (opts.fresh || !sameSitePath(old.url, b.recording.startUrl)) await chrome.tabs.update(old.id, { url: b.recording.startUrl });
+      // 默认不刷新（最快）；fresh: true 时回到起始页面重新加载（含 hash SPA 同文档时显式 reload），从干净的页面状态开始
+      if (opts.fresh) {
+        const sameDoc = sameSitePath(old.url, b.recording.startUrl) && (() => { try { return new URL(old.url).search === new URL(b.recording.startUrl).search; } catch (e) { return false; } })();
+        if (old.url !== b.recording.startUrl) await chrome.tabs.update(old.id, { url: b.recording.startUrl });
+        if (sameDoc) await chrome.tabs.reload(old.id);
+      } else if (!sameSitePath(old.url, b.recording.startUrl)) {
+        await chrome.tabs.update(old.id, { url: b.recording.startUrl });
+      }
       if (opts.active) await chrome.tabs.update(old.id, { active: true });
       picked = { tabId: old.id, created: false };
       await rememberTab('run:' + item.id, old.id, b.recording.startUrl);
@@ -1263,7 +1393,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
   runningTabs.add(tabId);
   // 真实输入：连上调试接口后，页面里的点击、输入、按键都由浏览器真实产生；连不上就用合成事件
   // 上传参数里给的文件路径（| 分隔）是这次回放唯一允许设进文件框的文件
-  const uploadFiles = b.recording.steps.filter((s) => s.type === 'upload' && s.param).flatMap((s) => String(params[s.param] || '').split('|').map((x) => x.trim()).filter(Boolean));
+  const uploadFiles = b.recording.steps.filter((s) => s.type === 'upload' && s.param).flatMap((s) => String(Object.hasOwn(opts.params || {}, s.param) ? opts.params[s.param] || '' : '').split('|').map((x) => x.trim()).filter(Boolean));
   const wantReal = (await load()).settings.realInput !== false && opts.realInput !== false;
   let real = false;
   // 按所在框架把步骤切成几段：顶层页面的连续步骤一段，同一个 iframe 里的连续步骤一段，依次在对应框架里执行
@@ -1283,7 +1413,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
     // 连调试接口放在 try 里：之后任何异常都会在 finally 里断开
     real = wantReal ? await attachReal(tabId, runId, uploadFiles, recordedDialogs(b)) : false;
     config.realInput = real;
-    if (real) total.input = 'real';
+    if (real && segs.some((seg) => !seg.frame)) total.input = 'real';
     for (let si = 0; si < segs.length; si++) {
       const seg = segs[si];
       if (si > 0) await sleep(config.stepDelay || 400);
@@ -1335,8 +1465,9 @@ async function runUi(item, b, opts, calibrateNames, required) {
       }
       total.calibration = { params: total.ok ? verdicts : Object.fromEntries(calibrateNames.map((n) => [n, 'unknown'])), details: details.slice(0, 40) };
     }
-    const tab = await chrome.tabs.get(tabId);
-    total.finalUrl = tab.url;
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    total.finalUrl = PR_EXPORTER.maskUrl(tab?.url || '', true);
+    total.responses = total.responses.map((r) => ({ ...r, url: PR_EXPORTER.maskUrl(r.url, true), data: PR_EXPORTER.maskDeep(r.data, true) }));
     total.recording = b.name;
     const cap = captures.get(tabId);
     if (cap) {
@@ -1377,10 +1508,10 @@ async function drainCapture(cap) {
   }
 }
 function stopCapture(tabId) {
-  if (!captures.delete(tabId)) return;
-  chrome.tabs.sendMessage(tabId, { type: 'capture', on: false }).catch(() => {});
+  if (captures.delete(tabId)) chrome.tabs.sendMessage(tabId, { type: 'capture', on: false }).catch(() => {});
 }
 function addCapture(cap, ev, sender) {
+  ev = PR_EXPORTER.exportRequest(ev, {});
   if (cap.list.length >= CAPTURE_MAX) return;
   const rb = ev.responseBody;
   let data = rb ? (rb.value !== undefined ? rb.value : null) : null;
@@ -1457,25 +1588,26 @@ async function callApi(item, api, args, opts) {
     // 扩展开过的同站点标签页：页面（或其中某个 iframe）就在这个源上直接用；跳到同站别的子域名了就把它带回来
     const kept = await reusedTab('call:' + ctx, ctxUrl);
     // 先同步检查并占用（回放会等占用结束），再去看框架、导航
-    if (kept && !callingTabs.has(kept.id) && !runningTabs.has(kept.id)) {
+    if (kept && !callingTabs.has(kept.id) && !runningTabs.has(kept.id) && !navigatingTabs.has(kept.id)) {
       callBegin(kept.id);
       let ok = false;
       try {
         if (kept.url && kept.url.startsWith(ctx + '/')) { target = { tabId: kept.id, frameId: 0, how: 'kept' }; ok = true; } else {
           const f = (await listFrames(kept.id)).find((x) => x.url.startsWith(ctx + '/'));
           if (f) { target = { tabId: kept.id, frameId: f.frameId, how: 'kept-frame' }; ok = true; } else {
+            navigatingTabs.add(kept.id);
             await chrome.tabs.update(kept.id, { url: ctxUrl });
             target = { tabId: kept.id, frameId: 0, how: 'kept-navigated' };
             ok = true;
           }
         }
-      } finally { if (!ok) callEnd(kept.id); }
+      } finally { if (!ok) { navigatingTabs.delete(kept.id); callEnd(kept.id); } }
       if (target) target.claimed = true;
     }
     if (!target) { target = await findOriginFrame(ctx, siteOrigin); if (target) target.how = 'open-page'; }
   }
   // 选的时候还空着，可能已经被回放占了：同步复查后立刻占用（中间不能有 await）
-  if (target && !target.claimed && runningTabs.has(target.tabId)) {
+  if (target && !target.claimed && (runningTabs.has(target.tabId) || navigatingTabs.has(target.tabId))) {
     if (opts.tabId) throw new Error('这个标签页正在回放，请等它结束再调用接口');
     target = null;
   }
@@ -1492,23 +1624,33 @@ async function callApi(item, api, args, opts) {
   const left = () => deadline - Date.now();
   try {
     await waitTabComplete(tabId, Math.max(1000, Math.min(30000, left())));
+    navigatingTabs.delete(tabId);
     if (left() <= 0) throw new Error('超时：页面还没准备好');
-    await injectRuntime(tabId, target.frameId);
+    // mtop 的站点 SDK 需要 MAIN world。它不接收扩展缓存的鉴权信息。
+    const pageSdk = !item.imported && /^\/h5\/[^/]+\/[^/]+\/?$/i.test(new URL(a.url).pathname);
+    const world = pageSdk ? 'MAIN' : 'ISOLATED';
+    const docId = await injectRuntime(tabId, target.frameId, world);
     if (left() <= 0) throw new Error('超时：页面还没准备好');
-    const config = Object.assign({}, b.config, { callTimeout: left() });
+    const config = { ...b.config, callTimeout: left(), imported: !!item.imported };
+    const live = pageSdk ? undefined : liveForCall(tabId, docId, a.url);
     // 页面在调用期间整页跳转时 executeScript 不会返回，所以也按截止时间兜底
     const [r] = await Promise.race([
       chrome.scripting.executeScript({
-        target: { tabId, frameIds: [target.frameId] }, world: 'MAIN', func: pageCall,
-        args: [b.recording, Object.assign({}, b.params, opts.params || {}), mergeApiParams(b.apiParams, opts.apiParams), config, a.name, args || {}],
+        target: docId ? { tabId, documentIds: [docId] } : { tabId, frameIds: [target.frameId] }, world, func: pageCall,
+        args: [b.recording, Object.assign({}, b.params, opts.params || {}), mergeApiParams(b.apiParams, opts.apiParams), config, a.name, args || {}, live || null],
       }),
       sleep(left() + 3000).then(() => { throw Object.assign(new Error('超时：接口没有在规定时间内返回（请求可能已经发出）'), { unknown: true }); }),
     ]);
     if (target.how === 'kept' || target.how === 'kept-frame' || target.how === 'kept-navigated') await rememberTab('call:' + ctx, tabId, ctxUrl);
     const head = { api: a.name, fn: a.fn, tab: { id: tabId, how: target.how } };
     if (!r || !r.result || typeof r.result !== 'object') return Object.assign(head, { ok: false, unknown: true, error: '页面里的调用没有返回结果（页面可能跳转或刷新了），请求可能已经发出' });
-    return Object.assign(head, r.result);
+    const result = r.result;
+    const secrets = Object.entries(b.paramInfo || {}).filter(([key, info]) => info.kind === 'secret' && typeof opts.params?.[key] === 'string')
+      .map(([key], index) => ({ id: 'result' + index, value: opts.params[key] }));
+    const masked = PR_EXPORTER.scrubRequest({ url: result.url, responseBody: { type: 'json', value: result.data } }, secrets, true, true);
+    return { ...head, ...result, url: PR_EXPORTER.maskUrl(masked.url, true), data: PR_EXPORTER.maskDeep(masked.responseBody.value, true) };
   } finally {
+    navigatingTabs.delete(tabId);
     callEnd(tabId);
     if (created && !keep) chrome.tabs.remove(tabId).catch(() => {});
   }
@@ -1540,8 +1682,9 @@ function recordingSummary(item) {
 // 不带设置（里面有 AI 的 API Key），请求按名字再脱敏一遍（旧版本录的请求入库时没脱敏）
 function packageOf(item) {
   const s = item.settings || DEFAULT_SETTINGS;
-  const events = (item.events || []).map((e) => (e.kind === 'request' ? PR_EXPORTER.exportRequest(e, s) : e));
-  const state = Object.assign({}, item.state || {});
+  const events = (item.events || []).map((e) => e.kind === 'request' ? PR_EXPORTER.exportRequest(e, s) : PR_EXPORTER.maskStepUrls(e, s.maskPasswords !== false));
+  const state = { ...item.state };
+  state.startUrl = PR_EXPORTER.maskUrl(state.startUrl, s.maskPasswords !== false);
   delete state.tabId;
   return {
     format: 'page-recorder-package',
@@ -1556,21 +1699,29 @@ async function importPackage(c, pkg) {
   if (!pkg || pkg.format !== 'page-recorder-package' || !pkg.item || !Array.isArray(pkg.item.events)) throw new Error('不是 Page Recorder 导出的录制包');
   if (pkg.version > 1) throw new Error(`录制包版本 ${pkg.version} 比扩展新，请先升级扩展`);
   const src = pkg.item;
-  const events = src.events.filter((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && typeof e.ts === 'number');
+  const events = src.events.filter((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && Number.isFinite(e.ts))
+    .map((e) => e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e);
   if (!events.length) throw new Error('录制包里没有步骤');
   const id = uid();
   const state = Object.assign({}, src.state || {}, { id, recording: false });
   delete state.tabId;
+  const validUrl = (value) => {
+    try { const u = new URL(value); return /^https?:$/.test(u.protocol) && !u.username && !u.password; } catch (e) { return false; }
+  };
+  if (!validUrl(state.startUrl) || events.some((e) => (e.url != null &&
+      (e.kind === 'step' || e.via !== 'websocket') && !validUrl(e.url)) || (e.frame?.url && !validUrl(e.frame.url)))) {
+    throw new Error('导入录制包的起始地址、跳转和接口必须使用无内嵌凭据的有效地址');
+  }
   const name = String(src.name || pkg.name || '导入的录制').slice(0, 100);
   if (!state.name) state.name = name;
-  const item = { id, name, description: String(src.description || ''), savedAt: Date.now(), state, events, apiOverrides: src.apiOverrides || {}, aiDocs: src.aiDocs || {}, settings: c.settings };
+  const item = { id, name, imported: true, description: String(src.description || ''), savedAt: Date.now(), state, events, apiOverrides: src.apiOverrides || {}, aiDocs: src.aiDocs || {}, settings: c.settings };
   const cnt = counts({ events });
   let params = {};
   let direct = false;
   try {
     const A = PR_EXPORTER.analyze(events, c.settings, state, item.apiOverrides, item.aiDocs);
     params = A.params;
-    direct = A.apis.some((a) => !a.ignore && /\{\{[^}]+\}\}/.test(JSON.stringify(a.editParams || {})));
+    direct = A.apis.some((a) => !a.ignore && /\{\{[^{}]+\}\}/.test(JSON.stringify(a.editParams || {})));
   } catch (e) { /* ignore */ }
   const entry = { id, name, description: item.description, startUrl: state.startUrl, savedAt: item.savedAt, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(item.aiDocs && item.aiDocs.title), params, direct };
   c.libIndex = [entry, ...c.libIndex];
@@ -1604,7 +1755,10 @@ async function bridgeHandle(method, p) {
         analysisPrompt: out.prompt,
       };
     }
-    case 'script': return { name: (await getLibItem(c, p.recording)).name, script: buildItem(await getLibItem(c, p.recording)).script };
+    case 'script': {
+      const item = await getLibItem(c, p.recording);
+      return { name: item.name, script: buildItem(item).script };
+    }
     case 'run': return runRecording(await getLibItem(c, p.recording), p);
     case 'call': return callApi(await getLibItem(c, p.recording), p.api, p.args, p);
     case 'saveDocs': return saveDocsTo(c, p.recording, p.docs || {});
@@ -1622,32 +1776,87 @@ function bridgeConnect() {
     // 实例 ID：每个 Chrome 用户资料里的扩展各有一个，桥接据此区分多个资料、替换同一资料的旧连接
     let instanceId = (await chrome.storage.local.get('instanceId')).instanceId;
     if (!instanceId) { instanceId = uid(); await chrome.storage.local.set({ instanceId }); }
+    if (ws !== sock || sock.readyState !== 1) return;
     // profile：多个浏览器资料都装了扩展时给桥接看的名字（设置里可以填，没填就空着，桥接按 instanceId 区分）
     const profile = String((cache && cache.settings.profileLabel) || '').slice(0, 40);
-    if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version, instanceId, profile }));
+    sock.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version, instanceId, profile }));
     clearInterval(wsKeep);
-    wsKeep = setInterval(() => { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'ping' })); }, 20000);
+    wsKeep = setInterval(() => { if (ws === sock && sock.readyState === 1) sock.send(JSON.stringify({ type: 'ping' })); }, 20000);
   };
   sock.onmessage = async (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
-    if (m.type !== 'request') return;
+    if (!m || m.type !== 'request') return;
     try {
       const data = await bridgeHandle(m.method, m.params || {});
-      sock.send(JSON.stringify({ type: 'response', id: m.id, ok: true, data }));
+      if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'response', id: m.id, ok: true, data }));
     } catch (e) {
-      sock.send(JSON.stringify({ type: 'response', id: m.id, ok: false, error: String((e && e.message) || e) }));
+      if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'response', id: m.id, ok: false, error: String((e && e.message) || e) }));
     }
   };
-  sock.onclose = () => { if (ws === sock) ws = null; clearInterval(wsKeep); };
+  sock.onclose = () => { if (ws === sock) { ws = null; clearInterval(wsKeep); wsKeep = null; } };
   sock.onerror = () => {};
 }
 chrome.alarms.create('bridge', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'bridge') load().then(bridgeConnect); });
 
 // ======================= 消息 =======================
+const liveRequests = new Map();
+const LIVE_HEADER = /authorization|token|csrf|xsrf|api[-_]?key|signature|^sign$|credential/i;
+const SHARED_HEADER = /^(authorization|x-csrf-token|x-xsrf-token|x-token|token|x-auth-token|x-access-token)$/i;
+function watchLiveRequest(d) {
+  if (!cache || d.tabId < 0 || !d.documentId || !d.initiator || d.url.length > 8192) return;
+  const url = new URL(d.url);
+  // 按目标接口记（见 liveForCall）：页面在 app.x、接口在 api.x 时，直调同一个接口也能补上页面刚用过的鉴权头
+  const sites = [siteOf(url.href), siteOf(d.initiator)].filter(Boolean);
+  if (!netTabs(cache).includes(d.tabId) && !captures.has(d.tabId) && !callingTabs.has(d.tabId) &&
+      !cache.libIndex.some((item) => sites.includes(siteOf(item.startUrl)))) return;
+  const headers = Object.fromEntries((d.requestHeaders || []).filter((h) =>
+    LIVE_HEADER.test(h.name) && typeof h.value === 'string' && h.value.length <= 8192).map((h) => [h.name.toLowerCase(), h.value]));
+  const fields = Object.fromEntries([...url.searchParams].filter(([k, v]) => PR_EXPORTER.sensitiveKey(k) &&
+    !/password|passwd|pwd|pin|otp|code/i.test(k) && v.length <= 4096));
+  if (!Object.keys(headers).length && !Object.keys(fields).length) return;
+  const put = (scope, data) => {
+    const key = JSON.stringify([d.tabId, d.documentId, scope]);
+    const previous = liveRequests.get(key);
+    const now = Date.now();
+    const old = previous?.expires > now ? previous : null;
+    const update = (before, after) => Object.fromEntries(Object.entries({ ...before, ...after }).slice(-32));
+    liveRequests.delete(key);
+    liveRequests.set(key, { headers: update(old?.headers, data.headers), fields: update(old?.fields, data.fields), expires: now + 300000 });
+    while (liveRequests.size > 256) liveRequests.delete(liveRequests.keys().next().value);
+  };
+  put(url.origin + url.pathname, { headers, fields });
+  const shared = Object.fromEntries(Object.entries(headers).filter(([k]) => SHARED_HEADER.test(k)));
+  if (Object.keys(shared).length) put(url.origin, { headers: shared });
+}
+chrome.webRequest?.onSendHeaders.addListener(watchLiveRequest, { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] }, ['requestHeaders']);
+function liveForCall(tabId, docId, url) {
+  if (!docId) return null;
+  const u = new URL(url);
+  const get = (scope) => {
+    const r = liveRequests.get(JSON.stringify([tabId, docId, scope]));
+    return r?.expires > Date.now() ? r : null;
+  };
+  const current = get(u.origin + u.pathname);
+  const shared = get(u.origin);
+  return { headers: { ...shared?.headers, ...current?.headers }, fields: current?.fields || {} };
+}
+const CONTENT_MESSAGES = new Set(['hello', 'event', 'updateEvent', 'secret', 'stop', 'realInput', 'replayProgress', 'replayNetwork']);
+function replayContext(msg, sender) {
+  const context = replayContexts.get(msg.token);
+  if (!context || context.tabId !== sender.tab?.id || context.frameId !== sender.frameId ||
+      (context.docId && context.docId !== sender.documentId)) return null;
+  return context;
+}
 async function handle(msg, sender) {
   const c = await load();
+  if (sender.tab && sender.url !== chrome.runtime.getURL('popup/popup.html') &&
+      !sender.url?.startsWith(chrome.runtime.getURL('popup/popup.html') + '?')) {
+    if (!CONTENT_MESSAGES.has(msg.type)) return { error: '未授权的消息' };
+    if (['updateEvent', 'secret', 'stop'].includes(msg.type) &&
+        (!c.state.recording || c.state.tabId !== sender.tab.id)) return { error: '当前标签页未在录制' };
+  }
   switch (msg.type) {
     case 'hello': {
       const rec = !!(c.state.recording && sender.tab && sender.tab.id === c.state.tabId);
@@ -1657,23 +1866,30 @@ async function handle(msg, sender) {
         const dup = last && last.url === msg.url && (last.type === 'navigate' || Date.now() - last.ts < 1500) && Date.now() - last.ts < 3000;
         if (!dup) addEvent(c, { kind: 'step', type: 'navigate', id: uid(), ts: Date.now(), url: msg.url, title: msg.title });
       }
-      return { recording: rec, capture, settings: c.settings, counts: counts(c) };
+      const { maxBodyKB, maskPasswords, altExtract, recordScroll } = c.settings;
+      return { recording: rec, capture, settings: { maxBodyKB, maskPasswords, altExtract, recordScroll }, counts: counts(c) };
     }
     case 'event': {
+      const ev = msg.event;
+      if (!ev || typeof ev !== 'object' || !sender.tab || (ev.kind !== 'step' && ev.kind !== 'request') ||
+          !Number.isFinite(ev.ts) || typeof ev.id !== 'string' || ev.id.length > 128) return { ignored: true };
       if (!c.state.recording || !sender.tab || sender.tab.id !== c.state.tabId) {
         // 录制中的标签页打开的新标签页（详情页、导出页）：只收请求，不记操作
         if (c.state.recording && sender.tab && (c.state.childTabs || []).includes(sender.tab.id)) {
-          if (msg.event && msg.event.kind === 'request') await ingestRequest(c, Object.assign({}, msg.event, { otherTab: true }, sender.frameId ? { frameUrl: sender.url } : {}));
+          if (ev.kind === 'request') await ingestRequest(c, Object.assign({}, ev, { otherTab: true }, sender.frameId ? { frameUrl: sender.url } : {}));
           return { counts: counts(c) };
         }
         // 不是录制中的标签页：回放抓包时收下请求
         const cap = sender.tab && captures.get(sender.tab.id);
-        if (cap && msg.event && msg.event.kind === 'request' && keepRequest(msg.event, c.settings)) addCapture(cap, msg.event, sender);
+        if (cap && ev.kind === 'request' && keepRequest(ev, c.settings)) addCapture(cap, ev, sender);
         return { ignored: !cap };
       }
-      let ev = msg.event;
-      // 回放中的标签页：真实输入产生的也是用户级事件，不能当成录制的操作
-      if (ev.kind === 'step' && runningTabs.has(sender.tab.id)) return { ignored: true };
+      // 回放中的标签页：真实输入产生的步骤和请求都不能混进当前录制（若开启了回放抓包则交给 captures）
+      if (runningTabs.has(sender.tab.id)) {
+        const cap = captures.get(sender.tab.id);
+        if (cap && ev.kind === 'request' && keepRequest(ev, c.settings)) addCapture(cap, ev, sender);
+        return { ignored: true };
+      }
       // 来自 iframe：步骤记下所在框架（回放时按地址找到这个框架再执行），请求记下发出它的页面
       if (sender.frameId) {
         if (ev.kind === 'step') ev.frame = { url: sender.url || ev.url };
@@ -1688,14 +1904,24 @@ async function handle(msg, sender) {
       if (!c.state.recording || !sender.tab || sender.tab.id !== c.state.tabId) return { ok: false };
       const id = String(msg.id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 24);
       if (!id || typeof msg.value !== 'string') return { ok: false };
-      const list = (await secretsOf()).filter((x) => x.id !== id);
-      if (msg.value.length >= 3) list.push({ id, value: msg.value });
-      secretCache = list.slice(-20);
-      await chrome.storage.session.set({ secrets: secretCache }).catch(() => {});
-      return { ok: true };
+      const gen = secretGen;
+      return withLock('secrets', async () => {
+        const cur = await secretsOf();
+        if (gen !== secretGen || !c.state.recording) return { ok: false };
+        const list = cur.filter((x) => x.id !== id);
+        if (msg.value.length >= 3) list.push({ id, value: msg.value });
+        secretCache = list.slice(-20);
+        if (c.settings.maskPasswords !== false && msg.value.length >= 3) {
+          const cutoff = Date.now() - 5000;
+          c.events = c.events.map((event) => event.kind === 'request' && event.ts >= cutoff ?
+            PR_EXPORTER.scrubRequest(event, secretCache, true, c.settings.maskHeaders !== false) : event);
+        }
+        await chrome.storage.session.set({ secrets: secretCache }).catch(() => {});
+        return { ok: true };
+      });
     }
     case 'updateEvent': {
-      const ev = c.events.find((e) => e.id === msg.id);
+      const ev = c.events.find((e) => e.id === msg.id && (!sender.tab || e.kind === 'step'));
       if (ev) { Object.assign(ev, msg.patch); if (msg.patch && msg.patch.members) groupMembers(c, ev); persist(); }
       return { ok: !!ev };
     }
@@ -1825,19 +2051,40 @@ async function handle(msg, sender) {
       return { ok: true };
     case 'saveToLibrary': await syncLibrary(c); return { ok: true };
     case 'realInput': {
-      // 只给正在用真实输入回放的标签页、并且是这次回放的页面发（页面伪造的消息拿不到正确的回放编号）
-      const tabId = sender.tab && sender.tab.id;
-      const st = realTabs.get(tabId);
-      if (!st || !st.token || msg.token !== st.token || sender.frameId !== st.frameId || (st.docId && sender.documentId && sender.documentId !== st.docId)) {
-        return { ok: false, error: '当前没有在用真实输入回放' };
-      }
+      const context = replayContext(msg, sender);
+      const st = realTabs.get(context?.tabId);
+      if (!st || st.token !== msg.token || sender.frameId !== 0 || st.inputPending) return { ok: false, error: '当前没有在用真实输入回放' };
+      const tabId = context.tabId;
+      const req = { ...msg.req };
       // 输入已经开始派发后出错（比如按下了但松开时调试连接断了）：结果未知，回放引擎不能再补一次模拟操作
       st.started = false;
-      try { return { ok: true, dialogs: await realInputAction(tabId, msg.req || {}) }; } catch (e) { return { ok: false, error: e.message, unknown: !!st.started }; }
+      st.inputPending = true;
+      try { return { ok: true, dialogs: await realInputAction(tabId, req) }; }
+      catch (e) { return { ok: false, error: e.message, unknown: typeof e.unknown === 'boolean' ? e.unknown : !!st.started }; }
+      finally { st.inputPending = false; }
+    }
+    case 'replayNetwork': {
+      const context = replayContext(msg, sender);
+      if (!context) return { entries: [] };
+      const [r] = await chrome.scripting.executeScript({ target: context.target, world: 'MAIN', func: () => {
+        const log = window.__PR_NET__?.log;
+        if (!Array.isArray(log)) return [];
+        const entries = [];
+        let bytes = 0;
+        for (const e of log.slice(-200).reverse()) {
+          const size = JSON.stringify(e)?.length || 0;
+          if (size > 2e6) continue;
+          if (bytes + size > 4e6) break;
+          bytes += size;
+          entries.unshift(e);
+        }
+        return entries;
+      } }).catch(() => []);
+      return { entries: Array.isArray(r?.result) ? r.result.filter((e) => e && typeof e.url === 'string') : [] };
     }
     case 'replayProgress': {
-      const runId = String(msg.token || '').split('|')[0];
-      if (!activeRuns.has(runId)) return { ok: false };
+      const runId = replayContext(msg, sender)?.runId;
+      if (!activeRuns.has(runId) || typeof msg.data !== 'string' || msg.data.length > 4e6) return { ok: false };
       let data = null;
       try { data = JSON.parse(msg.data); } catch (e) { return { ok: false }; }
       const cur = replayProgress.get(runId);
@@ -1887,14 +2134,20 @@ async function handle(msg, sender) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) return false;
   handle(msg || {}, sender).then(sendResponse, (e) => sendResponse({ error: String((e && e.message) || e) }));
   return true;
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  for (const key of liveRequests.keys()) if (key.startsWith('[' + tabId + ',')) liveRequests.delete(key);
   const c = await load();
   if (c.state.recording && c.state.tabId === tabId) await stop(c);
-  else if ((c.state.childTabs || []).includes(tabId)) { c.state.childTabs = c.state.childTabs.filter((id) => id !== tabId); persist(); }
+  else if ((c.state.childTabs || []).includes(tabId)) {
+    await netFlush(false, tabId);
+    c.state.childTabs = (c.state.childTabs || []).filter((id) => id !== tabId);
+    persist();
+  }
 });
 // 录制中的标签页（和它打开的标签页）新开的标签页：里面的请求也算这次录制的（点开详情、导出在新标签页里发的接口）
 chrome.tabs.onCreated.addListener(async (tab) => {
@@ -1909,4 +2162,4 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 // 浏览器重启后标签页编号会重新分配，记下的“扩展开过的标签页”可能对到用户自己的标签页上：清掉
 chrome.runtime.onStartup.addListener(() => { chrome.storage.local.remove('ourTabs').catch(() => {}); });
 
-load().then((c) => { setBadge(!!c.state.recording); bridgeConnect(); });
+load().then((c) => { setBadge(!!c.state.recording); setRecKeep(!!c.state.recording); bridgeConnect(); });
