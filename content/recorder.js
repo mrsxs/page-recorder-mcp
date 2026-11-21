@@ -663,6 +663,9 @@
     if (id) s.made.set(el, { id, members: fresh.slice(), el });
   }
   const claimed = new Set(); // 已经归到某个语义步骤下的原始操作
+  // 按下鼠标就选中的组件（Chosen 在 mouseup 时选中）：选择那一步已经录好，这一下按完浏览器还会补来 click，并进那一步
+  let pressPick = null;
+  const notePressPick = (id, members, el) => { if (id && gesture) pressPick = { id, members, el, g: gesture }; };
   const hiddenField = (el) => !visibleEl(el) || tinyEl(el);
   let hiddenMulti = new WeakMap(); // 藏起来的多选原生下拉框 → 正在累加选项的那一步
   const nearField = (a, f) => { for (let n = f, d = 0; n && d < 8; n = n.parentElement, d++) if (n.contains(a)) return compactWidget(n) || d <= 2; return false; };
@@ -719,10 +722,11 @@
           prev.members.push(...mem.map((m) => m.id));
           prev.at = Date.now();
           send({ type: 'updateEvent', id: prev.id, patch: Object.assign({ members: prev.members, commitTs: gesture.ts }, data) });
+          notePressPick(prev.id, prev.members, el);
           continue;
         }
         const sid = record(Object.assign({ type: 'select', ts: mem.length ? mem[0].ts : gesture.ts, commitTs: gesture.ts, target: describe(el), members: mem.map((m) => m.id), via: 'program' }, data), el);
-        if (sid) hiddenMulti.set(el, { id: sid, members: mem.map((m) => m.id), at: Date.now() });
+        if (sid) { const h = { id: sid, members: mem.map((m) => m.id), at: Date.now() }; hiddenMulti.set(el, h); notePressPick(sid, h.members, el); }
         continue;
       }
       if (pressed && el.tagName === 'SELECT' && !el.multiple && hiddenField(el)) {
@@ -734,7 +738,8 @@
         const mem = retroMembers(el);
         if (mem.length) {
           mem.forEach((m) => claimed.add(m.id));
-          record(Object.assign({ type: 'select', ts: mem[0].ts, commitTs: gesture.ts, target: sel.target, members: mem.map((m) => m.id), via: 'program' }, selectData(el)), el);
+          const members = mem.map((m) => m.id);
+          notePressPick(record(Object.assign({ type: 'select', ts: mem[0].ts, commitTs: gesture.ts, target: sel.target, members, via: 'program' }, selectData(el)), el), members, el);
           continue;
         }
       }
@@ -1144,6 +1149,15 @@
     if (el.tagName === 'LABEL' && el.control && /^(checkbox|radio|file)$/i.test(el.control.type)) return;
     if (el.tagName === 'SELECT' || el.tagName === 'OPTION') return;
     const id = record({ type: 'click', target: describe(el), pos: posIn(el, e), hover: trailFor(el) }, el);
+    const pp = pressPick;
+    pressPick = null;
+    if (id && pp && pp.g === gesture && Date.now() - pp.g.ts < 3000 && (inOverlay(el) || nearField(el, pp.el))) {
+      claimed.add(id);
+      pp.members.push(id);
+      send({ type: 'updateEvent', id: pp.id, patch: { members: pp.members } });
+      gesture.stepId = pp.id;
+      return;
+    }
     if (gesture) gesture.stepId = id;
     if (id) noteDisplayChoice(el, id, pressInfo && pressInfo.t && (t.contains(pressInfo.t) || !pressInfo.t.isConnected) ? pressInfo.t : t);
     // 点完 350ms 看看是不是展开/收起开关、勾选开关
@@ -1345,6 +1359,7 @@
     claimed.clear();
     lastTrigger = null;
     gesture = null;
+    pressPick = null;
     pressInfo = null;
     hoverTrail.length = 0;
     scanTimers.forEach(clearTimeout);
