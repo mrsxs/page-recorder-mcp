@@ -14,7 +14,7 @@ description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本�
 
 ## 1. 摸清接口
 
-1. `list_recordings` 找到脚本。
+1. `list_recordings` 找到脚本。脚本库大时它只给概要，接口也不会逐个列成工具：用 `search_apis` 按关键词找接口，拿返回的 `recording_id` 和 `api` 去 `call_api`。
 2. `get_recording`：内容多时返回概要（步骤、参数、接口目录 `apis[i]`）和 `result_id`。
 3. 对目录里像数据来源的接口，用 `read_result`（`path: "apis[i]"`，`fields: ["url","description","params","paramNotes","responseSchema","responseSample"]`）逐个看。
 

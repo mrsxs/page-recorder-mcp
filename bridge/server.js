@@ -41,6 +41,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   --host <地址>     监听地址，默认 127.0.0.1          PR_BRIDGE_HOST
   --token <口令>    HTTP 调用需带 Authorization: Bearer <口令>   PR_BRIDGE_TOKEN
   --no-daemon       --stdio 时不在后台起桥接，自己监听端口（旧做法）
+  --max-tools <数量> 脚本和接口拆出的工具最多列多少个，默认 30；超过就一个都不列，   PR_MAX_TOOLS
+                    改用 search_apis 按关键词找接口、call_api 调用（0 = 总是这样）
 --stdio 时会在后台起一个桥接，之后各个 AI 工具、各次会话都复用它，扩展不用反复重连；
 启动它的程序（WorkBuddy、Cursor 等）都退出后，后台桥接自动关闭。日志在 ~/.page-recorder/。
 改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext；
@@ -70,6 +72,9 @@ if (argv[0] === 'extension') {
 const PORT = Number(flag('port') || process.env.PR_BRIDGE_PORT || 17321);
 const HOST = flag('host') || process.env.PR_BRIDGE_HOST || '127.0.0.1';
 const TOKEN = flag('token') || process.env.PR_BRIDGE_TOKEN || ''; // 可选：设置后 HTTP 调用需带 Authorization: Bearer <token>
+// 脚本、接口拆出的工具最多列多少个：每个约 680 token，AI 每轮对话都要带上全部工具定义，几百个接口就放不下了
+const maxToolsOpt = flag('max-tools') !== undefined ? flag('max-tools') : process.env.PR_MAX_TOOLS;
+const MAX_TOOLS = maxToolsOpt !== undefined && maxToolsOpt !== '' && Number(maxToolsOpt) >= 0 ? Math.floor(Number(maxToolsOpt)) : 30;
 const STDIO = argv.includes('--stdio');
 const DAEMON = argv.includes('--daemon'); // stdio 实例在后台起的桥接：启动它的程序都退出后自己关闭
 const NO_DAEMON = argv.includes('--no-daemon');
@@ -411,7 +416,7 @@ function spawnDaemon() {
   try { if (fs.statSync(logFile).size > 1e6) fs.truncateSync(logFile, 0); } catch (e) { /* 还没有日志 */ }
   const out = fs.openSync(logFile, 'a');
   // token 走环境变量，不出现在进程列表里
-  const child = spawn(process.execPath, [__filename, '--daemon', '--port', String(PORT), '--host', HOST], {
+  const child = spawn(process.execPath, [__filename, '--daemon', '--port', String(PORT), '--host', HOST, '--max-tools', String(MAX_TOOLS)], {
     detached: true, windowsHide: true, stdio: ['ignore', out, out],
     env: Object.assign({}, process.env, TOKEN ? { PR_BRIDGE_TOKEN: TOKEN } : {}),
   });
@@ -579,8 +584,31 @@ const RESULT_PROPS = {
 const STATIC_TOOLS = [
   {
     name: 'list_recordings',
-    description: '列出浏览器扩展脚本库中保存的所有录制脚本：名称、说明、起始页面、操作步骤、可修改的输入参数（params 是录制值，paramHelp 是每个参数怎么填：类型、格式、可选项、是否必填、改了能不能直接请求接口），以及每个接口拆分出的工具函数。多个浏览器同时连着时汇总所有浏览器的脚本，每条带 browser 字段说明在哪个浏览器。',
-    inputSchema: { type: 'object', properties: { browser: Object.assign({}, BROWSER_PARAM, { description: '可选。只列某一个浏览器的脚本：填 instanceId 或资料名。不传则列出所有连着的浏览器的脚本' }) } },
+    description: '列出浏览器扩展脚本库中保存的所有录制脚本：名称、说明、起始页面、操作步骤、可修改的输入参数（params 是录制值，paramHelp 是每个参数怎么填：类型、格式、可选项、是否必填、改了能不能直接请求接口），以及每个接口拆分出的工具函数。脚本库大、整份放不下时改成分页给概要（名称、说明、参数名、接口函数名），细节用 get_recording、找接口用 search_apis。多个浏览器同时连着时汇总所有浏览器的脚本，每条带 browser 字段说明在哪个浏览器。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '可选。只列名称、说明、起始页面里有这些关键词的脚本（空格分开，都要有）' },
+        offset: { type: 'number', description: '可选。脚本多、分页给概要时从第几条开始' },
+        limit: { type: 'number', description: '可选。最多给几条' },
+        browser: Object.assign({}, BROWSER_PARAM, { description: '可选。只列某一个浏览器的脚本：填 instanceId 或资料名。不传则列出所有连着的浏览器的脚本' }),
+      },
+    },
+  },
+  {
+    name: 'search_apis',
+    description: `按关键词在脚本库里找接口，返回每个接口属于哪个脚本、接口名、用途、参数名；再用 call_api 调用（recording 填 recording_id，api 填接口名，args 填参数）。脚本和接口拆出的工具超过 ${MAX_TOOLS} 个时不再逐个列成工具（工具定义太多 AI 放不下），这时就用它找接口。不传 query 是按顺序列出全部接口。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '关键词，空格分开，如 "订单 导出"、"refund list"。在脚本名、接口名、函数名、用途、参数名和参数说明里找；都匹配的排前面' },
+        recording: { type: 'string', description: '可选。只在这个脚本里找（脚本 id 或名称）' },
+        detail: { type: 'boolean', description: '可选。带上每个接口完整的参数定义（类型、说明、录制值）。不传时结果不超过 3 个才带' },
+        offset: { type: 'number', description: '可选。从第几个结果开始，默认 0' },
+        limit: { type: 'number', description: '可选。最多给几个，默认 20' },
+        browser: BROWSER_PARAM,
+      },
+    },
   },
   {
     name: 'get_recording',
@@ -834,7 +862,143 @@ async function dynamicTools(quick) {
       }, { kind: 'call', recording: r.id, api: t.api, browser, own: Object.keys((t.inputSchema && t.inputSchema.properties) || {}) });
     }
   }
-  return tools;
+  // 太多就一个都不列：只列一部分的话 AI 会以为没列出来的接口不存在。按名字调用照旧能用（dynamicMap 留着）
+  return tools.length > MAX_TOOLS ? [] : tools;
+}
+
+// ---------------- 脚本库大时按需找接口（search_apis）、list_recordings 给概要 ----------------
+const lower = (x) => String(x == null ? '' : x).toLowerCase();
+const termsOf = (q) => lower(q).split(/[\s,，、;；]+/).filter(Boolean);
+// 一个关键词在一段文字里算不算有：直接包含；中文没有空格分词，连着写的词（“订单导出”）按相邻两个字拆开，过半出现也算（分数减半）
+function termHit(term, hay) {
+  if (hay.includes(term)) return 1;
+  if (term.length < 3 || !/[\u3400-\u9fff]/.test(term)) return 0;
+  let hit = 0;
+  for (let i = 0; i + 1 < term.length; i++) if (hay.includes(term.slice(i, i + 2))) hit++;
+  return hit * 2 >= term.length - 1 ? 0.5 : 0;
+}
+// 按分数从高到低排；所有关键词都有的排在只有一部分的前面，一个都没有的不要
+function rank(items, terms, fieldsOf) {
+  if (!terms.length) return { hits: items, all: true };
+  const scored = [];
+  for (const item of items) {
+    const fields = fieldsOf(item); // [[权重, 文字]]
+    let score = 0;
+    let matched = 0;
+    for (const term of terms) {
+      const best = Math.max(0, ...fields.map(([w, hay]) => w * termHit(term, hay)));
+      if (best > 0) matched++;
+      score += best;
+    }
+    if (matched) scored.push({ item, score, full: matched === terms.length });
+  }
+  const all = scored.some((x) => x.full);
+  return { hits: scored.filter((x) => x.full === all).sort((a, b) => b.score - a.score).map((x) => x.item), all };
+}
+const pageArgs = (args, dflt) => ({
+  offset: Math.max(0, Math.floor(Number(args.offset)) || 0),
+  limit: Math.floor(Number(args.limit)) > 0 ? Math.floor(Number(args.limit)) : dflt,
+});
+// 从 offset 起尽量多放，放到 limit 条或长度上限为止（至少放一条）。一条就超长时 wrap 的第三个参数是还能用多少字符，由它把这一条写短
+function fitPage(hits, offset, limit, wrap) {
+  const page = hits.slice(offset, offset + limit);
+  for (let n = page.length; n >= 1; n = n > 8 ? Math.floor(n * 0.75) : n - 1) {
+    const t = JSON.stringify(wrap(page.slice(0, n), n), null, 2);
+    if (t.length <= RESULT_CHARS) return t;
+  }
+  if (!page.length) return JSON.stringify(wrap([], 0), null, 2);
+  for (let room = Math.floor(RESULT_CHARS / 2); ; room = Math.floor(room / 2)) {
+    const t = JSON.stringify(wrap(page.slice(0, 1), 1, room), null, 2);
+    if (t.length <= RESULT_CHARS || room < 1) return t;
+  }
+}
+// 名字列表太长时只留开头的，末尾写明还有多少
+function names(list, room) {
+  if (room == null) return list;
+  const out = [];
+  let used = 0;
+  for (const x of list) {
+    used += String(x).length + 8;
+    if (used > room) { out.push(`…还有 ${list.length - out.length} 个`); break; }
+    out.push(x);
+  }
+  return out;
+}
+function sameRecording(r, ref) {
+  const x = String(ref).trim();
+  return r.id === x || r.name === x || String(r.name || '').includes(x);
+}
+function searchApis(list, args) {
+  let recs = list;
+  if (args.recording) {
+    recs = list.filter((r) => r.id === String(args.recording).trim());
+    if (!recs.length) recs = list.filter((r) => sameRecording(r, args.recording));
+    if (!recs.length) throw new Error(`脚本库里没有「${args.recording}」。用 list_recordings 看有哪些脚本`);
+  }
+  const multi = new Set(list.map((r) => r.browser && r.browser.instanceId)).size > 1;
+  const entries = [];
+  for (const r of recs) {
+    for (const t of r.tools || []) {
+      const schema = fixToolSchema(t.inputSchema, r) || {};
+      entries.push({ r, t, schema, params: Object.keys(schema.properties || {}) });
+    }
+  }
+  const terms = termsOf(args.query);
+  const { hits, all } = rank(entries, terms, (e) => [
+    [3, lower(`${e.t.name} ${e.t.api}`)],
+    [2, lower(e.t.description)],
+    [1, lower(`${e.r.name} ${e.r.slug || ''} ${e.r.description || ''}`)],
+    [1, lower(e.params.join(' ') + ' ' + Object.values(e.schema.properties || {}).map((p) => (p && p.description) || '').join(' '))],
+  ]);
+  const { offset, limit } = pageArgs(args, 20);
+  const shown = Math.min(limit, Math.max(0, hits.length - offset));
+  const detail = args.detail != null ? !!args.detail : shown > 0 && shown <= 3;
+  return fitPage(hits, offset, limit, (page, n, room) => {
+    const out = { total: hits.length, offset, count: n };
+    const full = detail && room == null; // 一个接口的参数定义就超长：只给参数名
+    out.apis = page.map((e) => Object.assign(
+      { recording: clip(e.r.name, 200), recording_id: e.r.id, api: String(e.t.api).length > 300 ? e.t.name : e.t.api, fn: e.t.name, description: clip(e.t.description, room != null ? Math.min(200, room) : detail ? 600 : 200) },
+      // 资料名可能重复，给 instanceId 才能原样填回 browser
+      multi && e.r.browser ? Object.assign({ browser: e.r.browser.instanceId }, e.r.browser.profile ? { browser_name: e.r.browser.profile } : {}) : {},
+      // api 要原样填回 call_api，不能截短：名字太长时上面给的是函数名（call_api 也认），原名截短放这里
+      String(e.t.api).length > 300 ? { api_name: clip(e.t.api, 300) } : {},
+      full ? { inputSchema: e.schema } : { params: names(e.params, room) },
+    ));
+    if (offset + n < hits.length) out.next_offset = offset + n;
+    const notes = [];
+    if (!hits.length) notes.push(terms.length ? `没有接口匹配「${args.query}」（共 ${entries.length} 个接口）。换个关键词，或不传 query 按顺序看全部` : '脚本库里没有可调用的接口');
+    else {
+      if (terms.length > 1 && !all) notes.push('没有接口同时匹配所有关键词，这里是匹配了一部分的');
+      notes.push(`调用：call_api，recording 填 recording_id，api 填接口名，args 填参数（不传的用录制值）${multi ? '，browser 填上面的 browser' : ''}。${full ? '' : detail ? '这个接口的参数定义太长放不下，用 get_recording 看。' : '参数的类型、说明、录制值：带 detail=true，或把关键词写具体些。'}整段运行脚本用 run_recording`);
+      if (out.next_offset != null) notes.push(`还有 ${hits.length - offset - n} 个，接着看用 offset=${out.next_offset}`);
+    }
+    out.note = notes.join('；');
+    return out;
+  });
+}
+// list_recordings：整份放得下就整份给（和以前一样）；放不下、或要求分页时给概要
+function recordingList(list, args) {
+  const terms = termsOf(args.query);
+  const ranked = rank(list, terms, (r) => [[2, lower(`${r.name} ${r.slug || ''}`)], [1, lower(`${r.description || ''} ${r.startUrl || ''}`)]]);
+  const hits = ranked.all ? ranked.hits : []; // 这里是筛选：关键词都要有，不像 search_apis 那样退到只匹配一部分
+  const paged = args.offset != null || args.limit != null;
+  if (!paged) {
+    const full = JSON.stringify(hits.map((r) => forAi(r, false)), null, 2);
+    if (full.length <= RESULT_CHARS) return full;
+  }
+  const { offset, limit } = pageArgs(args, 50);
+  return fitPage(hits, offset, limit, (page, n, room) => {
+    const out = { total: hits.length, offset, count: n };
+    out.recordings = page.map((r) => Object.assign(
+      { id: r.id, name: clip(r.name, 200) },
+      r.slug ? { slug: clip(r.slug, 200) } : {},
+      { description: clip(r.description || (r.steps || []).slice(0, 4).join('；'), 200), startUrl: clip(r.startUrl, 120), steps: (r.steps || []).length, params: names(Object.keys(Object.assign({}, r.paramInfo, r.params)), room), apis: names((r.tools || []).map((t) => t.name), room) },
+      r.browser ? { browser: r.browser } : {},
+    ));
+    if (offset + n < hits.length) out.next_offset = offset + n;
+    out.note = `脚本库整份放不下，这里是概要：params 是输入参数名，apis 是接口的函数名。某个脚本的步骤、参数怎么填、接口详情用 get_recording；按关键词找接口用 search_apis（可带 recording 只在一个脚本里找）${out.next_offset != null ? `；还有 ${hits.length - offset - n} 条，接着看用 offset=${out.next_offset}` : ''}`;
+    return out;
+  });
 }
 
 // 导入录制包会往脚本库里加能用登录态执行的脚本：经 HTTP 来的只接受带 token 的请求（stdio 是 AI 客户端自己起的进程，不受限）
@@ -1219,7 +1383,8 @@ async function callTool(name, args, ctx) {
   ctx = ctx || {};
   const browser = args.browser;
   switch (name) {
-    case 'list_recordings': return text((await extCall('list', {}, 60000, browser)).map((r) => forAi(r, false)));
+    case 'list_recordings': return text(recordingList(await extCall('list', {}, 60000, browser), args));
+    case 'search_apis': return text(searchApis(await extCall('list', {}, 60000, browser), args));
     case 'get_recording': return recordingDetail(forAi(await extCall('get', { recording: args.recording }, 60000, browser), true), args);
     case 'get_script': {
       const r = await extCall('script', { recording: args.recording }, 60000, browser);
@@ -1292,7 +1457,7 @@ async function handleRpc(msg, ctx) {
           protocolVersion: params && MCP_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : MCP_VERSIONS[0],
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name: 'page-recorder', version: VERSION },
-          instructions: '这些工具用于执行用户在浏览器中录制的网页操作脚本，并调用录制中抓到的接口（在用户自己的浏览器中执行，带登录态）。先用 list_recordings 查看可用脚本（paramHelp 说明每个输入参数怎么填）；运行、调用接口的结果里，套在 JSON 字符串里的数据已经展开成对象；结果太大时只返回压缩过的预览和 result_id，用 read_result 按路径 / 字段 / 分页取具体数据（不会再调接口），也可以调用时直接带 result_path、result_fields 只要一部分；需要了解接口细节用 get_recording；如果接口还没有说明，可以分析后用 save_api_docs 写回。多个浏览器资料都连着桥接时，每个脚本带 browser 字段，同名脚本要用 browser 参数指定在哪个浏览器执行。export_package / import_package 用来导出、导入录制包。',
+          instructions: '这些工具用于执行用户在浏览器中录制的网页操作脚本，并调用录制中抓到的接口（在用户自己的浏览器中执行，带登录态）。先用 list_recordings 查看可用脚本（paramHelp 说明每个输入参数怎么填）；脚本库里接口多时不会把每个接口都列成工具，用 search_apis 按关键词找接口，再用 call_api 调用；运行、调用接口的结果里，套在 JSON 字符串里的数据已经展开成对象；结果太大时只返回压缩过的预览和 result_id，用 read_result 按路径 / 字段 / 分页取具体数据（不会再调接口），也可以调用时直接带 result_path、result_fields 只要一部分；需要了解接口细节用 get_recording；如果接口还没有说明，可以分析后用 save_api_docs 写回。多个浏览器资料都连着桥接时，每个脚本带 browser 字段，同名脚本要用 browser 参数指定在哪个浏览器执行。export_package / import_package 用来导出、导入录制包。',
         });
       case 'notifications/initialized':
       case 'notifications/cancelled':

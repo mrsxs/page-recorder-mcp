@@ -148,7 +148,7 @@ npx -y page-recorder-mcp            # 或者从源码：node bridge/server.js
 
 扩展会在 30 秒内自动连上，弹窗右上角显示「桥接 ●」。
 
-可选参数（也可以用环境变量）：`--port`（`PR_BRIDGE_PORT`，默认 17321）、`--host`（`PR_BRIDGE_HOST`，默认 127.0.0.1）、`--token`（`PR_BRIDGE_TOKEN`，设置后 HTTP 调用要带 `Authorization: Bearer <口令>`）。改了端口的话，扩展「设置」里的桥接地址也要改成 `ws://127.0.0.1:<端口>/ext`。
+可选参数（也可以用环境变量）：`--port`（`PR_BRIDGE_PORT`，默认 17321）、`--host`（`PR_BRIDGE_HOST`，默认 127.0.0.1）、`--token`（`PR_BRIDGE_TOKEN`，设置后 HTTP 调用要带 `Authorization: Bearer <口令>`）、`--max-tools`（`PR_MAX_TOOLS`，默认 30，见下面「接口多的时候」）。改了端口的话，扩展「设置」里的桥接地址也要改成 `ws://127.0.0.1:<端口>/ext`。
 
 ### 接入 Claude Code（MCP）
 
@@ -189,7 +189,8 @@ stdio 方式第一次启动时会在后台起一个桥接服务，之后各个 A
 
 | 工具 | 作用 |
 |---|---|
-| `list_recordings` | 列出脚本库：名称、步骤、输入参数、每个接口拆出的工具 |
+| `list_recordings` | 列出脚本库：名称、步骤、输入参数、每个接口拆出的工具。整份超过结果上限时改成分页的概要（名称、网址、参数名、接口函数名），`query` 按关键词筛选 |
+| `search_apis` | 按关键词在整个脚本库里找接口（接口名、用途、参数名、所属脚本），返回的 `recording_id` 和 `api` 直接交给 `call_api`；`detail: true` 带完整参数定义 |
 | `get_recording` | 脚本详情：每个接口的 URL、参数、参数说明、响应结构和示例。内容多时先给概要（步骤、参数、接口目录）和 `result_id`，某个接口用 `read_result` 取 `path: "apis[序号]"` |
 | `run_recording` | 运行脚本，可改 `params` 和 `api_params`，返回数据。`mode`：`api` 不操作页面、直接请求关联了输入参数的接口；`ui` 回放页面操作；默认 `auto`（能直接请求就直接请求） |
 | `call_api` | 不回放页面操作，直接调用某个接口 |
@@ -199,6 +200,8 @@ stdio 方式第一次启动时会在后台起一个桥接服务，之后各个 A
 | `export_package` / `import_package` | 导出 / 导入录制包：导出写成文件（`~/.page-recorder/exports/`）、返回路径（HTTP 方式照旧直接返回内容），导入可以传 `file`（HTTP 方式导入要求服务设了 `--token`） |
 | `<脚本>__run` | 每个脚本一个，用于整段回放 |
 | `<脚本>__<函数名>` | **每个接口一个独立工具**，例如 `product_search__searchProducts` |
+
+**接口多的时候**：AI 每轮对话都要带上全部工具定义，一个接口工具约 680 token，50 个接口就是每轮 3.7 万 token，300 个约 20 万、已经超过常见模型的上下文。所以最后两类工具加起来超过 30 个时就一个都不列，只留上面的固定工具（约 4 千 token）：AI 用 `search_apis` 找到接口，再用 `call_api` 调用，调用本身没有区别。上限用 `--max-tools <数量>`（或 `PR_MAX_TOOLS`）改，`0` = 总是按需查找。
 
 脚本库变化时，服务会发出 `tools/list_changed` 通知，AI 工具会自动刷新工具列表。
 
