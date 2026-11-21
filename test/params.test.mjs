@@ -54,7 +54,8 @@ test('字段名叫 constructor 也能起名，不卡死', () => {
   const a = step('a', 2, { type: 'fill', target: tgt('#c1', 'constructor', ''), value: '1' });
   const b = step('b', 3, { type: 'fill', target: tgt('#c2', 'constructor', ''), value: '2' });
   const p = PR_EXPORTER.analyze([nav, a, b], {}, {}).params;
-  assert.deepEqual(p, { constructor: '1', constructor_2: '2' });
+  // 以前两个都叫 constructor（默认值是后一个的）：名字留给后一个，前一个往后排
+  assert.deepEqual(p, { constructor: '2', constructor_2: '1' });
 });
 
 test('以前撞名的老参数：名字留给提供默认值的那个字段', () => {
@@ -66,4 +67,10 @@ test('以前撞名的老参数：名字留给提供默认值的那个字段', ()
   assert.equal(r.params.Shipping_2, '30004');
   assert.equal(r.steps.find((s) => s.id === 'c').param, 'Shipping_2');
   assert.equal(new Set(r.steps.filter((s) => s.param).map((s) => s.param)).size, 3);
+});
+
+test('外框标签叫 constructor 时老参数仍用自己的标签（和以前一样）', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const a = step('a', 2, { type: 'fill', target: tgt('#v', 'Enter a value', 'constructor'), value: 'x' });
+  assert.deepEqual(PR_EXPORTER.analyze([nav, a], {}, {}).params, { 'Enter a value': 'x' });
 });
