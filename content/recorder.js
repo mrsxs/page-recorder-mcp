@@ -627,6 +627,8 @@
     if (id) s.made.set(el, { id, members: fresh.slice(), el });
   }
   const claimed = new Set(); // 已经归到某个语义步骤下的原始操作
+  const hiddenField = (el) => !visibleEl(el) || tinyEl(el);
+  const hiddenMulti = new WeakMap(); // 藏起来的多选原生下拉框 → 正在累加选项的那一步
   const nearField = (a, f) => { for (let n = f, d = 0; n && d < 8; n = n.parentElement, d++) if (n.contains(a)) return compactWidget(n) || d <= 2; return false; };
   const inOverlay = (a) => { for (let n = a; n && n.nodeType === 1; n = up(n)) if (overlayNode(n)) return true; return false; };
   // 刚才那几下点击是不是在给这个字段选值：从最近一次点击往回，取点在浮层里、或者点在这个字段旁边的连续点击；
@@ -635,8 +637,10 @@
     const out = [];
     for (let i = recentSteps.length - 1; i >= 0; i--) {
       const s = recentSteps[i];
+      if (s.type === 'fill' && s.el === field && out.length && !claimed.has(s.id) && Date.now() - s.ts < 15000) { out.unshift(s); break; } // 联想框：先键入、再点联想项
       if (Date.now() - s.ts > 15000 || s.type !== 'click' || claimed.has(s.id) || !s.el) break;
-      if (!(s.ov || (s.el.isConnected && nearField(s.el, field)))) break;
+      // 选完就被移出页面的联想项、下拉项（Element Plus 的联想框）也算点在浮层里
+      if (!(s.ov || !s.el.isConnected || nearField(s.el, field))) break;
       out.unshift(s);
     }
     while (out.length && !nearField(out[0].el, field)) out.shift();
@@ -657,13 +661,32 @@
         // 没在面板里选东西、值被清空了（扫码框、标签输入框、聊天框：键入回车后页面清空；输入框旁的清除按钮）：
         // 不是选值，键入和回车照常保留
         if (!picked && valueOf(el) === '') continue;
+        // 可搜索下拉的搜索框（antd、Element Plus、Fusion）：选完被清空，值在下拉显示的文字上，由“选择”那一步录
+        if (picked && valueOf(el) === '' && triggerOf(el)) continue;
         semanticStep(el);
         continue;
       }
       if (session && inSessionUI(el)) continue; // 面板里的字段（时间框、年月下拉）
       if (fmt) { send({ type: 'updateEvent', id: fmt, patch: { value: valueOf(el) } }); continue; }
       const recent = gesture && gesture.stepId && Date.now() - gesture.ts < 3000;
-      if (recent && el.tagName === 'SELECT' && !el.multiple && !visibleEl(el)) {
+      // Select2、Chosen 在 mouseup 时选中并收起列表，选项上的 click 来不了（gesture 里没有步骤）：按刚按下鼠标算
+      const pressed = gesture && Date.now() - gesture.ts < 3000;
+      if (pressed && el.tagName === 'SELECT' && el.multiple && hiddenField(el)) {
+        const prev = hiddenMulti.get(el);
+        const mem = retroMembers(el);
+        mem.forEach((m) => claimed.add(m.id));
+        const data = selectData(el);
+        if (prev && Date.now() - prev.at < 15000) {
+          prev.members.push(...mem.map((m) => m.id));
+          prev.at = Date.now();
+          send({ type: 'updateEvent', id: prev.id, patch: Object.assign({ members: prev.members, commitTs: gesture.ts }, data) });
+          continue;
+        }
+        const sid = record(Object.assign({ type: 'select', ts: mem.length ? mem[0].ts : gesture.ts, commitTs: gesture.ts, target: describe(el), members: mem.map((m) => m.id), via: 'program' }, data), el);
+        if (sid) hiddenMulti.set(el, { id: sid, members: mem.map((m) => m.id), at: Date.now() });
+        continue;
+      }
+      if (pressed && el.tagName === 'SELECT' && !el.multiple && hiddenField(el)) {
         // 藏起来的原生下拉框被组件改了值（layui、Chosen、Select2 这类自己画界面的下拉）：
         // 刚选值的那个语义步骤就是它的界面，挂上它的选项（接口发的是选项的值）；没有的话补一个选择步骤
         const made = session && [...session.made.values()].find((m) => m.el && nearField(m.el, el));
@@ -738,13 +761,14 @@
   // 淘宝千牛、Fusion、antd 这类 Select 的显示框不是输入框，值不在任何字段里：
   // 点开下拉 → 在弹层里点选项 → 下拉上显示的文字变成这个选项，就录成“选择 … 为 {{参数}}”（两下点击作成员），
   // 回放时点开、按文字点选项，参数改了也能选
-  let lastTrigger = null; // { id, el, text, ts, clicked, again }
-  const selectish = (n) => n.matches('[role=combobox],[aria-haspopup=listbox],[aria-haspopup=true]') || /(^|[-_\s])(select|dropdown|combo(box)?)([-_\s]|$)/i.test(typeof n.className === 'string' ? n.className : '');
+  let lastTrigger = null; // { id, el, text, tags, ts, ts0, clicked, chain, again, dateStep }
+  const selectish = (n) => n.matches('[role=combobox],[aria-haspopup=listbox],[aria-haspopup=true]') || /(^|[-_\s])(select|dropdown|combo(box)?)([-_\s]|$)/i.test(typeof n.className === 'string' ? n.className : '')
+    || (dateish(n) && !n.querySelector(FIELD_SEL)); // 没有输入框、只显示日期的日期选择（shineout）
   // 多选下拉把选中的每一项显示成一个标签（带自己的“删除”小按钮）
-  const TAG_CLASS = /(^|[-_\s])(tag|chip|token|selection-item)([-_\s]|$)/i;
+  const TAG_CLASS = /(^|[-_\s])(tag|chip|token|selection-item|select-item)([-_\s]|$)/i;
   const isTag = (n) => TAG_CLASS.test(typeof n.className === 'string' ? n.className : '');
   function shownTags(root) {
-    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item]')].filter(isTag);
+    const tags = [...root.querySelectorAll('[class*=tag],[class*=chip],[class*=token],[class*=selection-item],[class*=select-item]')].filter(isTag);
     return tags.filter((t) => !tags.some((o) => o !== t && o.contains(t))).map(tagText).filter(Boolean);
   }
   // 标签上的文字，不算它的删除按钮（有的写成 × 字符）
@@ -774,53 +798,124 @@
     }
     return root;
   }
-  // 下拉上显示的文字：有的组件把选项列表就放在外壳里面（shineout），列表里的文字不算
+  // 下拉上显示的文字：有的组件把选项列表就放在外壳里面（shineout），列表里的、看不见的文字不算
+  const tinyEl = (n) => { const r = n.getBoundingClientRect(); return r.width <= 1 || r.height <= 1 || (n.checkVisibility && !n.checkVisibility({ opacityProperty: true })); };
   function shownText(root) {
-    if (!root.querySelector('ul,ol,dl,[role=listbox]')) return textOf(root);
-    const c = root.cloneNode(true);
-    c.querySelectorAll('ul,ol,dl,[role=listbox]').forEach((x) => x.remove());
-    return norm(c.textContent);
+    const skip = new Map();
+    const hidden = (n) => {
+      if (!n || n === root) return false;
+      if (skip.has(n)) return skip.get(n);
+      const v = n.matches('ul,ol,dl,[role=listbox]') || !visibleEl(n) || (overlayNode(n) && (!!n.querySelector('[role=option],[role=treeitem],li,dd,[class*=option],[class*=node]') || /option|menu|list|popup|panel|picker/i.test(typeof n.className === 'string' ? n.className : ''))) || hidden(n.parentElement);
+      skip.set(n, v);
+      return v;
+    };
+    let out = '';
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    // 外层容器可能高度为 0（Element Plus 的 el-select__selection），只看直接包着文字的元素是不是 0 大小、透明（antd 的读屏镜像）
+    for (let t = w.nextNode(); t; t = w.nextNode()) if (!hidden(t.parentElement) && !(t.parentElement !== root && tinyEl(t.parentElement))) out += ' ' + t.nodeValue;
+    return norm(out);
   }
-  function noteDisplayChoice(el, id) {
+  const OPTION_SEL = '[role=option],[role=treeitem],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],li,dd,[class*=option],[class*=item],[class*=node]';
+  const dateText = (v) => /\d{4}\s*[-/.年]\s*\d{1,2}/.test(v) || /\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(v);
+  const dateish = (n) => /(^|[-_\s])(date|datepicker|date-picker|picker|calendar|range)([-_\s]|$)/i.test(typeof n.className === 'string' ? n.className : '');
+  function noteDisplayChoice(el, id, raw) {
     const at = Date.now();
     const lt = lastTrigger;
-    // 刚点开过一个下拉、这一下点的是列表里的一项：当选项看（选项列表的类名里也常带 select，不能先按“下拉外壳”认）
-    const item = el.closest('[role=option],li,dd');
-    const asOption = !!(lt && at - lt.ts <= 15000 && item && !item.contains(lt.clicked) && !item.contains(lt.el) && (inOverlay(el) || item.matches('[role=option]') || lt.el.contains(item) || (item.parentElement && item.parentElement.children.length > 1)));
+    // 刚点开过一个下拉、这一下点的是列表里的一项：当选项看（选项列表的类名里也常带 select，不能先按“下拉外壳”认）。
+    // 选项不一定是 li / role=option（antd 的 div.ant-select-item、shineout 的 a.so-select-option、级联和树的节点），点在弹层里的也算
+    const fresh = !!(lt && at - lt.ts <= 15000);
+    const src = raw && raw.nodeType === 1 && (el.contains(raw) || !raw.isConnected) ? raw : el;
+    // 按下时列表重新渲染了（shineout）：click 落在公共祖先上，按按下的那个元素算（可能已经不在页面上）
+    const listy = fresh && (inOverlay(src) || !src.isConnected);
+    const item = fresh ? src.closest('[role=option],li,dd') || (listy ? src.closest(OPTION_SEL) || src : null) : null;
+    const asOption = !!(fresh && item && !item.contains(lt.clicked) && !item.contains(lt.el) && (listy || item.matches('[role=option]') || lt.el.contains(item) || (item.parentElement && item.parentElement.children.length > 1)));
     if (!asOption) {
       // 输入框的值也跟着变了的（会话里由字段变化录成语义步骤）会先认领这两下点击，这里就不再重复录
       const trig = triggerOf(el);
       if (trig) {
-        if (!(lt && lt.el === trig && at - lt.ts < 400)) lastTrigger = { id, el: trig, text: shownText(trig), tags: shownTags(trig), ts: at, clicked: el };
+        if (!(lt && lt.el === trig && at - lt.ts < 400)) lastTrigger = { id, ts0: at, el: trig, text: shownText(trig), tags: shownTags(trig), ts: at, clicked: el, chain: [], again: false };
       } else lastTrigger = null;
       return;
     }
-    lastTrigger = null;
-    const optText = textOf(el);
-    if (!optText || optText.length > 60) return;
-    setTimeout(() => {
-      if (!lt.el.isConnected || claimed.has(id) || (!lt.again && claimed.has(lt.id))) return;
-      const now = shownText(lt.el);
-      if (now === lt.text) return;
-      const tags = shownTags(lt.el);
-      // 下拉上显示的变成了这个选项；多选的是多出了这一项（点已经选中的是取消，不算选择）
-      if (!(now === optText || tags.includes(optText) || (!tags.length && now.includes(optText) && !lt.text.includes(optText)))) return;
-      const multi = tags.length > 0 || now !== optText || /(^|[-_\s])(multiple|multi|tags)([-_\s]|$)/i.test(typeof lt.el.className === 'string' ? lt.el.className : '');
-      const members = lt.again ? [id] : [lt.id, id];
-      members.forEach((m) => claimed.add(m));
-      // 外壳的文字就是选中的值，会变，不能拿来定位，也不能当名字；名字取表单项标签，或里面输入框的（label for、name）
-      const tg = describe(lt.el);
-      const inner = lt.el.querySelector(FIELD_SEL);
-      const lbl = (tg.ctx && tg.ctx.label) || (inner ? labelOf(inner) : '') || '';
-      Object.assign(tg, { text: '', kind: '下拉框', label: lbl, desc: `下拉框${lbl ? ` "${lbl}"` : ''}` });
-      // 值是点选项那一刻定下来的（350ms 只是用来确认下拉上显示的变了）：选完立刻发的请求要算在这一步之后
-      const step = { type: 'fill', ts: lt.again ? at : lt.ts, commitTs: at, target: tg, value: optText, members, via: 'program', sid: lt.again ? at : lt.ts, pick: 'choice' };
-      // 多选：记下选之前下拉上已有的项（回放时页面上留着上一次选的，先清掉再选）
-      if (multi) { step.multi = true; step.before = lt.tags || []; }
-      record(step, lt.el);
-      // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的
-      if (multi) lastTrigger = { id: lt.id, el: lt.el, text: now, tags, ts: Date.now(), clicked: lt.clicked, again: true };
-    }, 350);
+    const optText = textOf(item.contains(el) ? el : item);
+    if (!optText || optText.length > 60) { lastTrigger = null; return; }
+    // 下拉还算开着：多选接着点下一项、级联点下一级都要接得上（用户点得快，350ms 的确认还没回来）
+    const entry = { id, text: optText, el: item, at, done: false };
+    lt.chain.push(entry);
+    lt.ts = at;
+    setTimeout(() => settleChoice(lt, entry), 350);
+  }
+  function settleChoice(lt, entry) {
+    if (!lt.el.isConnected || entry.done || claimed.has(entry.id) || (!lt.again && claimed.has(lt.id))) return;
+    const optText = entry.text;
+    const now = shownText(lt.el);
+    const tags = shownTags(lt.el);
+    const added = tags.includes(optText) && !(lt.tags || []).includes(optText);
+    if (now === lt.text && !added) return; // 显示没变：级联的中间一级，或者点了已经选着的那一项
+    const idx = lt.chain.indexOf(entry);
+    const later = idx < lt.chain.length - 1;
+    // 之前点过、显示没跟着变的几下（级联的上几级，在别的列里）
+    const prior = lt.chain.slice(0, idx).filter((e) => !e.done && e.el.parentElement !== entry.el.parentElement);
+    const parts = now.split(/\s*[/>＞]\s*/).filter(Boolean);
+    let value = null;
+    let pick = 'choice';
+    let multi = false;
+    let used = [entry];
+    if (dateish(lt.el) && dateText(now) && !tags.length) {
+      // 只显示、没有输入框的日期选择（shineout 的 DatePicker）：显示的日期就是值；区间点两下，并成一步
+      value = now;
+      pick = 'date';
+      used = prior.concat(entry);
+    } else if (added) {
+      value = optText;
+      multi = true;
+    } else if (parts.length > 1 && norm(parts[parts.length - 1]) === optText) {
+      value = parts.join(' / ');
+      used = prior.concat(entry);
+    } else if (prior.length && norm(now.replace(/[/>＞]/g, ' ')) === prior.map((e) => e.text).concat(optText).join(' ')) {
+      // 级联各级分开显示、没有分隔符（shineout）
+      value = prior.map((e) => e.text).concat(optText).join(' / ');
+      used = prior.concat(entry);
+    } else if (now === optText) {
+      value = prior.length ? prior.map((e) => e.text).concat(optText).join(' / ') : optText;
+      used = prior.concat(entry);
+    } else if (later) {
+      return; // 后面还点了别的（级联的下一级）：由最后一下来定
+    } else if (!tags.length && now.includes(optText) && !lt.text.includes(optText)) {
+      value = optText;
+      multi = true;
+    }
+    if (value == null) return;
+    if (/(^|[-_\s])(multiple|multi|tags)([-_\s]|$)/i.test(typeof lt.el.className === 'string' ? lt.el.className : '')) multi = pick === 'choice' && !parts[1];
+    used.forEach((e) => { e.done = true; });
+    // 可搜索的下拉：先在外壳里的搜索框键入过滤，再点选项（选完搜索框清空）。键入那一步并进来，回放时由选择负责
+    const inner = lt.el.querySelector(FIELD_SEL);
+    const typed = inner && fillOf.get(inner);
+    const typedId = typed && typed.ts >= lt.ts - 15000 && !claimed.has(typed.id) ? typed.id : null;
+    const members = (lt.again ? [] : [lt.id]).concat(typedId ? [typedId] : [], used.map((e) => e.id));
+    members.forEach((m) => claimed.add(m));
+    if (pick === 'date' && lt.dateStep) {
+      lt.dateStep.members.push(...members);
+      send({ type: 'updateEvent', id: lt.dateStep.id, patch: { value, members: lt.dateStep.members, commitTs: entry.at } });
+      lt.text = now;
+      return;
+    }
+    // 外壳的文字就是选中的值，会变，不能拿来定位，也不能当名字；名字取表单项标签，或里面输入框的（label for、name）
+    const tg = describe(lt.el);
+    const lbl = (tg.ctx && tg.ctx.label) || (inner ? labelOf(inner) : '') || '';
+    Object.assign(tg, { text: '', kind: '下拉框', label: lbl, desc: `下拉框${lbl ? ` "${lbl}"` : ''}` });
+    // 值是点选项那一刻定下来的（350ms 只是用来确认下拉上显示的变了）：选完立刻发的请求要算在这一步之后
+    const ts = lt.again ? used[0].at : lt.ts0 || lt.ts;
+    const step = { type: 'fill', ts, commitTs: entry.at, target: tg, value, members, via: 'program', sid: ts, pick };
+    // 多选：记下选之前下拉上已有的项（回放时页面上留着上一次选的，先清掉再选）
+    if (multi) { step.multi = true; step.before = lt.tags || []; }
+    const sid = record(step, lt.el);
+    lt.text = now;
+    lt.tags = multi ? (lt.tags || []).concat(value) : tags;
+    lt.again = true;
+    if (pick === 'date' && sid) lt.dateStep = { id: sid, members: members.slice() };
+    // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的；单选选完就结束
+    if (!multi && pick !== 'date' && lastTrigger === lt) lastTrigger = null;
   }
 
   // ---------------- 动作的效果：开关、勾选、按下 ----------------
@@ -973,7 +1068,7 @@
     if (el.tagName === 'SELECT' || el.tagName === 'OPTION') return;
     const id = record({ type: 'click', target: describe(el), pos: posIn(el, e), hover: trailFor(el) }, el);
     if (gesture) gesture.stepId = id;
-    if (id) noteDisplayChoice(el, id);
+    if (id) noteDisplayChoice(el, id, pressInfo && pressInfo.t && (t.contains(pressInfo.t) || !pressInfo.t.isConnected) ? pressInfo.t : t);
     // 点完 350ms 看看是不是展开/收起开关、勾选开关
     const p = pressInfo;
     if (id && p && (p.toggle || (p.state && p.state.length))) {
