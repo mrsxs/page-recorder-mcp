@@ -48,3 +48,22 @@ test('同一个下拉框先单选后多选：前一次记成被后一次覆盖',
   assert.ok(last.param, JSON.stringify(a.params));
   assert.equal(first.overwrittenBy, last.param);
 });
+
+test('字段名叫 constructor 也能起名，不卡死', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const a = step('a', 2, { type: 'fill', target: tgt('#c1', 'constructor', ''), value: '1' });
+  const b = step('b', 3, { type: 'fill', target: tgt('#c2', 'constructor', ''), value: '2' });
+  const p = PR_EXPORTER.analyze([nav, a, b], {}, {}).params;
+  assert.deepEqual(p, { constructor: '1', constructor_2: '2' });
+});
+
+test('以前撞名的老参数：名字留给提供默认值的那个字段', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const s1 = step('a', 2, { type: 'fill', target: tgt('#s1', 'Shipping', ''), value: '10001' });
+  const s2 = step('b', 3, { type: 'fill', target: tgt('#s2', 'Shipping', ''), value: '20002' });
+  const s3 = step('c', 4, { type: 'fill', target: tgt('#s3', 'Shipping_2', ''), value: '30004' });
+  const r = PR_EXPORTER.analyze([nav, s1, s2, s3], {}, {});
+  assert.equal(r.params.Shipping_2, '30004');
+  assert.equal(r.steps.find((s) => s.id === 'c').param, 'Shipping_2');
+  assert.equal(new Set(r.steps.filter((s) => s.param).map((s) => s.param)).size, 3);
+});
