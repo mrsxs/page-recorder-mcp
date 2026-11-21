@@ -99,6 +99,22 @@ test('--no-daemon：扩展没连上时 tools/list 也很快返回固定工具（
   }
 });
 
+test('initialize：支持的协议版本原样回；不支持的（含取消了握手的 2026-07-28）回本服务最新支持的版本', async () => {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const p = spawn(process.execPath, [server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'] });
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('启动超时')), 10000);
+      p.stderr.on('data', (d) => { if (String(d).includes('已启动')) { clearTimeout(t); resolve(); } });
+    });
+    const init = async (params) => (await (await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params }) })).json()).result.protocolVersion;
+    for (const v of ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']) assert.equal(await init({ protocolVersion: v }), v);
+    for (const params of [{ protocolVersion: '2026-07-28' }, { protocolVersion: '1900-01-01' }, { protocolVersion: 20251125 }, {}, undefined]) assert.equal(await init(params), '2025-11-25');
+  } finally {
+    p.kill();
+  }
+});
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return false; } };
 const kill = (pid) => { try { process.kill(pid); } catch (e) { /* 已经退出 */ } };

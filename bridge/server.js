@@ -1278,6 +1278,10 @@ async function callTool(name, args, ctx) {
   }
 }
 
+// 本服务实现的 MCP 协议版本（都是带 initialize 握手的）。客户端要的版本不在这里面时回最新的一个，不照抄：
+// 2026-07-28 起取消了握手，照抄回去等于声称支持一个没实现的版本
+const MCP_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
+
 async function handleRpc(msg, ctx) {
   const { id, method, params } = msg || {};
   const ok = (result) => ({ jsonrpc: '2.0', id, result });
@@ -1285,7 +1289,7 @@ async function handleRpc(msg, ctx) {
     switch (method) {
       case 'initialize':
         return ok({
-          protocolVersion: (params && params.protocolVersion) || '2025-06-18',
+          protocolVersion: params && MCP_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : MCP_VERSIONS[0],
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name: 'page-recorder', version: VERSION },
           instructions: '这些工具用于执行用户在浏览器中录制的网页操作脚本，并调用录制中抓到的接口（在用户自己的浏览器中执行，带登录态）。先用 list_recordings 查看可用脚本（paramHelp 说明每个输入参数怎么填）；运行、调用接口的结果里，套在 JSON 字符串里的数据已经展开成对象；结果太大时只返回压缩过的预览和 result_id，用 read_result 按路径 / 字段 / 分页取具体数据（不会再调接口），也可以调用时直接带 result_path、result_fields 只要一部分；需要了解接口细节用 get_recording；如果接口还没有说明，可以分析后用 save_api_docs 写回。多个浏览器资料都连着桥接时，每个脚本带 browser 字段，同名脚本要用 browser 参数指定在哪个浏览器执行。export_package / import_package 用来导出、导入录制包。',
