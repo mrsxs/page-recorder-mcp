@@ -957,9 +957,11 @@ function searchApis(list, args) {
     const out = { total: hits.length, offset, count: n };
     const full = detail && room == null; // 一个接口的参数定义就超长：只给参数名
     out.apis = page.map((e) => Object.assign(
-      { recording: clip(e.r.name, 200), recording_id: e.r.id, api: clip(e.t.api, 300), fn: e.t.name, description: clip(e.t.description, room != null ? Math.min(200, room) : detail ? 600 : 200) },
+      { recording: clip(e.r.name, 200), recording_id: e.r.id, api: String(e.t.api).length > 300 ? e.t.name : e.t.api, fn: e.t.name, description: clip(e.t.description, room != null ? Math.min(200, room) : detail ? 600 : 200) },
       // 资料名可能重复，给 instanceId 才能原样填回 browser
       multi && e.r.browser ? Object.assign({ browser: e.r.browser.instanceId }, e.r.browser.profile ? { browser_name: e.r.browser.profile } : {}) : {},
+      // api 要原样填回 call_api，不能截短：名字太长时上面给的是函数名（call_api 也认），原名截短放这里
+      String(e.t.api).length > 300 ? { api_name: clip(e.t.api, 300) } : {},
       full ? { inputSchema: e.schema } : { params: names(e.params, room) },
     ));
     if (offset + n < hits.length) out.next_offset = offset + n;

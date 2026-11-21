@@ -44,6 +44,12 @@ function frame(text) { // 客户端帧必须带掩码
   return Buffer.concat([head, mask, Buffer.from(payload.map((b, i) => b ^ mask[i % 4]))]);
 }
 // 假扩展：list 返回脚本库；call 把收到的参数原样回来
+// 和 background.js 的 callApi 一样认接口：名字或函数名相同，或名字里包含
+function reply(lib, params) {
+  const rec = lib.find((r) => r.id === params.recording);
+  if (rec && params.api != null && !rec.tools.some((t) => t.api === params.api || t.name === params.api || t.api.includes(params.api))) return { ok: false, error: '没有接口 ' + params.api };
+  return { ok: true, got: params };
+}
 function fakeExt(port, lib, instanceId = 'test1') {
   const s = net.connect(port, '127.0.0.1');
   let buf = Buffer.alloc(0);
@@ -67,7 +73,7 @@ function fakeExt(port, lib, instanceId = 'test1') {
       const m = JSON.parse(buf.slice(off, off + len).toString());
       buf = buf.slice(off + len);
       if (m.type !== 'request') continue;
-      s.write(frame(JSON.stringify({ type: 'response', id: m.id, ok: true, data: m.method === 'list' ? lib : { ok: true, got: m.params } })));
+      s.write(frame(JSON.stringify({ type: 'response', id: m.id, ok: true, data: m.method === 'list' ? lib : reply(lib, m.params) })));
     }
   });
   s.on('error', () => {});
@@ -220,4 +226,16 @@ test('两个浏览器资料名一样：search_apis 给的 browser 能原样填�
     assert.ok(!got.err, got.text);
     assert.equal(JSON.parse(got.text).got.recording, 'other0');
   }, other);
+});
+
+test('接口名很长：search_apis 给的 api 仍能原样填回 call_api', async () => {
+  const lib = library(1);
+  lib[0].tools[0].api = 'GET /api/order/list?' + 'x'.repeat(500);
+  await withBridge(lib, [], async ({ tool }) => {
+    const a = JSON.parse((await tool('search_apis', { query: 'listOrder' })).text).apis[0];
+    assert.equal(a.api, 'listOrder');
+    assert.ok(a.api_name.startsWith('GET /api/order/list?') && a.api_name.length < 400);
+    const got = JSON.parse((await tool('call_api', { recording: a.recording_id, api: a.api })).text);
+    assert.equal(got.ok, true);
+  });
 });
