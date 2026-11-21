@@ -1744,7 +1744,11 @@ async function handle(msg, sender) {
           const list = Array.isArray(msg.value) ? msg.value : [];
           // 原来就选着、但不在选项表里的（老录制只存了前 200 个选项）照样接受
           const had = Array.isArray(ev.value) ? ev.value.map(String) : [];
-          const opts = list.map((x) => optOf(x) || (had.includes(String(x)) ? [String(x), String(x)] : null));
+          // 先按值精确对（选项表里的、原来就选着的），再按显示文字
+          const opts = list.map((x) => {
+            const code = String(x);
+            return (ev.options || []).find((o) => o[0] === code) || (had.includes(code) ? [code, code] : optOf(x));
+          });
           const miss = list.filter((x, i) => !opts[i]);
           if (miss.length) throw new Error(`下拉框里没有选项：${miss.join('、')}（可选：${listed()}）`);
           if (ev.recordedValue === undefined) ev.recordedValue = ev.value;
