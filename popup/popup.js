@@ -332,7 +332,11 @@ function renderParams(A) {
     const name = `<span class="pname" title="${esc(s.desc)}">${esc(s.param)}</span>`;
     // 单选、复选框、多选下拉框只能选组件里已有的选项：用下拉/勾选列表，不让手填
     const opt = (v, t, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(t)}</option>`;
-    if (s.type === 'check' && Array.isArray(s.options)) return `<label class="prow">${name}<select data-param-step="${esc(s.id)}">${s.options.map(([v, t]) => opt(v, t, v === s.value)).join('')}</select>${from}</label>`;
+    // 单选按序号提交：值可能重复（没写 value 的单选框都是 on）
+    if (s.type === 'check' && Array.isArray(s.options)) {
+      const cur = s.options.findIndex(([, t]) => t === s.optionText);
+      return `<label class="prow">${name}<select data-param-step="${esc(s.id)}" data-param-index="1">${s.options.map(([, t], i) => opt(i, t, i === cur)).join('')}</select>${from}</label>`;
+    }
     if (s.type === 'check') return `<label class="prow">${name}<select data-param-step="${esc(s.id)}">${opt('true', '勾选', s.checked)}${opt('false', '不勾选', !s.checked)}</select>${from}</label>`;
     if (s.type === 'select' && Array.isArray(s.value)) {
       return `<div class="prow">${name}<span class="pmulti" data-param-multi="${esc(s.id)}">${(s.options || []).map(([v, t]) => `<label><input type="checkbox" value="${esc(v)}"${s.value.includes(v) ? ' checked' : ''} />${esc(t)}</label>`).join('')}</span>${from}</div>`;
@@ -347,7 +351,7 @@ $('#paramBox').addEventListener('change', async (e) => {
   const inp = multi ? e.target : e.target.closest('input[data-param-step],select[data-param-step]');
   if (!inp) return;
   const value = multi ? [...multi.querySelectorAll('input:checked')].map((x) => x.value) : inp.value;
-  const r = await send({ type: 'setParam', id: multi ? multi.dataset.paramMulti : inp.dataset.paramStep, value });
+  const r = await send(Object.assign({ type: 'setParam', id: multi ? multi.dataset.paramMulti : inp.dataset.paramStep, value }, inp.dataset.paramIndex ? { index: Number(inp.value) } : {}));
   if (r && r.error) { showNotice(esc(r.error), 'error'); return; }
   inp.blur();
   const shown = multi ? [...multi.querySelectorAll('input:checked')].map((x) => x.parentElement.textContent).join('、') : inp.tagName === 'SELECT' ? inp.selectedOptions[0].textContent : inp.value;
@@ -624,7 +628,8 @@ function renderLibrary() {
   const paramRows = (x) => {
     const ps = Object.entries(x.params || {});
     if (!ps.length) return '';
-    return `<div class="lib-params">${ps.map(([k, v]) => `<label><span>${esc(k)}</span><input data-lp="${esc(k)}" value="${esc(v)}" /></label>`).join('')}</div>`;
+    // 多选参数是数组：按 JSON 显示和提交（["apple","cherry"]），不拼成逗号字符串
+    return `<div class="lib-params">${ps.map(([k, v]) => `<label><span>${esc(k)}</span><input data-lp="${esc(k)}"${Array.isArray(v) ? ' data-lp-json="1" title="多选：选项组成的 JSON 数组"' : ''} value="${esc(Array.isArray(v) ? JSON.stringify(v) : v)}" /></label>`).join('')}</div>`;
   };
   $('#libList').innerHTML = list.map((x) => `<div class="lib ${x.id === data.state.id ? 'current' : ''}" data-id="${esc(x.id)}">
     <div class="lib-name">${esc(x.name)}${x.hasDocs ? '<span class="tag">AI 已解读</span>' : ''}${x.id === data.state.id ? '<span class="tag">当前</span>' : ''}</div>
@@ -660,7 +665,17 @@ $('#libList').addEventListener('click', async (e) => {
     b.disabled = true;
     b.textContent = act === 'query' ? '请求中…' : '运行中…';
     const params = {};
-    card.querySelectorAll('input[data-lp]').forEach((i) => { params[i.dataset.lp] = i.value; });
+    let bad = '';
+    card.querySelectorAll('input[data-lp]').forEach((i) => {
+      if (!i.dataset.lpJson) { params[i.dataset.lp] = i.value; return; }
+      try { const a = JSON.parse(i.value); if (!Array.isArray(a)) throw new Error(); params[i.dataset.lp] = a.map(String); } catch (e) { bad = bad || i.dataset.lp; }
+    });
+    if (bad) {
+      b.disabled = false;
+      b.textContent = label;
+      card.querySelector('.lib-out').innerHTML = `<pre class="result">${esc(`失败：参数 ${bad} 是多选，要填 JSON 数组，比如 ["选项1","选项2"]`)}</pre>`;
+      return;
+    }
     const r = await send({ type: 'libRun', id, params, mode: act === 'query' ? 'api' : 'ui' });
     b.disabled = false;
     b.textContent = label;

@@ -1014,7 +1014,11 @@ function changedParams(b, given) {
   for (const [k, v] of Object.entries(eff)) {
     let x = v == null ? '' : String(v);
     const s = b.recording.steps.find((st) => st.type === 'select' && st.value === `{{${k}}}` && Array.isArray(st.options));
-    if (s) { const o = s.options.find((op) => op[0] === x) || s.options.find((op) => String(op[1]).trim() === x.trim()); if (o) x = String(o[0]); }
+    if (s && !Array.isArray(v)) { const o = s.options.find((op) => op[0] === x) || s.options.find((op) => String(op[1]).trim() === x.trim()); if (o) x = String(o[0]); }
+    // 单选：填值和填文字是同一个选项就不算改（基准是文字）；复选框：1/0 和 true/false 一样
+    const r = b.recording.steps.find((st) => st.type === 'check' && st.value === `{{${k}}}` && Array.isArray(st.options));
+    if (r) { const o = r.options.find((op) => String(op[1]).trim() === x.trim()) || r.options.find((op) => op[0] === x); if (o) x = String(o[1]); }
+    if (b.recording.steps.some((st) => st.type === 'check' && st.checked === `{{${k}}}`)) x = { 1: 'true', 0: 'false' }[x] || x;
     if (x !== String(rec[k] == null ? '' : rec[k])) out.push(k);
   }
   return out;
@@ -1095,7 +1099,16 @@ async function runRecording(item, opts) {
   opts = opts || {};
   const b = buildItem(item).bundle;
   const mode = opts.mode || 'auto';
-  const given = opts.params || {};
+  const given = Object.assign({}, opts.params || {});
+  // 多选参数要数组；传来的是字符串（脚本库卡片、只能传字符串的客户端）就按 JSON 数组解析，不按逗号拆（选项文字里可能有逗号）
+  for (const [k, v] of Object.entries(given)) {
+    if (!Array.isArray(b.params[k]) || Array.isArray(v)) continue;
+    let a = null;
+    try { a = JSON.parse(String(v)); } catch (e) { /* 下面报错 */ }
+    if (!Array.isArray(a)) throw new Error(`参数 ${k} 是多选，要传选项组成的数组，比如 ${JSON.stringify(b.params[k])}`);
+    given[k] = a.map(String);
+  }
+  opts = Object.assign({}, opts, { params: given });
   const unknownNames = Object.keys(given).filter((k) => !(k in b.params));
   if (unknownNames.length) throw new Error(`这条录制没有这些输入参数：${unknownNames.join('、')}。可用的参数：${Object.keys(b.params).join('、') || '（无）'}`);
   const changed = changedParams(b, given);
@@ -1687,10 +1700,20 @@ async function handle(msg, sender) {
         if (ev.type === 'check' && !Array.isArray(ev.options)) {
           const b = { true: true, false: false, 1: true, 0: false }[String(msg.value)];
           if (b === undefined) throw new Error(`复选框只能填 true（勾选）或 false（不勾选）`);
+          if (ev.recordedChecked === undefined) ev.recordedChecked = !!ev.checked;
           ev.checked = b;
         } else if (ev.type === 'check') {
-          const opt = optOf(msg.value);
+          // 弹窗里按选项序号选（值可能重复，比如没写 value 的单选框都是 on）；手填的文字/值只认唯一的
+          let opt = Number.isInteger(msg.index) ? ev.options[msg.index] : null;
+          if (!opt) {
+            const t = String(msg.value == null ? '' : msg.value).trim();
+            const byText = ev.options.filter((o) => o[1] === t);
+            const byVal = ev.options.filter((o) => o[0] === t);
+            opt = byText.length === 1 ? byText[0] : byText.length ? null : byVal.length === 1 ? byVal[0] : null;
+            if (!opt && (byText.length || byVal.length)) throw new Error(`单选项「${t}」对应好几个选项，分不清是哪个（可选：${listed()}）`);
+          }
           if (!opt) throw new Error(`单选项里没有「${msg.value}」（可选：${listed()}）`);
+          if (ev.recordedText === undefined) ev.recordedText = ev.optionText;
           ev.value = opt[0];
           ev.optionText = opt[1];
         } else {
