@@ -952,7 +952,8 @@
     lt.again = true;
     if (pick === 'date' && sid) lt.dateStep = { id: sid, members: members.slice() };
     // 点的是级联里有下一级的节点：下拉还开着，接着点的下一列并进这一步
-    if (!multi && pick === 'choice' && entry.el.matches(HAS_CHILDREN) && sid) { const texts = String(value).split(' / '); lt.cascStep = { id: sid, members: members.slice(), texts, cols: texts.slice(1).map((t, i) => (prior[i] && prior[i].col) || {}).concat(entry.col || {}), lastAt: entry.at }; return; }
+    // 前面几级在哪一列不确定（点击顺序不一定是层级顺序），先用占位，不会被匹配上截断路径
+    if (!multi && pick === 'choice' && entry.el.matches(HAS_CHILDREN) && sid) { const texts = String(value).split(' / '); lt.cascStep = { id: sid, members: members.slice(), texts, cols: texts.slice(1).map(() => ({})).concat(entry.col || {}), lastAt: entry.at }; return; }
     // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的；单选选完就结束
     if (!multi && pick !== 'date' && lastTrigger === lt) lastTrigger = null;
   }
