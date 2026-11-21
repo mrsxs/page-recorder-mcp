@@ -340,7 +340,9 @@ function renderParams(A) {
     }
     if (s.type === 'check') return `<label class="prow">${name}<select data-param-step="${esc(s.id)}">${opt('true', '勾选', s.checked)}${opt('false', '不勾选', !s.checked)}</select>${from}</label>`;
     if (s.type === 'select' && Array.isArray(s.value)) {
-      return `<div class="prow">${name}<span class="pmulti" data-param-multi="${esc(s.id)}">${(s.options || []).map(([v, t]) => `<label><input type="checkbox" value="${esc(v)}"${s.value.includes(v) ? ' checked' : ''} />${esc(t)}</label>`).join('')}</span>${from}</div>`;
+      // 选中的值不在选项表里（老录制只存了前 200 个选项）：也列出来，改别的项时不丢
+      const opts = (s.options || []).concat(s.value.filter((v) => !(s.options || []).some((o) => o[0] === v)).map((v) => [v, v]));
+      return `<div class="prow">${name}<span class="pmulti" data-param-multi="${esc(s.id)}">${opts.map(([v, t]) => `<label><input type="checkbox" value="${esc(v)}"${s.value.includes(v) ? ' checked' : ''} />${esc(t)}</label>`).join('')}</span>${from}</div>`;
     }
     return `<label class="prow">${name}
       <input data-param-step="${esc(s.id)}" value="${esc(s.sensitive ? '' : s.type === 'select' ? s.optionText || s.value || '' : s.value || '')}"${s.sensitive ? ' disabled placeholder="密码不保存，回放时通过参数传入"' : s.type === 'upload' ? ' placeholder="本机文件完整路径，多个用 | 分隔"' : s.type === 'select' ? ` title="${esc((s.options || []).map((o) => o[1]).join('、'))}"` : ''} />
