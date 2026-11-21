@@ -718,7 +718,9 @@ async function execReplay(tabId, frameId, docId, runId, args, deadline) {
   replayContexts.set(token, { tabId, frameId: fid, docId, target, runId });
   let settled = null;
   try {
-    const [rec, params, apiParams, config] = args;
+    const [rec, params, apiParams] = args;
+    // 两个 world 之间转交组件适配用的事件名（见 runtime.js 的 pageOp），每次回放随机生成
+    const config = { ...args[3], pageBridge: 'pr:' + uid() };
     await chrome.scripting.executeScript({ target, world: 'MAIN', files: ['lib/runtime.js'] });
     const rewriteParams = Object.fromEntries(tplNames(apiParams).filter((key) => Object.hasOwn(params, key)).map((key) => [key, params[key]]));
     const pageRec = { ...rec, steps: config.realInput ? [] : rec.steps.map((step) => ({
@@ -1805,9 +1807,10 @@ const SHARED_HEADER = /^(authorization|x-csrf-token|x-xsrf-token|x-token|token|x
 function watchLiveRequest(d) {
   if (!cache || d.tabId < 0 || !d.documentId || !d.initiator || d.url.length > 8192) return;
   const url = new URL(d.url);
-  if (url.origin !== d.initiator) return;
+  // 按目标接口记（见 liveForCall）：页面在 app.x、接口在 api.x 时，直调同一个接口也能补上页面刚用过的鉴权头
+  const sites = [siteOf(url.href), siteOf(d.initiator)].filter(Boolean);
   if (!netTabs(cache).includes(d.tabId) && !captures.has(d.tabId) && !callingTabs.has(d.tabId) &&
-      !cache.libIndex.some((item) => siteOf(item.startUrl) === siteOf(url.href))) return;
+      !cache.libIndex.some((item) => sites.includes(siteOf(item.startUrl)))) return;
   const headers = Object.fromEntries((d.requestHeaders || []).filter((h) =>
     LIVE_HEADER.test(h.name) && typeof h.value === 'string' && h.value.length <= 8192).map((h) => [h.name.toLowerCase(), h.value]));
   const fields = Object.fromEntries([...url.searchParams].filter(([k, v]) => PR_EXPORTER.sensitiveKey(k) &&

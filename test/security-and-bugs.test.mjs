@@ -644,6 +644,70 @@ test('runtime: 显式传入的数组替换录制数组，调用参数中的模�
   assert.equal(win.__PR__, undefined);
 });
 
+test('runtime: 跨源接口直调用后台按目标接口记下的鉴权头补上脱敏的头；页面上读的隐藏字段只给同源接口', async () => {
+  const api = (name, fn, url, extra = {}) => ({ name, fn, method: 'GET', url, pathTemplate: new URL(url).pathname, requestHeaders: { authorization: '***', 'x-sign': '***', accept: 'application/json' }, ...extra });
+  const rec = {
+    startUrl: 'https://app.test/page',
+    steps: [],
+    apis: [
+      api('GET cross', 'cross', 'https://api.test/v1/me'),
+      api('GET same', 'same', 'https://app.test/api/me'),
+      api('GET crossField', 'crossField', 'https://api.test/v1/list?csrf_token=__PR_MASKED__', { masked: ['query.csrf_token'], params: { query: { csrf_token: '' } } }),
+    ],
+  };
+  const cfg = { autoRun: false, verbose: false, rewriteRequests: false, netLog: false };
+  const { win, fetchCalls } = createRuntimeEnv();
+  win.document.querySelectorAll = () => [{ name: 'csrf_token', value: 'FROM-PAGE' }];
+  await win.__pageRecorderRuntime(rec, {}, {}, cfg, { live: { headers: { authorization: 'Bearer LIVE' }, fields: {} } });
+
+  for (const fn of ['cross', 'same']) {
+    const r = await win.__PR__.api.call(fn, {});
+    const sent = fetchCalls.pop().init.headers;
+    assert.equal(sent.authorization, 'Bearer LIVE', fn);
+    assert.equal('x-sign' in sent, false);
+    assert.deepEqual([...r.liveHeaders], ['authorization']);
+    assert.deepEqual([...r.omittedHeaders], ['x-sign'], '补不上的脱敏头要在结果里说明');
+  }
+  const r = await win.__PR__.api.call('crossField', {});
+  assert.equal(r.notSent, true, '页面上的隐藏字段不能带去别的源');
+  assert.equal(fetchCalls.length, 0);
+
+  const live = createRuntimeEnv();
+  await live.win.__pageRecorderRuntime(rec, {}, {}, cfg, { live: { headers: {}, fields: { csrf_token: 'FROM-API' } } });
+  await live.win.__PR__.api.call('crossField', {});
+  assert.equal(new URL(live.fetchCalls[0].url).searchParams.get('csrf_token'), 'FROM-API');
+});
+
+test('runtime: MAIN world 的那份替 ISOLATED world 的回放执行组件适配，只认约定的操作名，结束后不再响应', async () => {
+  const { win } = createRuntimeEnv();
+  const handlers = new Map();
+  win.addEventListener = (type, fn) => handlers.set(type, fn);
+  win.removeEventListener = (type) => handlers.delete(type);
+  win.CustomEvent = CustomEvent;
+  const calls = [];
+  win.layui = { form: { render: (kind) => calls.push(kind) } };
+  const name = 'pr:0123456789abcdef';
+  const runtime = await win.__pageRecorderRuntime({ startUrl: 'https://app.test/page', steps: [], apis: [] }, {}, {}, {
+    autoRun: false, expose: false, verbose: false, rewriteRequests: false, netLog: false, networkOnly: true, pageBridge: name,
+  });
+  const el = Object.assign(new EventTarget(), { nodeType: 1, parentElement: null, __vue__: {}, closest: () => null });
+  const ask = (op, arg) => {
+    let reply;
+    el.addEventListener(name + ':r', (e) => { reply = JSON.parse(e.detail); }, { once: true });
+    handlers.get(name)({ detail: JSON.stringify({ name: op, arg }), composedPath: () => [el] });
+    return reply;
+  };
+  assert.equal(ask('frameworkOwned'), true);
+  assert.equal(ask('layuiSelect', false), true);
+  assert.equal(ask('layuiSelect', true), false, '不在 layui 表单里的下拉不刷新');
+  assert.equal(ask('selectmenu', 1), false, '页面没有 jQuery');
+  assert.equal(ask('constructor'), false);
+  assert.equal(ask('toString'), false);
+  assert.deepEqual(calls, ['select']);
+  runtime.finish();
+  assert.equal(handlers.has(name), false);
+});
+
 test('exporter: 嵌套凭据、跳转地址和文本响应在导出时脱敏', () => {
   const masked = PR_EXPORTER.exportRequest({
     url: 'https://app.test/api#token=fragment-secret?show=yes',
