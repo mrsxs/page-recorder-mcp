@@ -40,6 +40,6 @@
   "scripts": {
     "start": "node bridge/server.js",
     "mcp": "node bridge/server.js --stdio",
-    "test": "node --test test/smoke.test.mjs test/result.test.mjs"
+    "test": "node --test test/smoke.test.mjs test/result.test.mjs test/tools.test.mjs"
   }
 }
