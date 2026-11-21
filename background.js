@@ -1007,6 +1007,17 @@ function linkedApis(b) {
   return b.recording.apis.filter((a) => !a.ignore && tplNames(b.apiParams[a.name] || {}).length);
 }
 // 这次实际用的参数里，和最初录到的值不一样的（弹窗里改过的默认值也算改了；下拉框填选项文字和录制的选项值是同一个就不算改）
+// 单选按参数找选项（和 lib/runtime.js 的 radioFor 同一个规则）：显示文字唯一就是它，否则值唯一就是它，否则 -1（没有或分不清）
+function radioPick(options, token) {
+  const t = String(token == null ? '' : token);
+  const byText = options.map((o, i) => (String(o[1]).trim() === t.trim() ? i : -1)).filter((i) => i >= 0);
+  if (byText.length === 1) return byText[0];
+  const byVal = options.map((o, i) => (o[0] === t ? i : -1)).filter((i) => i >= 0);
+  if (byVal.length === 1) return byVal[0];
+  // 文字和值都分不清时用序号（#2 = 第 2 个选项）
+  const n = !byText.length && !byVal.length && t.match(/^#(\d+)$/);
+  return n && +n[1] >= 1 && +n[1] <= options.length ? +n[1] - 1 : -1;
+}
 function changedParams(b, given) {
   const out = [];
   const eff = Object.assign({}, b.params, given || {});
@@ -1014,7 +1025,23 @@ function changedParams(b, given) {
   for (const [k, v] of Object.entries(eff)) {
     let x = v == null ? '' : String(v);
     const s = b.recording.steps.find((st) => st.type === 'select' && st.value === `{{${k}}}` && Array.isArray(st.options));
+    // 多选：每一项按值或文字对到选项，和录制时选中的那组比（不看顺序）；对不上的项算改了
+    if (s && Array.isArray(rec[k])) {
+      // 和录制时的值原样相同就是没改（选项表只存了前 200 个，后面的对不上）
+      const supplied = [].concat(v == null ? [] : v).map(String).sort();
+      const recorded = rec[k].map(String).sort();
+      if (supplied.length === recorded.length && supplied.every((x2, i) => x2 === recorded[i])) continue;
+      const ids = [].concat(v == null ? [] : v).map((t) => { const o = s.options.find((op) => op[0] === String(t)) || s.options.find((op) => String(op[1]).trim() === String(t).trim()); return o ? o[0] : null; });
+      const got = ids.slice().sort();
+      if (ids.includes(null) || got.length !== recorded.length || got.some((x2, i) => x2 !== recorded[i])) out.push(k);
+      continue;
+    }
     if (s) { const o = s.options.find((op) => op[0] === x) || s.options.find((op) => String(op[1]).trim() === x.trim()); if (o) x = String(o[0]); }
+    // 单选：和回放同一个规则（radioPick）对到选项，比选项是不是同一个；对不上或分不清的算改了
+    const r = b.recording.steps.find((st) => st.type === 'check' && st.value === `{{${k}}}` && Array.isArray(st.options));
+    if (r) { const i = radioPick(r.options, v), ri = radioPick(r.options, rec[k]); if (i < 0 || ri < 0 || i !== ri) out.push(k); continue; }
+    // 复选框：1/0 和 true/false 一样
+    if (b.recording.steps.some((st) => st.type === 'check' && st.checked === `{{${k}}}`)) x = { 1: 'true', 0: 'false' }[x] || x;
     if (x !== String(rec[k] == null ? '' : rec[k])) out.push(k);
   }
   return out;
@@ -1095,7 +1122,16 @@ async function runRecording(item, opts) {
   opts = opts || {};
   const b = buildItem(item).bundle;
   const mode = opts.mode || 'auto';
-  const given = opts.params || {};
+  const given = Object.assign({}, opts.params || {});
+  // 多选参数要数组；传来的是字符串（脚本库卡片、只能传字符串的客户端）就按 JSON 数组解析，不按逗号拆（选项文字里可能有逗号）
+  for (const [k, v] of Object.entries(given)) {
+    if (!Array.isArray(b.params[k]) || Array.isArray(v)) continue;
+    let a = null;
+    try { a = JSON.parse(String(v)); } catch (e) { /* 下面报错 */ }
+    if (!Array.isArray(a)) throw new Error(`参数 ${k} 是多选，要传选项组成的数组，比如 ${JSON.stringify(b.params[k])}`);
+    given[k] = a.map(String);
+  }
+  opts = Object.assign({}, opts, { params: given });
   const unknownNames = Object.keys(given).filter((k) => !(k in b.params));
   if (unknownNames.length) throw new Error(`这条录制没有这些输入参数：${unknownNames.join('、')}。可用的参数：${Object.keys(b.params).join('、') || '（无）'}`);
   const changed = changedParams(b, given);
@@ -1677,9 +1713,46 @@ async function handle(msg, sender) {
     }
     case 'setParam': {
       // 修改输入参数的默认值 = 修改对应输入步骤录下的值（导出脚本的 PARAMS、回放、关联的接口字段都跟着变）
-      const ev = c.events.find((e) => e.id === msg.id && e.kind === 'step' && /^(fill|select|upload)$/.test(e.type));
+      const ev = c.events.find((e) => e.id === msg.id && e.kind === 'step' && /^(fill|select|upload|check)$/.test(e.type));
       if (!ev) throw new Error('找不到这个输入步骤');
       if (ev.sensitive) throw new Error('密码类参数不保存，回放时通过参数传入');
+      // 只接受组件里已有的选项：单选填组里的选项，复选框填 true/false，多选下拉框填选项列表
+      const optOf = (x) => { const t = String(x == null ? '' : x); return (ev.options || []).find((o) => o[0] === t) || (ev.options || []).find((o) => o[1] === t.trim()); };
+      const listed = () => (ev.options || []).slice(0, 20).map((o) => o[1]).join('、');
+      if (ev.type === 'check' || (ev.type === 'select' && Array.isArray(ev.value))) {
+        if (ev.type === 'check' && !Array.isArray(ev.options)) {
+          const b = { true: true, false: false, 1: true, 0: false }[String(msg.value)];
+          if (b === undefined) throw new Error(`复选框只能填 true（勾选）或 false（不勾选）`);
+          if (ev.recordedChecked === undefined) ev.recordedChecked = !!ev.checked;
+          ev.checked = b;
+        } else if (ev.type === 'check') {
+          // 弹窗里按选项序号选（值可能重复，比如没写 value 的单选框都是 on）；手填的文字/值只认唯一的
+          let opt = Number.isInteger(msg.index) ? ev.options[msg.index] : null;
+          if (!opt) {
+            const t = String(msg.value == null ? '' : msg.value).trim();
+            const i = radioPick(ev.options, t);
+            opt = i >= 0 ? ev.options[i] : null;
+            if (opt) msg.index = i;
+            if (!opt && ev.options.some((o) => String(o[1]).trim() === t || o[0] === t)) throw new Error(`单选项「${t}」对应好几个选项，分不清是哪个（可选：${listed()}）`);
+          }
+          if (!opt) throw new Error(`单选项里没有「${msg.value != null ? msg.value : `第 ${Number(msg.index) + 1} 个`}」（可选：${listed()}）`);
+          if (ev.recordedText === undefined) { ev.recordedText = ev.optionText; ev.recordedRadio = ev.value; ev.recordedIndex = ev.optionIndex; }
+          ev.optionIndex = msg.index;
+          ev.value = opt[0];
+          ev.optionText = opt[1];
+        } else {
+          const list = Array.isArray(msg.value) ? msg.value : [];
+          const opts = list.map(optOf);
+          const miss = list.filter((x, i) => !opts[i]);
+          if (miss.length) throw new Error(`下拉框里没有选项：${miss.join('、')}（可选：${listed()}）`);
+          if (ev.recordedValue === undefined) ev.recordedValue = ev.value;
+          ev.value = opts.map((o) => o[0]);
+          ev.optionText = opts.map((o) => o[1]).join(', ');
+        }
+        await persist(true);
+        if (!c.state.recording) await syncLibrary(c);
+        return { ok: true };
+      }
       let v = String(msg.value == null ? '' : msg.value);
       // 下拉框：填选项文字或值都行，存成选项的值
       if (ev.type === 'select') {

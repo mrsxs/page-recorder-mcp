@@ -323,23 +323,40 @@ const SEC_NAME = { path: '路径', query: 'Query', body: 'Body' };
 function renderParams(A) {
   const box = $('#paramBox');
   if (box.contains(document.activeElement)) return;
-  const fills = A.steps.filter((s) => s.param && (s.type === 'fill' || s.type === 'select' || s.type === 'upload'));
+  const fills = A.steps.filter((s) => s.param && (s.type === 'fill' || s.type === 'select' || s.type === 'upload' || s.type === 'check'));
   box.hidden = !fills.length;
   if (!fills.length) return;
   box.innerHTML = '<div class="ptitle">输入参数<span>回放时填进输入框，接口里关联的字段会跟着变。想搜别的内容改这里</span></div>' + fills.map((s) => {
     const n = A.steps.indexOf(s) + 1;
-    return `<label class="prow"><span class="pname" title="${esc(s.desc)}">${esc(s.param)}</span>
+    const from = `<span class="pfrom">步骤 ${n}${s.frame ? ' · iframe' : ''}</span>`;
+    const name = `<span class="pname" title="${esc(s.desc)}">${esc(s.param)}</span>`;
+    // 单选、复选框、多选下拉框只能选组件里已有的选项：用下拉/勾选列表，不让手填
+    const opt = (v, t, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(t)}</option>`;
+    // 单选按序号提交：值可能重复（没写 value 的单选框都是 on）
+    if (s.type === 'check' && Array.isArray(s.options)) {
+      let cur = Number.isInteger(s.optionIndex) && s.options[s.optionIndex] ? s.optionIndex : s.options.findIndex(([v, t]) => t === s.optionText && v === s.value);
+      if (cur < 0) cur = s.options.findIndex(([, t]) => t === s.optionText);
+      return `<label class="prow">${name}<select data-param-step="${esc(s.id)}" data-param-index="1">${s.options.map(([, t], i) => opt(i, t, i === cur)).join('')}</select>${from}</label>`;
+    }
+    if (s.type === 'check') return `<label class="prow">${name}<select data-param-step="${esc(s.id)}">${opt('true', '勾选', s.checked)}${opt('false', '不勾选', !s.checked)}</select>${from}</label>`;
+    if (s.type === 'select' && Array.isArray(s.value)) {
+      return `<div class="prow">${name}<span class="pmulti" data-param-multi="${esc(s.id)}">${(s.options || []).map(([v, t]) => `<label><input type="checkbox" value="${esc(v)}"${s.value.includes(v) ? ' checked' : ''} />${esc(t)}</label>`).join('')}</span>${from}</div>`;
+    }
+    return `<label class="prow">${name}
       <input data-param-step="${esc(s.id)}" value="${esc(s.sensitive ? '' : s.type === 'select' ? s.optionText || s.value || '' : s.value || '')}"${s.sensitive ? ' disabled placeholder="密码不保存，回放时通过参数传入"' : s.type === 'upload' ? ' placeholder="本机文件完整路径，多个用 | 分隔"' : s.type === 'select' ? ` title="${esc((s.options || []).map((o) => o[1]).join('、'))}"` : ''} />
       <span class="pfrom">步骤 ${n}${s.frame ? ' · iframe' : ''}</span></label>`;
   }).join('');
 }
 $('#paramBox').addEventListener('change', async (e) => {
-  const inp = e.target.closest('input[data-param-step]');
+  const multi = e.target.closest('[data-param-multi]');
+  const inp = multi ? e.target : e.target.closest('input[data-param-step],select[data-param-step]');
   if (!inp) return;
-  const r = await send({ type: 'setParam', id: inp.dataset.paramStep, value: inp.value });
+  const value = multi ? [...multi.querySelectorAll('input:checked')].map((x) => x.value) : inp.value;
+  const r = await send(Object.assign({ type: 'setParam', id: multi ? multi.dataset.paramMulti : inp.dataset.paramStep, value }, inp.dataset.paramIndex ? { index: Number(inp.value) } : {}));
   if (r && r.error) { showNotice(esc(r.error), 'error'); return; }
   inp.blur();
-  toast(`已改成「${inp.value}」，回放和导出的脚本都会用这个值`);
+  const shown = multi ? [...multi.querySelectorAll('input:checked')].map((x) => x.parentElement.textContent).join('、') : inp.tagName === 'SELECT' ? inp.selectedOptions[0].textContent : inp.value;
+  toast(`已改成「${shown}」，回放和导出的脚本都会用这个值`);
   await refresh(true);
   renderApis();
 });
@@ -612,7 +629,8 @@ function renderLibrary() {
   const paramRows = (x) => {
     const ps = Object.entries(x.params || {});
     if (!ps.length) return '';
-    return `<div class="lib-params">${ps.map(([k, v]) => `<label><span>${esc(k)}</span><input data-lp="${esc(k)}" value="${esc(v)}" /></label>`).join('')}</div>`;
+    // 多选参数是数组：按 JSON 显示和提交（["apple","cherry"]），不拼成逗号字符串
+    return `<div class="lib-params">${ps.map(([k, v]) => `<label><span>${esc(k)}</span><input data-lp="${esc(k)}"${Array.isArray(v) ? ' data-lp-json="1" title="多选：选项组成的 JSON 数组"' : ''} value="${esc(Array.isArray(v) ? JSON.stringify(v) : v)}" /></label>`).join('')}</div>`;
   };
   $('#libList').innerHTML = list.map((x) => `<div class="lib ${x.id === data.state.id ? 'current' : ''}" data-id="${esc(x.id)}">
     <div class="lib-name">${esc(x.name)}${x.hasDocs ? '<span class="tag">AI 已解读</span>' : ''}${x.id === data.state.id ? '<span class="tag">当前</span>' : ''}</div>
@@ -648,7 +666,17 @@ $('#libList').addEventListener('click', async (e) => {
     b.disabled = true;
     b.textContent = act === 'query' ? '请求中…' : '运行中…';
     const params = {};
-    card.querySelectorAll('input[data-lp]').forEach((i) => { params[i.dataset.lp] = i.value; });
+    let bad = '';
+    card.querySelectorAll('input[data-lp]').forEach((i) => {
+      if (!i.dataset.lpJson) { params[i.dataset.lp] = i.value; return; }
+      try { const a = JSON.parse(i.value); if (!Array.isArray(a)) throw new Error(); params[i.dataset.lp] = a.map(String); } catch (e) { bad = bad || i.dataset.lp; }
+    });
+    if (bad) {
+      b.disabled = false;
+      b.textContent = label;
+      card.querySelector('.lib-out').innerHTML = `<pre class="result">${esc(`失败：参数 ${bad} 是多选，要填 JSON 数组，比如 ["选项1","选项2"]`)}</pre>`;
+      return;
+    }
     const r = await send({ type: 'libRun', id, params, mode: act === 'query' ? 'api' : 'ui' });
     b.disabled = false;
     b.textContent = label;

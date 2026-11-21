@@ -115,6 +115,8 @@ button.sm { padding: 2px 9px; font-size: 11px; }
 .parambox .ptitle { font-weight: 600; color: #1e3a8a; margin-bottom: 4px; }
 .parambox .ptitle span { font-weight: 400; color: #64748b; margin-left: 6px; font-size: 11px; }
 .parambox .prow { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.parambox .pmulti { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.parambox .pmulti label { display: inline-flex; align-items: center; gap: 3px; }
 .parambox .pname { flex: 0 0 auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1e40af; }
 .parambox input { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid #93c5fd; border-radius: 4px; font: 12px ui-monospace, Menlo, monospace; background: #fff; }
 .parambox input:focus { outline: none; border-color: #2563eb; }
