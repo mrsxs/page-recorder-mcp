@@ -865,12 +865,23 @@
     if (now === lt.text && !added) return; // 显示没变：级联的中间一级，或者点了已经选着的那一项
     // 级联点得慢：上一级点完显示就先变成了它（已经录成一步），这一下点的是下一列：把那一步改成整条路径
     const cs = lt.cascStep;
-    if (cs && entry.el.parentElement !== cs.col && !claimed.has(entry.id)) {
-      cs.texts.push(optText);
-      cs.col = entry.el.parentElement;
-      cs.members.push(entry.id);
-      claimed.add(entry.id);
-      entry.done = true;
+    if (cs && entry.el.parentElement !== cs.cols[cs.cols.length - 1] && !claimed.has(entry.id)) {
+      // 按列记路径：这次之前还没并进来的几下（显示没变的中间一级、回到前面某列换了分支）按时间顺序过一遍，
+      // 点在已有的第 d 列就把第 d 级及以下换掉，点在新列就接在后面；原始点击都留在 members 里给原样回放
+      const steps = lt.chain.filter((e) => e !== entry && !e.done && !claimed.has(e.id) && e.at > cs.lastAt && e.at <= entry.at).concat(entry);
+      for (const e of steps) {
+        const col = e.el.parentElement;
+        let d = cs.cols.indexOf(col);
+        if (d < 0) d = cs.cols.length;
+        cs.cols.length = d;
+        cs.texts.length = d;
+        cs.cols.push(col);
+        cs.texts.push(e.text);
+        cs.members.push(e.id);
+        claimed.add(e.id);
+        e.done = true;
+      }
+      cs.lastAt = entry.at;
       send({ type: 'updateEvent', id: cs.id, patch: { value: cs.texts.join(' / '), members: cs.members, commitTs: entry.at } });
       lt.text = now;
       if (!entry.el.matches(HAS_CHILDREN) && lastTrigger === lt) lastTrigger = null;
@@ -939,7 +950,7 @@
     lt.again = true;
     if (pick === 'date' && sid) lt.dateStep = { id: sid, members: members.slice() };
     // 点的是级联里有下一级的节点：下拉还开着，接着点的下一列并进这一步
-    if (!multi && pick === 'choice' && entry.el.matches(HAS_CHILDREN) && sid) { lt.cascStep = { id: sid, members: members.slice(), texts: String(value).split(' / '), col: entry.el.parentElement }; return; }
+    if (!multi && pick === 'choice' && entry.el.matches(HAS_CHILDREN) && sid) { const texts = String(value).split(' / '); lt.cascStep = { id: sid, members: members.slice(), texts, cols: texts.slice(1).map(() => null).concat(entry.el.parentElement), lastAt: entry.at }; return; }
     // 多选下拉点完面板还开着，接着点的下一项也是这个下拉的；单选选完就结束
     if (!multi && pick !== 'date' && lastTrigger === lt) lastTrigger = null;
   }
