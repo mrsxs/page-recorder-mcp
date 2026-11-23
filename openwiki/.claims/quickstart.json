@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:105ff7a5d97e3b915bb37c975f8dd6b5fd028dafdbf4c319a7fcea44c50065eb",
+  "claims": [
+    {
+      "id": "claim_5dee28040f0e4c3dabd2d92beff0cab9",
+      "statement": "项目要求 Node 18 或更高版本，并通过 npm scripts 直接启动桥接和运行测试。",
+      "evidence": [
+        {
+          "resource": "repo://package.json#L38-L45",
+          "version": "repo-lines-v1:sha256:674871ab442a03d4751b21b9c2e879bf9e18f7254df068b439f39a37d188c44f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWY2MDE1NTQxMjJlZmU4NTVkNTZlMTBjYzliYWYyMDMxY2EzZjRhYjExY2RiYTIyZjFlYmM1ZDM5YTc1NTgyNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjdlNTc4OGQ1ZDlkNzNkMjRhODFkYmMwYTVhNzRiZmE4MmM5YzNiM2FmOTllNTJhZjc5NmU5MGI0NjhhOGEzZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2MxODk0NmU5NTA3MDM2NjljODdlZDc5NGY2NzEzMjUwNzlkYjc4OTkwODc0ZTRkYjVlMDNjYzhmYzU5YjhhMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_921b650a566c46ff9af2ea8a8f7d26cd",
+      "statement": "桥接默认监听 127.0.0.1:17321。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L80-L81",
+          "version": "repo-lines-v1:sha256:85fbb9f05d3f82fa87a5c898d4726ee05fd06e1ca67ff55319ed2ca7394e49a4:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQwNWJhYjg5OWFkOTdiYjM1MjU0N2VmODEzMGYwOTA3ZmMwNzhmN2UwNzliMzIwMThlNjQ2ZmFhYjFmZTM1ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjk3ZDRmOTJkMjcyYmU1OGI4NWQzYmZkMWExZjcxYzY1MTU5NDUxOTZiMjVkNzZkYTM5ZDQ4ZTE4ZDJiOTVhYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGZmNWQ2MGM2OGZmMzhjMTM5ZDcxYmQxOWM3ZjJjMmYxMzE0YmQ2NTM1YjM0ZmY2OGQyMTI1OTYxYTBkN2VkOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWYxNjdlNGM0YzIyNTczMjE2ZmM4M2I2ODU2ZDFjNjA2ZDgzMmUyYWJiMzRlNDdlM2U3YmQ3OWNiZjNlNzM5NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a2ef2072db5447c390690b75fd3e5a41",
+      "statement": "/api/status 返回桥接版本、进程号、扩展连接状态和浏览器列表。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1806-L1809",
+          "version": "repo-lines-v1:sha256:e2382aecb9f18c14aefd632ec77bb889df5b7ee58083e5a75ed8ee334330731f:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWViNDhhMzg4MzhjNTE0NDY2YjVhYjg3YTM5NTRiMGVlNTFmZTk1ZWI2NTljNTIyZjAyNTA0NDkxY2ExY2MyZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmUwZDk4YzY2NzZiNmU3NWU1Njc4YWVkYzVjMzA2ZmMyZjBiNzMzODdhMTAzYmUxMzgzMzExMTA1ODZiNjQzNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzA4NjgxYzI2MmU2MzY5MjYyZDgzZTY3ZTA1ZGE0ZDI3MTEwYWQ3YzNlZDkyODU0ODk1YmIzMGIwZDVhMjg3NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWVjNzk4MDRhODFjNzRhODY2YzQzZWIxODc1OTM3MzUxMGEwOTQyMjUyNDY3NmJiMzljNzQ1N2FjY2U1ZWJiNiJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L693-L693",
+          "version": "repo-lines-v1:sha256:f94deaf898ba71d9820d5044345c9094c2c08f03107931e1a22b7041658e590c:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0ZGVhZjg5OGJhNzFkOTgyMGQ1MDQ0MzQ1YzkwOTRjMmMwOGYwMzEwNzkzMWUxYTIyYjcwNDE2NThlNTkwYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0ZGVhZjg5OGJhNzFkOTgyMGQ1MDQ0MzQ1YzkwOTRjMmMwOGYwMzEwNzkzMWUxYTIyYjcwNDE2NThlNTkwYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDUzMDlkYzFlMDMyNzg2OWQzZDFkZDFlYjY3MGIzNjAyYjg1NmQ0OWY3ZjZjODY3ZDI4NTYwYjg0NGYyNGMyNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGMxNTkzNzBjYTUyN2U2ZDdiZjEyY2Y1MzIxYmRiNjAwOGE4NDhkZWZlMmM0N2YxYTliNWMyNzQ3MmYwMzk2YSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_6548169e9362465f98a855e76b869272",
+      "statement": "扩展默认启用桥接并连接 ws://127.0.0.1:17321/ext。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L20-L22",
+          "version": "repo-lines-v1:sha256:4c8155c2340a95b886e40e720aa756c4689f9091b3eb325298f17970a9bed944:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGViNTgxMzU1ZDhjZmY0MjYwNGRkYjI0MmNjOTU5ODg4NTJiOTM4ZjVjY2FlNThhZDA3NDRmN2MzODc3MjdmOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2UzMThkYmEyZTMyNmJhYWEyMTQxNDJjNTVlNDI0NTNkODlmNDJjZWI3Mzg0MmMzY2FjZTFhMTZkNDUzOGI2OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDYxNmYxMWU3N2VlMGEzNDNiYjAxY2ZmMzNiNDg3ZWUxNjBlM2ZmOTI1ZmIxYWE4NjIyZGU5NzlhMThjMGFmMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzNhNmIzYjFiMGY0M2E1MmRlMzUxY2RlNjcxODM4OGVjNjk1NDNlZWUxZjY5OTRhMDA4Y2RjMGYyMDRkNzljMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_fd34715e88a9465c99fb3f0e61a12f01",
+      "statement": "内容脚本在 http、https 和 file 页面的所有框架中以 document_start 注入。",
+      "evidence": [
+        {
+          "resource": "repo://manifest.json#L37-L66",
+          "version": "repo-lines-v1:sha256:1b22f638d33e3ab1c98e8b952751547532eee66a1550a75d655fe2a1c91c432a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MjA1YjhlNTFhNjVjOGVhNTZhYWJjZTY2ZjBiMDA1NjA1NGIzYmQ5YmE3YmI1ZjEyNzlmMDgwNjI5NTRlYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjZmQ1YWZhZWYzMDM0MjBlMGU3YTM4Mzc1ZWU5M2JiZDMzOWFjNTg2OTg5Nzg5OWZlNzUwMDJkMmJlOGE3ZjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3ZjY5OTZlM2IxNWRmYjQzODYzMDAxYzcyZDNhNTM5ZGU3MGUzOGUyYTllZDIwZGU1OTExMDRhODI4NjRmNjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0174235287254792910cdd3948b6d9ad",
+      "statement": "stdio 模式会复用或拉起后台桥接，后台桥接在启动程序都退出后关闭。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1967-L1975",
+          "version": "repo-lines-v1:sha256:748c097e3599ebc128954e72226d018c79d7054af96efedfd9997e3b1b9f236d:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWYzMjlhZWQ1MTUyZWQ4NzJiYmJkZDhmODNkYzFmZDI5ZWVhOWYyZjIzZDIzYjRmNThlZWU2NTRhZTA1MDgxMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmM5OTdkZTUzMWI3YTFiMmI3MjUyYWU5ZTk5YzkzOWI5NzgzZjhjNTUzYzAyNDgwYmRmMjQyYjY1MDE0YTA5OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTE3MzcwODY4NGNjODEzNzNiNGQ2MDRlYjcyYTVmMTEyNWRhOTBjZDU1ZWUzZjQ2ZjU0YmQ3NGJkNzk1YjRhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjY4MTMyN2ExOWM2NGZjYzI5ZTBlYzYwNzI2YjY5MGQwYjcxYWQzNGZjYmIxNDA3MmNiZjIzOGZiMzEzZWY3MyJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L646-L656",
+          "version": "repo-lines-v1:sha256:2ad562002503be7e341e3b3f5ce2839a807e506860e6a70aa60943f6394865b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwNTdhMDE5NmQzZWM3YzdhYTYxOWQ0YzUyMjUxYjUyNzI0OWFhNzhjYTg0N2I4YjE4YzdlM2NlZWI5Y2I3YjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkYzNkMGE4MTYyZDg0ZTVmMjkzMjk1ZTE1ZWFjZjUyNDkyMjVlYjI2NzFkNjNlNzE5YTg0MWEwOTU4YzQ0ZGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1YmUyYTNjNTA2ZGUzM2QwNmRkYThmMzYwNzA5MGEyNjQ3NzQ3M2NhZDE3NDI2NDc5NmE3YmMxNmFhZTYwYmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7f104dd53ae4462cad19bc13c7ea5460",
+      "statement": "npm test 使用假扩展和 node:vm 夹具，不启动真实浏览器。",
+      "evidence": [
+        {
+          "resource": "repo://test/result.test.mjs#L1-L2",
+          "version": "repo-lines-v1:sha256:2ed2a2e17cd9305a4f3e8be32bc56f18e17d1521b3fc4037de1e39e92e03d31c:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzY2ZGZiODExMTdiMDE1N2MxMzk3MWY1NDM4ZWM2NWY2Y2M5ZDQ1ZDU1N2EzZjQzNjlkMWI2MTAzNzVhNGFjOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmRkNjhiZDA0NmM3MmY3MWIwNTU5NzcxYTYxMjY0MjZlMGVjMjUzMTEwYzhiNmFhMTQwOWI4YzhmZDE3ODFmMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTJlZjZjMzg0YzI4Nzk0ZjBmOTFjMGY2MTg2YTRjYTVhMWE3MWQwZWYyNGY0Y2QyZGE0OTc0MDEyNzZhYWVlMyJ9"
+        },
+        {
+          "resource": "repo://test/security-and-bugs.test.mjs#L101-L156",
+          "version": "repo-lines-v1:sha256:7f51322a11b11949b38f5cfd38cbe0ac105912ba013f680980fb21189aea8572:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxYmUxYzAyMDdmMGJlYWM3N2U2Mjk3MWY2MTlmNzUyNGNhZWU2MTQxNmU5N2VlMjE5MGJkZmNhYmM5ZjM0YTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY4ZTVmNTVkNmU5MmQzMmUyNTNhMGQ5YTNiNDU2MWE0ZDkwNGVmNWUyMTA3NjFkY2MxZDYxNDhmZDdkM2NkYTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkzZDQ3MWRmY2JlNzk5ZTU4NGU0YjRjYzE3ZmY5NmExMTJiMmIzOWZkYmYwNzE2OWYxOGM4YzNiYWIwODQ1YTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_158a0e00ee2b4029a817d89d6b47e44f",
+      "statement": "运行时主函数会被原样写入导出脚本，必须自包含。",
+      "evidence": [
+        {
+          "resource": "repo://lib/runtime.js#L1-L3",
+          "version": "repo-lines-v1:sha256:50b2cef35a2900fbde9e924f6c931de0c6b6c2ec4529292da4454ad8cb31a1be:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzA3MWZlZGVmMjFjOTk2ODAyNzBlOTNhZTI4MGE1NDgzNjM0MmY5NmE2NWRjZDkzOTZkNDhhNmMyMjE3NmJmOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTIwNjNmZDc3MjBjZDI2NzgzNTg5MjU4NTMyYmYzM2E2OTYxMmE4MDE0ZDVkMzExNWUzMzVjZTJhNTc4MWQ3ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzIxZjYzOTEyMTA2NGRlZmZiZTliOWI1ZGUxMDBkYjRmZWJkMjA5ZmUwYWQzZDk1MGE3YjNkMGY2M2I5NThkOCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_cd8b6160bea54484b2d41ee45e75d3d1",
+      "statement": "从带 .git 的源码目录运行时自动更新默认关闭，而脚本库同步不受这个判断影响。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L659-L680",
+          "version": "repo-lines-v1:sha256:eccf598402b6b6f3b241f13ba36fced4ee5f8e9cd7b5d0e766a14ffd15c14438:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljNTczZmM0MWEyOTQzYjZmODg3ZDY0NTEwOTMxODQwMTQyZjQ0YjIzODcyYmI0ODhkZTA2Yjk2NzYzODc0NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0ZDAxNTNjMGQwOWRjOWFiNjdhMzVlMmMwNzJkNGQ0Y2M1MGIxNGRmNDE4MDNkODg2YmExYjFkZjk2NWQwMzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlYzUyZThjYzYxODgxNTVkNjRjNWJiYWUxOWE1Zjk3ZmI3ZmM5YmFhZTMxNGNkZjVjYmJmYWM1MmQ2MWMwOTYifQ"
+        },
+        {
+          "resource": "repo://bridge/server.js#L689-L691",
+          "version": "repo-lines-v1:sha256:d7955aef1c82321909e2708b78fe5d7bc1b29ceb1fc31ba18764d695cc854286:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGY2ZjY4ZDkxNTVjNTYxNjBmMTU5NTU1YjJlMDhlM2RiZmVkZjBjZDFhMmE4NzBmN2QyYjIzOTZlYTYxNzUwMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjVkZThhOGIxOTU3ZTA5YmE1NDQ0MDU2MGQzNjEyYTk1ZDg2MzI3MzFlYjMyYTg5OTQ0MzQ3YjYyMjZkZWI4YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDRjNGViNDE1Mjk4ZTI5YzZmZWQ0OGRiZmQ4Y2I2NjE3MDhjNmFkMGI4NzYyOTNlYTRjZTVmNGQ2YmQxNGRhZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWExN2JlNDAwNDNkZTI1NDA4ZDI5YTY3NTYzNTNmYTkwOGFmNmVkY2IwOTgxZDYzYjkxMDc3MWFjNGNkOTQ4OCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-23T04:07:50.896Z"
+  }
+}

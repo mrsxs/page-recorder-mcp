@@ -642,7 +642,24 @@ $('#btnPasteDocs').onclick = async () => {
 };
 
 // ---------------- 脚本库 ----------------
+// 本机目录里有、这个浏览器没有的脚本（重装扩展前的、别的浏览器资料的）：由用户决定要不要放进来
+function renderLibOffers() {
+  const offers = data.libraryOffers || [];
+  const box = $('#libOffers');
+  box.hidden = !offers.length;
+  box.innerHTML = offers.map((x) => `<div>本机保存着 ${Number(x.count) || 0} 条脚本（${esc(x.profile || '未命名资料')} · ${new Date(x.savedAt).toLocaleString()}）<button data-offer="${esc(x.owner)}">恢复到这个浏览器</button></div>`).join('');
+}
+$('#libOffers').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-offer]');
+  if (!b) return;
+  b.disabled = true;
+  const r = await send({ type: 'libRestoreOffer', owner: b.dataset.offer });
+  toast(r && r.error ? '恢复失败：' + r.error : '正在恢复，稍后出现在脚本库里');
+  await refresh(true);
+  renderLibrary();
+});
 function renderLibrary() {
+  renderLibOffers();
   const list = data.libIndex || [];
   $('#libEmpty').hidden = list.length > 0;
   if ($('#libList').contains(document.activeElement) && document.activeElement.matches('input')) return; // 正在填参数，别刷掉

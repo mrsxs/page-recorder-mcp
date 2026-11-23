@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:335c93e91e18f8fbd0496d1f1985d67549a3c3343ca43a5091fe6c6a385d2634",
+  "claims": [
+    {
+      "id": "claim_af40447c29074baea7f3ac784346bd17",
+      "statement": "弹窗每 800ms 通过 getData 从后台刷新状态。",
+      "evidence": [
+        {
+          "resource": "repo://popup/popup.js#L25-L30",
+          "version": "repo-lines-v1:sha256:1be30af11964162e2a62ef1b31b3cbb30cb8c480006969ee9e900e7daaebf4ac:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTJlMDY5ZTg3NDY5N2E1MjhmZjFlNzRkNTZkZjJiN2NiMDA0YWQyMTI2YzZiZGQxNWI1NDk3OTdjMmZjNGMyNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg2Yjk3MjRiZWIzYzE5MjE1YzNjOTZmYTc5NjdlNjIxN2Y2YjAxYmU4YzQyODY4ZDgzYTEzZTBkYTJmZmU3MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDE1YTBiYmUxMzYzNjM4N2ViZTM5MzVkNjYxYmE2MGZmNjg3YWVjMWQ2NmI4MzNjNGMxMDQ2YWEzOWY5NzcyOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQwMjI4YTJlNTQ0YTg1MmE4ZjMwMmMyYmJhNjI3MGQzNTI2Nzk2ZGI5ZWI0NWUwZWRiMDY0OGZhNDBhNjc2YyJ9"
+        },
+        {
+          "resource": "repo://popup/popup.js#L781-L781",
+          "version": "repo-lines-v1:sha256:58e035444700d0893e1b5bb7c2eb258cbf3a580d0700767dcc690ad785343af5:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNThlMDM1NDQ0NzAwZDA4OTNlMWI1YmI3YzJlYjI1OGNiZjNhNTgwZDA3MDA3NjdkY2M2OTBhZDc4NTM0M2FmNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNThlMDM1NDQ0NzAwZDA4OTNlMWI1YmI3YzJlYjI1OGNiZjNhNTgwZDA3MDA3NjdkY2M2OTBhZDc4NTM0M2FmNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzhhN2JiNTk4MGYwNDE4NjU5ZmRmOTU5Nzg5Mzc0OWRjNzE1N2YzYTAwOTZmZDZiOTJjMjEyYzhkNTVkMzYzNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDlmYWM1YTMwMzliYmFkMjg3YWM4MTVkNTMzY2YzYWJkNGI0MjE3OTIwY2JlMmM5M2JiMzRhNmUzMDAwMzE0MiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_45b8b7e75cbd41c096e93b0cab3b0c2e",
+      "statement": "当前录制存在 state、events、apiOverrides、aiDocs 等键中，脚本库由 libIndex 和 lib:<id> 组成。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L170-L171",
+          "version": "repo-lines-v1:sha256:8a652f9b171bfc063adc6bb3df6f8ec3b3703f89c45c8663060fbee00c3cc9ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzc5MWY0YjkxODU3NzgzZThhMDY2ZTNmOGZiYTI2NTU4ODc1NDNiNWY2ODcyZGMxZDcxZThjOTdkYzY2MmJlNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWYzZWFjYTRhNGMxODU4ZjQ3NWNhNTg1NmExZWM4MTM1NjNlMTEyMDk4Yzg5NmI0Yzc4MDAzYTdiMzJlZDY0OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWQ0NGUxZTNlZDdmZmI5OWU4ZDNjZWQ2YjMxZGZiM2VjZjBlNDJmZGMxNGViZmM5ZTQwYzg4ZTMyZTU3Yjc1YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTljZDU5N2E4MzI0ZmY1NjRhMTc2MmZjMzM2MTBkMjM2MTA3MWRkODQ2NDBmMDU5MDZjNmZlYmI0ODM3Y2EwYiJ9"
+        },
+        {
+          "resource": "repo://background.js#L43-L49",
+          "version": "repo-lines-v1:sha256:6509bd2e90c4d8b4707d693c4f946ca44db04a2e5fb363bf626088c0786bbdb2:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTM1MmM1ZDdhMjg0NzdhZjEwNmM0NWM1NTA4NDcxYmFlZDdhNjI2MWFhNjQwYWE1NzhkMWFhNzY2NjgzNDczYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTljMzFiNjgwMzg5ZjgyYjI1NmM4NTFkOWRiODI0MjYzNWUwYzFiZmE0Nzc4MGZlZGMwMmY5YWI3MWQ4NWQ0NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzcwMWU1OTdiN2VmMGMzYzcxODAyM2NhZDc4YTBlYTQ0MmMxY2NmNmViNTNiNDAxZmQ2YTcxY2YyNWVkZWI5OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDcxMjQwZWJjYWYzMmM5Y2JhODdhOWQ3OTJjMjk3Y2IzZWRjYjgwY2YxN2EwNGM5Nzc5ODBiNWUwNjRhZWFhMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_9415f457bddc4e5b8a3cdd129b041307",
+      "statement": "普通持久化有 400ms 防抖，persist(true) 立即写入。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L69-L75",
+          "version": "repo-lines-v1:sha256:d3bbc22ebcefb5ffb52825fceb494a2ee185ad758836a596b37fb72f7b29aba3:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2RjNjAxZjcxOWFkNmI1ODE1Mjg2ZmY0YmU1ZjU1M2ViYTZiYjY5ZWRjM2Y3NDA4M2M4NjYwYTg1NjhhMTdiNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWMzNTVlMGVkMDg5Zjk0OTA4Y2ZmMDFlN2EwNDQwODgzNWJlMWE4YTdhOWI2YWY5OTM2YzJkZGIxZjU0NzRlNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2FkNzJkMTU5ZWEyNzcyZmUwMDEwZTZiMzZmMmQ5Nzc2NWVjZTA1NDgzYzQ5NTNmYjcyMDY5ZGJlNTI3OTM5NCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_780bdbaff34a442c98a34694f315e5f1",
+      "statement": "录制事件被删光并同步脚本库时，对应的脚本库条目也会删除。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L147-L157",
+          "version": "repo-lines-v1:sha256:2cc8a142ee395bf7e0b437c7bb24253bddeae20ea929c872ff42ab482233827d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlOGM4ZTQ2NzJmMjA3ZWY1Nzc0NGI0MGJkMjMxY2Y1OWU0YjE4ZDhhNmQ0MjNmMWJjMDg1Y2NmZDQ1YTA1ZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjMTZmMGQxMWZlMjNhYWU3ZjNkNmEwNDgzMmQxMTEyOTdlZmE3NWY3Yjg4NTQxYmI0ZjY2NmQ4MzZiNjcyN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNTc3YjE0Mjg3NjhhZTI3NmNlNTkxNjY3NTFmNDk0N2I0NWJhMGI1OWM0MzMxM2UwZDkzZjk2Y2NkZjdlN2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8421c73715e74fec9fd239be90ebde58",
+      "statement": "录制进行中不能把脚本库条目载入为当前录制。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L2217-L2226",
+          "version": "repo-lines-v1:sha256:c37e876b83a2dc593770b011f54cdf1cb312f233f05b6c3752385c9b66ddfb87:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NmQyZTFiNTc2NjNlZWY4NGRkOTM2NjA0ZGRhMWRhYjNjMzljYzIzNjk2ZmQwZDc3MjljNzBhZDE3ZTQyZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI4MWMxZGU1MmUzMTE2MjkzMWQ3ZjQ5N2Y1MjNjOTk2ODI4MjdhNTljZGM5ZTc4NjJiNjBjZmY2NDQ0ODk3YjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQwYWNhZTNmNmU5OTFlNzZhM2Q2MThlZGM5NzQ4NzFhY2RjMDgxMmM3OGE4NmJlNDM0YzdjMGNmNmQ4NDdkOWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a97d7ab99a264314b7c0ca88ea9b8b97",
+      "statement": "删除开头的顶层步骤时，起始地址改为剩余第一个顶层步骤的地址，并解除被删语义步骤成员的归属。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L2042-L2058",
+          "version": "repo-lines-v1:sha256:b649ba5b2462013192062b419abdf4df85ad079b8960879370b9da6fb5fe1dff:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlOWY3MTBiMTkzN2UwZDFjY2Y5YzAxOWE2NTJkMmYzY2Q4NDJhOWIwYzYzYjhiMzE1NDg5Mjc3YzVhYzBhNzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1YWFiOWJiYjljNWVhYWE5NjRkODAzMWVmNTM0YzBiZDU2NjJiMDgwOTAyODg5ODgyZmMwN2M3NDUxODJlNTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmMGRlMDE5MjVhYWRmMjVmYjcwZTY3MmZkYzg3MTYxYmExN2I0ZWY4NzMwNjFlZmQ4ZTA0MTQ4MjIxMmI1M2UifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_49087606395044e2a2a77423fc40e7b1",
+      "statement": "setParam 对复选框、单选框、原生下拉和多选下拉只接受组件已有的合法值。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L2064-L2115",
+          "version": "repo-lines-v1:sha256:6ec9435a6f19acc68f1b08b07a9f08ab56f5824ec32934325dfd21fb091d3895:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOTE5ZWI4NjViNGFlMWE2NDI4OTlmNWI3ZDdjMGUwZTMwYjg1MGExZTNhNDgwOGZlNzA4NzVlOWZmOTU0YmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliNjJmNjBkODU5MGE1NzljZjQ2ZjhkNjczNzhjNGM1NzJiOTYyY2VjY2RiOTBjN2E1ZjdiNDJiOTYwNzgyYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxZWU5OWJkZjQ5NDYyZWQ2ZDgxZTc1NTg0OTc0ZTc1OGExZTNhZjQ2NGU3OTMwMTJlNjcwMzMzYWVlZDllNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3ZGZmNDJjODI5N2I2MjA2NDllMzdiZDg2MWJkYWJiM2Y0MTk3NGJkYjYwMzgzNTkyNTQxOTYyYzY1ZjdlZjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4ef2214466241c79e71c61ece7d478b",
+      "statement": "弹窗的“AI 可调用”写入 aiDocs 的 ignore 标记，工具 schema 会排除 ignore 的接口。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L623-L624",
+          "version": "repo-lines-v1:sha256:19478623b1c952d536a274c28abe5a11d37322e1422d728758f76c352a41d84a:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzFkYTYxMGViNTNjNTI0MTcxMTYzZmFlM2JkYWUyNjAwNjQ5Njk5Y2YyMWU2ZmY0MWI5OTI5NjIzYzQ2NjRkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTM4ZmRhZTQ2NzVjMTkzNjg0NGEyMGEzZmRkMzE3MTA0ZTk0ODhlZGJkNzkwZWRjMDllZGIxNDJjNTExOTMxZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWMwOGNiN2I4NTQ5MjY0ZjE1YjI0YzIzYTM5MmI5NDZiMzQ4MzVlMzIwODU0ZTBhYzVhMDUzM2M1NmM5YzM2ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDdlNzlmOTM4NTNkOGE5MGMxYTBlMDQ0Nzk5OWJlNjdhYWRhNTFhMzg3ZWU4NTg0YTY2Y2RiOTM0MzJjYTIxYiJ9"
+        },
+        {
+          "resource": "repo://popup/popup.js#L430-L438",
+          "version": "repo-lines-v1:sha256:06373d6e0763d706a723c70ff63e2f310cd7eb4d11e37127e39b60d18c2c2f1f:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjNlODkwNzI1MDNmYmExNjNiZjdlMzJhNTgwYzI1ZjU1Y2ExZjk0MmNlMTc3MzQ1MWE3MjhlZDQ0ZTE2ODFmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2Q1OGEyNDgyZTA1NDQ0ZWFmMzkxZjg5ZDAzOWNiNDU4NWZkMDFlNjA5NzUzYjY3NzMxOGQzNzQ5ZGQ5Zjc5ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmJjODBhZDZkMzVmOWQxZGZmNTIwMDkwNWQxNzJlM2M1Y2NkZTE1ODI5ZGEwM2VjOWI0N2UxZDkwN2EwYjk3MSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_c43f8a3caa104c598be5d7a189478b72",
+      "statement": "AI 解读后台任务每 20 秒保活，5 分钟后中止，并把状态写入 aiStatus。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L612-L654",
+          "version": "repo-lines-v1:sha256:0895a24833fd7c6d554b0e97e0580320026909c09a59ae5be444188ff814ef90:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiNGE4NWU1MjlhYzdhMDRkNTcxMWZkNzIzYmM2OTVlNjhiYzllMjcyZTJlNWE3MzRkYmViNTRiMGExYzU5MTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxNWNhNGFlYTdmZGY5M2FmMWFhZjU4YjY3MjdjZWE3MjYyNTcxMzIwOGZjZjc5NzY4NjE0NTcyMWRiZTIwODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2NDVjMmEzNjA4NjMxMDUyNDNmZGYwMWYzZGRjMGMyMDVjN2M2NjIzMmRiMGEyNmJmODI1NDgzY2YyOGZkMjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e2cac14e75784b0fbade76db181f260f",
+      "statement": "AI 请求优先使用流式，服务返回与 stream 相关的 400 时退回非流式。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L570-L576",
+          "version": "repo-lines-v1:sha256:358fdb39c3cdf7d4174d56132d6fd6c9072125e644a3cd1c4301f73f044e347e:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDQwMWE0MTM1OWJkMDZjYWNmNjZlMmZjMDVmMDNhZTIwYThlMzU5MzMzN2JiNmE5NzBjY2I5Njk5NWI3YTlhMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjdlNTc4OGQ1ZDlkNzNkMjRhODFkYmMwYTVhNzRiZmE4MmM5YzNiM2FmOTllNTJhZjc5NmU5MGI0NjhhOGEzZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjMzMWM1YmZkNGEwNzg0YmZkY2UyYmU5OGNmOWQwYjU1ZDdhMTNiMDE4NzJiODRkODViYTcyZjkzMDY3OWM2MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjY2ODA2YmU1MTBhNzdiODhhMzU3MzljM2Q3NzUyMGFkNjlmMzNhZTBhZTMxNTU5ZGJmMGU2ZDg4MTIwMTRmZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_f1344b124a0f4cfa841bca9fc9db8c91",
+      "statement": "后台重新加载时把残留的 running AI 状态改成被中断的错误。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L50-L53",
+          "version": "repo-lines-v1:sha256:9d09d74714c2b9863b0fc6472f95597a859c4cea341e85ab9eccaf6377b09e90:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjY0MDE0ZDIzZWViMDc3OTgyZWQzN2QwZDgyNDJmMWUyYzA1ZjQyZmUxNjVmNmMxMjU5YTZkNjIwYTU0MDk5OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWNiNzUxYzc2NmViZWNjYmE4N2IxNjM5MWIyM2VlNWY2NDg0ZTUyZTc5OWM1ZGQwZmMzY2I5ZmUyMTU1Njc3YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjljMTI4ZjFhYjJhZDJjYzczNzI3ZDZlZDQ5MGQwNWZmNGE0NGJkZjcwYzhjYWIwNDEwNTU4YmVjZTFiYzYxNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmVmNmYxYjlmMzViN2ZhYjc1MzVkOGNiMGEzY2EyOTI1NTI1NTMzN2IzYTE2YjliY2Q3ZjFmNGM4YTA5NGJlMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ec1df8db79024a8290641403a135b33e",
+      "statement": "录制包导出不包含设置，并对请求、步骤地址和接口覆盖值重新脱敏。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L1697-L1711",
+          "version": "repo-lines-v1:sha256:33312feca481bab8fcd974e603702de12c12bd83265e418aab1116ca6acaa95e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1YzZhZWY5NDc4ZDY3MDM2Y2JjZTFiODc3ODFkNjU2MDVlOTk2NjczMjZlMTIxN2Q3NTZiM2FjMWRmODhjNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjMDE2NDJhN2RjYjk4ZWFmY2Q4NTE5NTA2NzgxNzVlMTQ1NTBkN2E5NWMzMmMxYjIxMWVmZmZiY2Y4ZWE1NDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkzMTI4ODc2YmMyM2EwMTkyZmM0M2JhMzg1YzBlZTI2ZmVjOWUwZWI4MzgwMzA2YmExYzlhN2QyNDZiYmI5ZjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_de50a7cb17d44e6b9451c9fd303bef05",
+      "statement": "导入录制包时校验格式、版本和事件，清空上传路径，拒绝带内嵌凭据或非 http(s) 的地址，并生成新的 imported 条目。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L1712-L1746",
+          "version": "repo-lines-v1:sha256:041e35eaa2566d2933f97391336ff70efabdfb05ba72157b1c3040ffca9369b7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjMTc2YzNmMTg2Yjc3NzViOWJlNDhmZDI0ZDcwNjkwODM2ZDMzMjA4ZTNjNDEyYmY0ZTc4ZmQzY2IzM2NhZGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIxNTUzOWEwM2Y2Yjk3MTAyNDFiYjIxODgxZWQ2MGM3M2RkY2E1MTdlODliZDk1YWRmN2M0ZWYzYTkyMjg3MzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxNWY5YzFlODM5ZjE1NTlkYTU2ODZjOWQxYThlYmNjZjdkMGVhOTkzZTEyZGU0ZDk2NmQ1OGRiMjZjMjRhNzEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7b565b995d714c4aa17eb8b8a6dad116",
+      "statement": "弹窗删除脚本和事件被删光导致的删除都会写入 libDeleted，该记录最多保留 1000 条。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L151-L157",
+          "version": "repo-lines-v1:sha256:7add1b43b2a87085cbb5d0c3ff95e44364cfd7349e79cc2585b1577627ce1bd0:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTAxYTQ1OWEwY2ExZTViYzdmMmI3ZDhjMTUwNWUxYzA3MTdhMjg5OTI3NmY3OTE2MzY3NTA2MjNiY2IzZTU4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjdlNTc4OGQ1ZDlkNzNkMjRhODFkYmMwYTVhNzRiZmE4MmM5YzNiM2FmOTllNTJhZjc5NmU5MGI0NjhhOGEzZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzNlNDg3NWNiODMzMjg0ZjA1ZjZlMTdlYjA4NjM3NTgwMzg1MDdhYWFhZWFhNWJhNjcyMTNjNjRkZTEzMjA2NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWE1NzdiMTQyODc2OGFlMjc2Y2U1OTE2Njc1MWY0OTQ3YjQ1YmEwYjU5YzQzMzEzZTBkOTNmOTZjY2RmN2U3YiJ9"
+        },
+        {
+          "resource": "repo://background.js#L186-L193",
+          "version": "repo-lines-v1:sha256:88d96bbe4b282eb71170d085d297b5d24b13c84273116843465d813f35124966:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDZmY2U0YjNlNTYzMjcwYjYzOTg1NDgzZTQzNTkwZGZlMmViMGJkYTkzNWRiMTQyNzI1YjA0NjE4MTY4ZTk1MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWU4Yzk1ODBjN2QwNDAzNDdhMmQ3YzhkMzU0ZGRmM2Q0NDg1YzA3ZjY4ZjZhODk3ZTM5NTdlNWY3YmZmZTBhOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmQ1ZDNiYTQyYThmNDJjYmJiYzg1MWU1NzIwZWIwNWRmZjljMDcxZWQ2NWNhM2U5ODAwNmE1YmIyMzMwNjAwNyJ9"
+        },
+        {
+          "resource": "repo://background.js#L2227-L2233",
+          "version": "repo-lines-v1:sha256:36693bd0b3c0a0744901c589a719d0bcb931f5e55075216111638d1d620673aa:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2M3YjNhMjdjOWY1ZDNlZGZhNjNkMjIzN2NmZjg2Mzk4MWVkNGFiMWEwNmEzNjg3ZmQ2Y2NlN2Q2NTk0ZDhkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDI5NGFlZGVjNDA0OTI2ZTJkMmJkM2NhNjU3YzJmNWRkMDM5MDhiYjViOTUyM2RmMTljZmNkZTZjMGNjYjA3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGM1MTViZWI2ODRkMGY1M2U2OGIzZGUzNDdlMjRjODMzZjRhMTE2MDU4NzQzYmRjY2RlMTVlNmZjNDc3ODBjZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTNmOWMwMjYwYzdmNDcwMWNmNTkxNGM2MTQ1NTI0M2UyOGUwNWQ5NGQ3ZWU1MjM1NGI3NWRkZWNiMGRjMTZkMCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b428003832a84fd4947e8ad7ffc34aca",
+      "statement": "弹窗根据后台 libraryOffers 显示可恢复的脚本分组，用户点击后通过 libRestoreOffer 请求桥接恢复。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L2234-L2238",
+          "version": "repo-lines-v1:sha256:d6d3a14c0905757bc07d980aedba2b6fa12e98a8def39798f2dc796ded55eeab:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzcxZWFhZmI5MmZlNmRjMzlhNDQwYThiY2RkNmM4YmMxNDJkNDBkN2M1ZTM4ODk5MWViMWY4YzAxOWQ0M2EzNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDI5NGFlZGVjNDA0OTI2ZTJkMmJkM2NhNjU3YzJmNWRkMDM5MDhiYjViOTUyM2RmMTljZmNkZTZjMGNjYjA3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTlkYjY2NmM0NDlkNDI1OTFhZTQ4YTc2NTJhYmYyMjNjNjI5YmM4MzdhYzk1NDVkZDZkYmZhNzI3ZTA1MWI0NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDI2NDE5ZTY5Y2ZiMzhlYjJlNzllNTAxYjViOTY0MTFlZjdhY2M2Y2MwOGY1Yjk3Njk1YWU3NTYwMjI1MThmOSJ9"
+        },
+        {
+          "resource": "repo://popup/popup.js#L645-L661",
+          "version": "repo-lines-v1:sha256:17e115da2a66d48e16823097bdf0ef7c9faf684ccc8b264328b05aae5033bcd4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiMjkyZmUzNDU4YTliNzJlNTI3Mzg2ODM0MDYzNjJmNzFlMGI2NzlmYTQ1NzRjMThkYTY3ZDEyZWM5NzJhZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwZDMwZWNiMDU5ZTNjOWY2MjkxNmVmZDlhMmQwYThjMjFmZjU1ZTk4ZWEzMzYzYjgzYjhmNjQ4YzY3MDFlZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4ODdiNGFhODk5OTU1ODczNTgyYTkyYmE5MjVjZDdlYTE4NDlhN2M4ZTE4MDY3ODdkNzkyZTdlZGYzZTNjZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwMWM1N2E1MWFkMTZlMDJmM2FmZjMwZjQxNDI3YzYxMTMzNWVhZGIzYjk4YjMwMjMwYzk2ZTYzMGU0ZGJmYzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_739a682beaf94bafb9fccdd394bf329d",
+      "statement": "settings.autoUpdate 默认开启，关闭后扩展拒绝 updatePrepare 和 updateReload。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L1824-L1837",
+          "version": "repo-lines-v1:sha256:157b34422729b17759c5283ec17720c9c81d2f959fc52407bb57f63ef63ae270:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3MTk2OTVlOWM5Nzg4ZTY1NmVkMTc0NWM2NGM1ZTk2YjQyYTE5NmU5ZTQ0N2UzZWQ3OWYzNmMzMWJiY2FmMDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyOTRhZWRlYzQwNDkyNmUyZDJiZDNjYTY1N2MyZjVkZDAzOTA4YmI1Yjk1MjNkZjE5Y2ZjZGU2YzBjY2IwNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlNjk2OTc1Y2FlZDBlNWU5NDhkNWEyOTNiZGJjNzIzYWIwYjQ0MDlkZjI1YjVkZDgzNWE2MTE1NmVkMTUxYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ0YTI3NjZjM2QxZWM3NmJiOThjYTMxZTE0NmU5MDgyNGJhZDlkODJlYjdkMDJiYTE0MTUzNWU0MWIxOTQ1OTkifQ"
+        },
+        {
+          "resource": "repo://background.js#L25-L25",
+          "version": "repo-lines-v1:sha256:daa04fc9f7bc67c66470b58c644d3b9ffb87436c603fcd976b00a2e805c0a329:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGFhMDRmYzlmN2JjNjdjNjY0NzBiNThjNjQ0ZDNiOWZmYjg3NDM2YzYwM2ZjZDk3NmIwMGEyZTgwNWMwYTMyOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGFhMDRmYzlmN2JjNjdjNjY0NzBiNThjNjQ0ZDNiOWZmYjg3NDM2YzYwM2ZjZDk3NmIwMGEyZTgwNWMwYTMyOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWI1YmZjMDI0NDdhMDkwMzE0M2VlODE2YzZlNjRlYzg2NzdmYzU3MTQ2NTQyMTEzOGJlZTY0YzdjMjY4YjNlOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWM3MjVkNTY1MzJmMTE1Y2ZiNzg4NDRiM2NkYjQzYzQ5MzU1ZDZlMGM1ZDAzNzMzMjAzMGJlMWE3MjBlNjk1NSJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-23T03:12:21.110Z"
+  }
+}

@@ -1,6 +1,8 @@
 // Content script (ISOLATED world)：记录用户操作，转发 hook.js 抓到的请求，显示录制浮层。
 (() => {
-  if (window.__PAGE_RECORDER_CONTENT__) return;
+  // 扩展更新后，打开着的页面里旧脚本已失效：版本不同就由新的接管（重新注入时）
+  const BUILD = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return 'unknown'; } })();
+  if (window.__PAGE_RECORDER_CONTENT__ === BUILD) return;
   // 同源的 about:blank / srcdoc iframe（富文本编辑器等）由外层页面的 blankFrameDocs 统一录制（带 frameChain）；
   // 沙箱或跨域的 about:blank iframe 访问不了外层，继续往下走以便和 hook.js 配对
   try {
@@ -10,7 +12,7 @@
       if (/^(https?|file|blob):/i.test(w.location.href)) return;
     }
   } catch (e) { /* 沙箱/跨域 iframe 按独立页面处理 */ }
-  window.__PAGE_RECORDER_CONTENT__ = true;
+  window.__PAGE_RECORDER_CONTENT__ = BUILD;
   // iframe（包括跨域的）里也录制操作和接口；页面跳转、地址变化只记顶层的，浮层也只在顶层显示
   const IS_TOP = window.top === window;
 
@@ -404,11 +406,12 @@
     const sid = reuse ? lastStep.id : p0.id || uid();
     if (sensitive && v && p0.sent !== v) send({ type: 'secret', id: sid, value: v });
     if (reuse) {
-      send({ type: 'updateEvent', id: lastStep.id, patch: Object.assign({ value, sensitive, commitTs }, sensitive ? { secretId: sid } : {}) });
+      send({ type: 'updateEvent', id: lastStep.id, patch: Object.assign({ value, sensitive, secretInput: isSensitive(el) || undefined, commitTs }, sensitive ? { secretId: sid } : {}) });
       fillOf.set(el, { id: lastStep.id, ts: Date.now(), value: v });
       return;
     }
-    const id = record({ id: sid, type: 'fill', ts, commitTs, target: describe(el), value, sensitive: sensitive || undefined, secretId: sensitive ? sid : undefined }, el);
+    // secretInput：关了脱敏时值照常留在录制里，但写长期备份时要认得出这是密码框
+    const id = record({ id: sid, type: 'fill', ts, commitTs, target: describe(el), value, sensitive: sensitive || undefined, secretInput: isSensitive(el) || undefined, secretId: sensitive ? sid : undefined }, el);
     if (id) fillOf.set(el, { id, ts: Date.now(), value: v });
   }
   // 键入之后页面把值格式化了（1000 → 1,000.00）：几秒内、内容基本没变的，并回键入那一步；
@@ -647,7 +650,7 @@
     const fresh = s.steps.filter((id) => !s.claimed.has(id));
     fresh.forEach((id) => s.claimed.add(id));
     const sens = isSensitive(el) && settings.maskPasswords !== false;
-    const data = isSel ? selectData(el) : isChk ? { checked: el.checked } : { value: sens ? '' : valueOf(el), sensitive: sens || undefined };
+    const data = isSel ? selectData(el) : isChk ? { checked: el.checked } : { value: sens ? '' : valueOf(el), sensitive: sens || undefined, secretInput: isSensitive(el) || undefined };
     // 值是哪次操作改的就算那次的时间（扫描是异步的，比页面紧接着发的请求晚）
     const commitTs = gesture && gesture.ts >= s.ts ? gesture.ts : Date.now();
     const made = s.made.get(el);
@@ -765,7 +768,7 @@
         }
       }
       // 其他字段跟着变了（联动、回填）：只作为这一步的效果记下，不当输入参数
-      if (recent) effects.push({ desc: (describe(el) || {}).desc, value: String(el.tagName === 'SELECT' ? selectData(el).optionText : /^(checkbox|radio)$/i.test(el.type) ? el.checked : valueOf(el)).slice(0, 60) });
+      if (recent && !isSensitive(el)) effects.push({ desc: (describe(el) || {}).desc, value: String(el.tagName === 'SELECT' ? selectData(el).optionText : /^(checkbox|radio)$/i.test(el.type) ? el.checked : valueOf(el)).slice(0, 60) });
     }
     if (effects.length && gesture && gesture.stepId) {
       gesture.effects = (gesture.effects || []).concat(effects).slice(0, 8);

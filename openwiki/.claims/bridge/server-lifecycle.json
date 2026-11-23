@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:5c9e2989360358995ebe1d9c344639970a387901126cc950a7c6a6b915f21c05",
+  "claims": [
+    {
+      "id": "claim_029676eb36604ded9746b0d3e6687cd4",
+      "statement": "使用 --stdio 且未指定 --no-daemon 时，实例先确保后台桥接可用，启动失败才自己监听端口。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1967-L1975",
+          "version": "repo-lines-v1:sha256:748c097e3599ebc128954e72226d018c79d7054af96efedfd9997e3b1b9f236d:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWYzMjlhZWQ1MTUyZWQ4NzJiYmJkZDhmODNkYzFmZDI5ZWVhOWYyZjIzZDIzYjRmNThlZWU2NTRhZTA1MDgxMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmM5OTdkZTUzMWI3YTFiMmI3MjUyYWU5ZTk5YzkzOWI5NzgzZjhjNTUzYzAyNDgwYmRmMjQyYjY1MDE0YTA5OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTE3MzcwODY4NGNjODEzNzNiNGQ2MDRlYjcyYTVmMTEyNWRhOTBjZDU1ZWUzZjQ2ZjU0YmQ3NGJkNzk1YjRhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjY4MTMyN2ExOWM2NGZjYzI5ZTBlYzYwNzI2YjY5MGQwYjcxYWQzNGZjYmIxNDA3MmNiZjIzOGZiMzEzZWY3MyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b3735063ecb9469caac55158016dcb28",
+      "statement": "后台桥接以 detached 子进程启动，并把输出写入状态目录下按端口命名的日志。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L516-L530",
+          "version": "repo-lines-v1:sha256:d03e4c0fe79cbe6b36b4468c3920b9a46f0efe4c6cbed886d3f1927c33c7fc8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2OWU0NGVlMTkwZjM2M2Y2ZTAzN2E4YTM4MzY1Y2YzN2FkNGY3YTQxYzhjNzE3ODY2NTViNWEzMTFjNTk3NTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkNTNkZjI3NmQ3MjJmYzA3ZmE5YTUxOTFjMDMzZTFmOTBkMGU3ZGQ5NTAyMGVhZjg1ODcyZjg4MGYxNGUwZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3YWRiZjU3NWE1ZDBlYjg0ODllMDY5NzEwZDA1ZjQ1ZWI5YTg5OWU5YjU5M2YzOTI1YTJjNTYwNjk4OWFlMTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_410d1f28179d4e349adf25edd2133f55",
+      "statement": "ensureBridge 启动后台桥接后最多等待 3 秒。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L533-L547",
+          "version": "repo-lines-v1:sha256:15883aae9764b4b981da9319aa95ccc2e7cc34d19b87ddc0bd294fff0c406b6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlOTJjYjFmM2YyNWQ5NGRmMWEwNTk1OWJmYzg1ODBjM2ZjY2IzYjMzNDFmMDQ5YWIxYmQxMWUxNTM3MWU3MTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjOTljYzg5YjI5ZTg4YzZjY2Y5ZGUxYjQxZTRkMTA3NTVjYzBmMTYyZmVjYTRiZWY5ZGMyMjU2M2Q3NGFkNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0ODcyMjFiOTEzOWY4MmNjNzQ0MTAyMzc1Y2Y5MmI5ZGJlOGYyOTJhZWU2ODI2YTMwMTIwMjE1YjUzMGQ5MDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ecf944c45c04472cbe8036f39000de83",
+      "statement": "后台桥接每 2 秒检查 owner，所有 owner 退出或启动 30 秒内无人登记时自动退出。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L646-L656",
+          "version": "repo-lines-v1:sha256:2ad562002503be7e341e3b3f5ce2839a807e506860e6a70aa60943f6394865b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwNTdhMDE5NmQzZWM3YzdhYTYxOWQ0YzUyMjUxYjUyNzI0OWFhNzhjYTg0N2I4YjE4YzdlM2NlZWI5Y2I3YjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkYzNkMGE4MTYyZDg0ZTVmMjkzMjk1ZTE1ZWFjZjUyNDkyMjVlYjI2NzFkNjNlNzE5YTg0MWEwOTU4YzQ0ZGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1YmUyYTNjNTA2ZGUzM2QwNmRkYThmMzYwNzA5MGEyNjQ3NzQ3M2NhZDE3NDI2NDc5NmE3YmMxNmFhZTYwYmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3a1d5d85bc0142b195a1a800dc793a07",
+      "statement": "owner 识别沿父进程链跳过 node、npx 和 shell 等启动器，并在 macOS 上按 .app 归并同一程序。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L579-L604",
+          "version": "repo-lines-v1:sha256:d0ebdc9f14269804a9a64d6e8ac2d5224c7bb5020873a4089bda326fe61d735a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3OTFmNGUzY2VlZTI0ZTVmYzI0NWRlNmJkYzExNjNjOWEyYzk5ZDQ1NjYxZDE0ODM4ODg1NTBkOTZiZWI4YTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkZGMyNGI2MWIyNWI5NDVmMmU5MWYzZDk3Yjg4MGEzNTQ4MzJiZTU4MzZhNGM5OTdkMmNlODgzYWZiOTRjYWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1N2ExNjkyNjE5YTJhNTk5NGI2MDA0ZDBjZmVlMGM0Y2E0N2UzOGRmZjMzNTI5YWNiZDAzZTYyOGJiMWFhODUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_56616dbf740046568c16505822af7be8",
+      "statement": "非 primary 实例通过 /api/ext 转发扩展调用，转发遇到 ECONNREFUSED 时 stdio 实例会重新拉起桥接并重发。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L454-L462",
+          "version": "repo-lines-v1:sha256:c6145491bab919209cc2173e50425b8b2e15eba3cddc3b24b5a08ac63693e126:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzcyMGU5MTYwMWZmMGU4ZDc4ZTY0YjEwYjg1NmY1MmQyMDMzY2FiZThkODlmMDkzNGVkODlhMWRmN2Q5YzVjNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjdlNTc4OGQ1ZDlkNzNkMjRhODFkYmMwYTVhNzRiZmE4MmM5YzNiM2FmOTllNTJhZjc5NmU5MGI0NjhhOGEzZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDRmZWUwOTY2OTUwNTliMjI5ODAxMDJkNDUxZjhkZmViMWU0MDg0ZDA4Y2RlODM5ZjMxNDVhYTNmOTZjYjQ5NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTU5MTQ3YzMyMmFlMmNmMGRmYWZlZDFhMGUwZGIyZGUxY2U5YWUwOTQzN2M4YTg5ZGRkZmJiOWUyMDA0MWJjNiJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L478-L501",
+          "version": "repo-lines-v1:sha256:851f1dbd99c337cdff618e55cae06045ac5df60296cce64f0c0ba28dba5d372a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzMWI1ODE0NTZhYmM3MTg5OWFlOTRkMzk3YTQ5Y2U2YTE4YzU1NDA5YmUxYzFjZDgzMGM4MDFhYjk1NWY2YjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlN2ZiOGU4MDllOWQyYWQyZTY1NDNkYzUzYWNlMTEzMTI0YWI4MGU4ODZkMDNjZTQ1Mjg2YmIyOWFkNjY0MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmYWI1MDNlODlmOWY4MWFlYmY3NmRhNGIxYTJhNzI5Y2M2YWRhZTRlYzE0ZjgyN2FlMzY3NjFmMTlkZDZiZjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8402c35c95484bae877ffc891625a76f",
+      "statement": "primary 把 pid、版本和随机口令写入权限 0600 的状态文件，并在退出时删除自己写的文件。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1951-L1965",
+          "version": "repo-lines-v1:sha256:6a820744dcbda964d6b76453a835e478fd4197acc6fcf26445d69c2c4ca21870:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlOWQ2OGY4YzY4N2RkNTNjNjUyYmVkYTYyNWVmZTJlNWVkODViMDJmOGI2ODQwNDc3ZWFkY2ViMjk5OGI4NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZDBjMjUwZTY3NjFlYmFiMDMzYmZlOTcyMmI3N2MxYjA0MDM5YTFkNmVkZmM0Y2U5NGY2M2ZkZTA1MzU4ZGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YTA4MDQyMTllNWRjMzY5Y2MzMWU2OWIzNmY0MGZmYjc3NjIyYmRkZjIwMzY5NjcxMmViOGMxMmU4MTZhZTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b11c4d9fa8654fc5ae3b75d09e6b061f",
+      "statement": "/api/ext 和 /api/owners 只接受带有本机状态文件口令的请求。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1775-L1780",
+          "version": "repo-lines-v1:sha256:e4bae7c42cfe1ed985fe60d74caab4c67b91422cb78b824f87a68bd8679cc5f3:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjVhZDYwODhhZjNiNzVmYWRiYTRiMjdhNTdhN2MwNDg0ZmJjZTUyODdlMTE2N2EyOWI3N2VhZTEwMmI2NGYzZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGYzNzkyOTMyZTM3YTMyNTBhZjZhMzAxOTBhNmUyMjNiZGRlZGVjMDhmZmM0M2IwNGZlMGJhOGJmYzk3NTFkZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTQ2ODI3MmU5YjM4ZGJkNmMxYmY0Y2QxNDRiNDBmOWJhMDE3MzAwNDhlY2MyNDE0MmRjY2U4ZTZmZWE3MTdjMSJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1833-L1848",
+          "version": "repo-lines-v1:sha256:ae81356b3c6d03b32d38974d5485113cde9ba85a0f1cb59bdce85db9d27991be:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyMWNmOTRlMTQyZDJiNjNmNWI3OGM1NDZkZjNlNDM3NTEyMGQ5N2U5MmE4MjU5ZGFjNzU5YmRmNDU4MDYwNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyODg3MTIwMmMwMjMyNGI1MTc3ZTNhZjgzNjNkYWIxMmRlY2E4NGVjMGM0YmY3YzkxNGI2OGQ0ZTQ5Mjg3YmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3OTAzMzRkOWZjZTcyODRiNjVlMjJjMmQyZmE0OTQ2Nzg3OTJiNjk0MzY0MDA0YWI1NjlmNmQzYjI0M2Y0ODAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f12583d9e97b4e5dae4f9e3992bfab1e",
+      "statement": "扩展连接桥接后发送包含版本、instanceId、资料名和 capabilities 的 hello，并每 20 秒发送 ping。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L1883-L1893",
+          "version": "repo-lines-v1:sha256:76435ee70e990f033383f5237d081cf2adab84783491f405811597b2fff5a7c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0ZDlmOGM4YjhlZWFlMjAyMjViZWJiOTE0ZjNiMmIwODUwNGMwNWU0NTk2MGJiZmVkMWE3NWU4NTA4NTg1NWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyYTJjYjI1YTEyMmI0NDIyMWE2MjM0ZWM2NjBhN2I1ZmI3ZjliZGU3YjNiOWUyYjNjNTU5YTBkOTZmYWM3MzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhZjgzNTNmMDE3MGNiOGNjZmQ0Nzk4MWZkMDY5OWM2N2IwN2I0YWVkZWQ1ZDg0MTkwODdiMzYzZmYwZmI3MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkNzg1NzMzNzgxN2M4Zjk2YTZlYzllYTlhNDMyYWMyMDczODlkYzY2YjVjY2VjMGY4OTIyMzY5N2ZhNWM5MDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_156f1f1a00364c67a7989e6a217f9a4f",
+      "statement": "桥接按 instanceId 登记连接，相同实例重连会替换旧连接并使旧连接上的请求失败。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L245-L284",
+          "version": "repo-lines-v1:sha256:5dad645b50facd9d25979318457a850b148fa92a568ed859bb2d3016d77b506e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZTIyMzNjYWI2OWIwM2Q0OTg2NTIyMDQ3NTBlYjUxY2I5MTU5NDk5ZmVjZGY5YjBjN2IyNGQyMTZjMDFjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0NGVlY2M1YmZmZWEzM2I3OTBkZjU4NGI2ZDc0MzY4ZWE0ZTM0YWM2ZmYwNjAzMzRjMGM0NWY5MTRhZTlhZjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiNzU1ZTI5Yzg4NGFjYThhMzcwNTEzOTc3YzZiNjY0NmE1YzNmZjE0MzlhZmUzNjRmODFjMTBkNDg4NzRmYzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a76c209de8e24684b919f17f600239d0",
+      "statement": "instanceId 首次登记后绑定扩展来源，其他来源使用相同标识会被关闭。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L255-L262",
+          "version": "repo-lines-v1:sha256:d4a0224f5f70bdece20f3b5b450f23996df1b88e6b96b4f5e94d5b9eb49ee0d3:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODRiZjNjMzhhMzg2NDdlZjE3ZjU3YTA4YjI1MmQwMzY5OTM1MWE4ZDY4NTcwMmMwNDgwZDFhZjIzNGQ3NDU5MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTgyMzNmNWMxNWFkZDg3MzEzZTNhZDBiMDIzNzNjY2YwOTYwMTBjOThkNTgwOTk3ZWVjOWMxMzcxMGFiYWE0ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjUxOGM2ZmRmN2Q2ZWUyNzQ2YmJmMWY1OTNjYTQwNzI4NGQ2ZTlhNjhlYTQ3ODdlM2NiMWE4M2RmNmI3YjU3MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmQ3NjZkYzUxOTBjOGM5YTRhNDE4ODM3ZjM3ODJjYWEyOTM1ZDgwMGU3OWNiMzA2YjE3MTJlZTYwZGZhN2MwYSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_1f7568f5442d4152875595c01194098c",
+      "statement": "桥接的 WebSocket 解析要求客户端帧带掩码、RSV 为 0，并限制单条消息最大 64MB。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L125-L125",
+          "version": "repo-lines-v1:sha256:5c77861cbfd70bb8ef9c3a9a48481857ff2d370ba7026a70780ec66ba4d14cbf:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWM3Nzg2MWNiZmQ3MGJiOGVmOWMzYTlhNDg0ODE4NTdmZjJkMzcwYmE3MDI2YTcwNzgwZWM2NmJhNGQxNGNiZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWM3Nzg2MWNiZmQ3MGJiOGVmOWMzYTlhNDg0ODE4NTdmZjJkMzcwYmE3MDI2YTcwNzgwZWM2NmJhNGQxNGNiZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODhkMTY5ODE5ZGVkNWYyZTU0ZDdhYjJlYmQ5ZGUwMDc5N2RlYjYyNDJhMDVkYWIwNGUwYzgwZTA1ZGUzNjE1YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWYyMTM0Y2M0MDA3YTU4YzM3ZDA2YjNhMjIyMTg3Y2MxYTFjMGUwNzVhMzE2OGM0N2RkNDhmMzljZTZmNzgyMiJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L179-L220",
+          "version": "repo-lines-v1:sha256:fe47ac9f7b1a2946a1d75816f1d3ee4066063e9c88918d954764030a1e3cd0dd:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0ZGI2OGFjZTg0YTZlNDJiYzAyODMzMmNlNTE4MDU5NjA3MGNlMzUyMWY2MjgyNDVhNDgyNWZmZTcwYzRkNTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5ZjUxZWE0N2M5NTNhMzlkZWFhYWU2NGE5OTI3MDc5ZDAyZDRhY2UzNTQxYzIwNDkzNmZhMTlhZTJkN2UxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4MDNiN2Q5YjYyNWY1MTk0NTZhY2E3YTg0MjBkMWZiM2EzMzhlZDJkNjhkZjc5NTU5Y2Q4YWM3ZmFjZmI1OTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkZjVhZmRmMzhiYmRhMzQxMTFhYmI5MmZlNTIyNzhmOTg4M2NmZTcwZDVmMjM4NjczZDA3MmU1NWMxZjZkNTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ba856be955ad41129d4c0ca632935ce6",
+      "statement": "桥接最多同时保留 32 个 WebSocket 连接。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1927-L1929",
+          "version": "repo-lines-v1:sha256:9a91d205fc5775b35cb53d3748e6ca75a65ddb3c4d735db256f9c0862895f09e:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjliNTIzN2MxZTNkMmRiNWZjNDU4NzFkNGE0NzFlYjc2NTQ2NTJiNjJiNzA5ZGQ5ZjM1ZTg5MTJmZDY2ODIwYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2UzMTg2YTY0YmZkNjI0Nzg1YzlmNzg1ZTM1ZjNmZWU0ZWU5ZTIzYmQwOTkzZTM2NGRiZGFmOWY2NmMyM2YzNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjQ5MWJiNTQzM2RlMzQyNjNkNDU1N2MxMTQwZjJkMzYxNDc4MjNhZmIzYjI3NzI2ZDMyMjM0YmUwNmRiZjY4MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWJhZjJkNjkxNzdlNjU4OGMxNjA5MGZhYmJlMmEwZjMzMzE2ZTYxODg1YzNkNGE0NzFlZTA1MTkwYTgxY2RkZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ace4e68fdd584cec8ea371ee9f73b1df",
+      "statement": "多浏览器调用按 id、完整名称、名称包含三级查找录制所属实例，同一级命中多个实例时报歧义错误。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L388-L407",
+          "version": "repo-lines-v1:sha256:0eb3c82a2aeeff406d6d85847351a2f6c0a3d67f492a09e23cd73279965517a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhMGQ2Zjg5MmIxZDhkNzk3OTIyYjE4NzMyMmE0NjZhYjU5YWRjMzJjNmUyMTE2NGNhOTQxN2I0YThlMjFiOTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmNGRlZTUwOWNmZjA3N2NmNTI2ODdmYWJkMjA4ZTgwZGIyMTIzY2U0MWIxOWY4YmU4ZTdlM2U4Y2E4ZDlhYmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMGQxZTNkMzI0NTI1NTQ0YjlmZDQ3ZGZmNGNmNTE5YmExZjJiY2MyMTY1YTE2ZTFmOTk2NjFlNmI1YzAyOTYifQ"
+        },
+        {
+          "resource": "repo://bridge/server.js#L434-L440",
+          "version": "repo-lines-v1:sha256:7aa49cce5994233b113abf0769dbec83c0997e101a86b13fc1d4998d80a56cfa:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2UyYmVkZjQxMDI3YjcyNjY4NDQ1NWViYWVlMDYxM2YyMjY2YzIzNzc5ZDA0NDBhOGIyMTQ0ZTcwMmFmOTJkMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODkwOGZlYTQyZWM5N2RkZWU3OGE4OGExY2QwNmIwYTk2ZWY4ODJjZDIwYjEyYjFjYWNhM2FhNTYzOWVhOTM1YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjI2YWJlMWMxYWYxNWI3NDc4MTg4MzdhNGIyY2E3MWQ0OTk1NjFlODRkMzU0NmQ0YzFkN2E3NTkwZTlhYWU2MCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_01fbc20be54044ad99241f5e1c9bedfe",
+      "statement": "指定的浏览器若最近 10 分钟内连过，桥接会等待它重连；未见过的名字立即报错。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L349-L370",
+          "version": "repo-lines-v1:sha256:00510f458f4116ff13be5618ccfaf102142cc0d350d6b238889bc2819ea1710e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2OWY1ZmM2MWEyYTYwMjdkZWU3ZGM0MDdjNjY5NzcwODExNjY4YmJiMWE1OWQ4ZGNmYWMyNjdkMTIwYjIwZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFlOGE5ZGUzOGRmODQ0ZmVkYWJjYjU0MGM4MDQyMWVhZDk2OWMxM2NhMDZhN2UyOWFjYzc5OTQ2ZmVlM2NkMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwNGY5NGNlOTJhZTdiNjNiNDE0NDI2NTk5ZjE3NjIxODRhMjM0MGI1NWIxODk5NzRhNzY4OWJhNjUzZjdkMGIifQ"
+        },
+        {
+          "resource": "repo://bridge/server.js#L434-L435",
+          "version": "repo-lines-v1:sha256:bd56a049892196a298d3d06e18561a66a40fb0f69031aa6ae5dceb6429ab8e1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2UyYmVkZjQxMDI3YjcyNjY4NDQ1NWViYWVlMDYxM2YyMjY2YzIzNzc5ZDA0NDBhOGIyMTQ0ZTcwMmFmOTJkMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODM0YmEzNTgxYWQzNjJhM2UzMGRjZTkxMGYxMTJiMzUwZjNmOWYxNTE4YjNmNWYzZmU3ZTVlMWQ0ZDNkNTg2MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODkwOGZlYTQyZWM5N2RkZWU3OGE4OGExY2QwNmIwYTk2ZWY4ODJjZDIwYjEyYjFjYWNhM2FhNTYzOWVhOTM1YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWI3NTY3ZjQ5ZDhkNjU4MjIzYWZiYTI3OGUxNTYwZjVmZmI5ZGM2MWU1ZDU3ZDE2NWM5NzQ2MTI1NWM2NjU2NyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_90d54d5168274225b95b7daa7202b95c",
+      "statement": "非 stdio 实例遇到端口占用时退出，stdio 实例则转为转发模式。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1941-L1950",
+          "version": "repo-lines-v1:sha256:275d52b1c2e596db3f51334f06c715eb88dacf53579c44a0cb176add5f82ffb3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4NDIyZWYzNjAxYWM1ZjA4YTRjM2M5MTFhNDA2YmQyZTk2NzE0ZGE4ODgzMmQ1ZTNiNmU3NzYwZGE4YzIzNzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIwMjIzODhjZWFkMjg4MDdiMjgzYjJmZTQ2NWMzOTlmOGU0ZTM2Y2YxMDlkMjA5NWQ0ZDAyMzAyMjhlZGEyYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1OWNhYWMyODA3Y2Q3MTM3YzJiNTYyNWIxNzYxZWMwN2EyYTllY2ZkYTBmY2E0YjI2ZTcyNGNjYzJhM2VlM2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_27dc3841acbe49488e85635f047b0c44",
+      "statement": "扩展登记后桥接安排一次脚本库同步和一次自动更新检查。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L282-L283",
+          "version": "repo-lines-v1:sha256:4b6c0d2dcf3ce9d26939ab8cdd785c9d1f7ce14643b09596c9bf6cbfc2795da3:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjFiMWZkN2I2MGM4MTMxNzg3NTdlYTQwZGFjNmQzODNlMGYzZTU1MzYxMzg4M2ZmYjc1ZDk0Y2UwZDk2ODhmNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzU4NTMzZDExNGE0MmMyOTBiNTg5ZTZiNjJhOTk2MjUxZmEzMTFmYjI4MmU0NjMyZTgyM2IwOTkzNTE2ZjJkZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWM4MDQ4ZjdkNDY0NjlkMjhjZGQ5MjkwMzIyMTVjZGQzNGFkMDNiOTg4ZWE1Y2Y0MTkxZWNiZDZiZmIyNWZlMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTU2NTgwODc1YzEyZGFiNmRhNTE0OGM5MmIyY2YyOTBmMWIyMDhiZmQ2NGYwNmNkMWZkNTM1ZjQ2NzQ4YmY0YiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ac70e655fe0a438ea135b5dc2c2cc328",
+      "statement": "自动更新默认在非源码目录开启，可用 --no-auto-update 或 PR_AUTO_UPDATE=0 关闭，带 .git 的目录需要 PR_AUTO_UPDATE=1 才开启。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L689-L691",
+          "version": "repo-lines-v1:sha256:d7955aef1c82321909e2708b78fe5d7bc1b29ceb1fc31ba18764d695cc854286:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGY2ZjY4ZDkxNTVjNTYxNjBmMTU5NTU1YjJlMDhlM2RiZmVkZjBjZDFhMmE4NzBmN2QyYjIzOTZlYTYxNzUwMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjVkZThhOGIxOTU3ZTA5YmE1NDQ0MDU2MGQzNjEyYTk1ZDg2MzI3MzFlYjMyYTg5OTQ0MzQ3YjYyMjZkZWI4YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDRjNGViNDE1Mjk4ZTI5YzZmZWQ0OGRiZmQ4Y2I2NjE3MDhjNmFkMGI4NzYyOTNlYTRjZTVmNGQ2YmQxNGRhZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWExN2JlNDAwNDNkZTI1NDA4ZDI5YTY3NTYzNTNmYTkwOGFmNmVkY2IwOTgxZDYzYjkxMDc3MWFjNGNkOTQ4OCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_2a9ed920d31243258c18c4df841f2236",
+      "statement": "spawnDaemon 启动后台桥接时转发 --no-auto-update 并继承当前进程环境变量，但每个进程只在启动时计算自己的自动更新开关。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L516-L525",
+          "version": "repo-lines-v1:sha256:13178272388732ab0cedf3b3803a5d5bbdc0a3cf5bec31ff61952a3655014fa9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2OWU0NGVlMTkwZjM2M2Y2ZTAzN2E4YTM4MzY1Y2YzN2FkNGY3YTQxYzhjNzE3ODY2NTViNWEzMTFjNTk3NTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhM2U0NmY5NDI3NmI2ZjZmNGVkMWYwMmFmNzhiZWY2YTJlZTFjNDM5ZGQ1NTg0Yjk3Mzk0ODMxMzIxNGQyYjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkNTNkZjI3NmQ3MjJmYzA3ZmE5YTUxOTFjMDMzZTFmOTBkMGU3ZGQ5NTAyMGVhZjg1ODcyZjg4MGYxNGUwZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0Y2NiZTUxZGJhNGVlN2NmZDYxZGJkNzc3NDVmMDg5MmQ1MWY1YjFkNjliMjczODk1YzNhNjNjMjZjMWNiNjAifQ"
+        },
+        {
+          "resource": "repo://bridge/server.js#L689-L691",
+          "version": "repo-lines-v1:sha256:d7955aef1c82321909e2708b78fe5d7bc1b29ceb1fc31ba18764d695cc854286:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGY2ZjY4ZDkxNTVjNTYxNjBmMTU5NTU1YjJlMDhlM2RiZmVkZjBjZDFhMmE4NzBmN2QyYjIzOTZlYTYxNzUwMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjVkZThhOGIxOTU3ZTA5YmE1NDQ0MDU2MGQzNjEyYTk1ZDg2MzI3MzFlYjMyYTg5OTQ0MzQ3YjYyMjZkZWI4YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDRjNGViNDE1Mjk4ZTI5YzZmZWQ0OGRiZmQ4Y2I2NjE3MDhjNmFkMGI4NzYyOTNlYTRjZTVmNGQ2YmQxNGRhZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWExN2JlNDAwNDNkZTI1NDA4ZDI5YTY3NTYzNTNmYTkwOGFmNmVkY2IwOTgxZDYzYjkxMDc3MWFjNGNkOTQ4OCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_0f0b9722f09049ec8c13d345b01cb9a2",
+      "statement": "自动更新要求浏览器状态包含 extensionId 和 selfUpdate 能力，而这些字段由新版 browserStatus 提供，转发实例从 /api/status 读取。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L693-L707",
+          "version": "repo-lines-v1:sha256:1d00f232221d7cfb3849a1ea86099fa89c3326ade58c2dcd90b3fb54a367d18f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NGRlYWY4OThiYTcxZDk4MjBkNTA0NDM0NWM5MDk0YzJjMDhmMDMxMDc5MzFlMWEyMmI3MDQxNjU4ZTU5MGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA1MzA5ZGMxZTAzMjc4NjlkM2QxZGQxZWI2NzBiMzYwMmI4NTZkNDlmN2Y2Yzg2N2QyODU2MGI4NDRmMjRjMjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2YzIwODRmZTRiMzFjNGQzYjA4YjEzZjllZGVkOTc1YmJhZjZkMWZjYTUxMzdhMWYxZGYyOWVjZTE2NDA2NjIifQ"
+        },
+        {
+          "resource": "repo://bridge/updater.js#L183-L185",
+          "version": "repo-lines-v1:sha256:62d9dee0aa18703e062614cec32c5cbc277c0d08bcec514bfba8df983446dea8:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjNhZDgwM2NlZmM2NzhkZWM3YjYxZWY1MDkyMDczZWU4MGIyMmNmNGYzZGY3ZTZkYTA2N2E2MzA3YjkxNjY5NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWQ5MDcwNzhjZTFjMDRlMDQ2MzNmZjA5ZWYxMzEyM2E0MmRlNmJhN2ZkYTdlZTllZmVkMTVkYzc5YTZhYTU1NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGY5MTg3YmQ1ZWM3NzYxMDcyMTE1NmNjYzJiMDhmZDA2ZmMwYWFkYTRhYWQyNWFlNjk3ZmIxM2RmMTNiZTY3YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzA0YTkzMGU4MGVlMWQyN2RkNWY5YmYwNWNlMjU3OWFiN2ZmOTRiODA0Njk3ODFmMjYxZTJmOWQ4ZDAxMzEwMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ed7edd5d610a48c0bd675361a642a28b",
+      "statement": "桥接记录最近一次发给每个连接的可恢复来源，并在处理恢复请求时传给 restoreOwner 校验。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/library.js#L197-L199",
+          "version": "repo-lines-v1:sha256:fdc7abe60a8e813c10d0134c97d978d07d77f587dd6d39875f73ec3200a10690:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGQxY2Q2MjI0NjE1YzhlMWNlOWVmMDg3MGZhOGY2NjIyZGI2ZDQ4NDUyMzk3NmVhMzMwZTE3MWNhN2MwMjdlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWFmZWNmNjllMzYzNjYwMGI2Y2NkMDVlOWIxYzJhNGQ3NjEwMjFiYjBlNGNlMzdhNTQyNTQ2OTZmMzFlMzIwMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTc2MWE2NjJkMTdjZGIyMjIwMzVkNjY1ZmU5YTIyYTU0NWNhYWJmZmYzZTQ0ZDU0YzZjYTRkYjk4M2IyNDJkMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTk3MTRmMzY0OWI1OTcyNzM3ZjlhYjEyNGY1Y2IxNmQyZGU3ZjY2OWJkZGUyNmY5OTU3NDg2NzkzMjM2NWZmNiJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L667-L689",
+          "version": "repo-lines-v1:sha256:534fb692aac8b6f5f3bebdcbfa41903cd943afa3fb990a6e37f61093119cc9d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjZjBkMGY5Y2Y5OTllNjc2ZGQ0ZDRiZjY3NWNlNWU3MjMzY2JjOTQ2MWQ4MDA5YmVmODgxMGM4ZTE2Nzk2YWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmNmY2OGQ5MTU1YzU2MTYwZjE1OTU1NWIyZTA4ZTNkYmZlZGYwY2QxYTJhODcwZjdkMmIyMzk2ZWE2MTc1MDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlYmJjMmI0MTlkYTU0MGMzNzAzZmI0YzljZWU2MTdlN2NlOWU2ZDY4MTQ1MDg4NDhiMTM2MGI3M2I4Nzk5N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1MzA5ZGMxZTAzMjc4NjlkM2QxZGQxZWI2NzBiMzYwMmI4NTZkNDlmN2Y2Yzg2N2QyODU2MGI4NDRmMjRjMjQifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-23T04:07:50.896Z"
+  }
+}

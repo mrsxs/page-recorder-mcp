@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:582ab4da1623115de3359e3810a5c7131fbd9f12fa9b273477ea159b7fc93a80",
+  "claims": [
+    {
+      "id": "claim_d22e23cf54cb4216b11479b203d1b05a",
+      "statement": "动态工具总数超过 MAX_TOOLS 时 tools/list 不列任何动态工具，但 dynamicMap 保留，已知名字仍可调用。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1643-L1649",
+          "version": "repo-lines-v1:sha256:e0e8fc69db2a63790f73c62f5b155ca7bc225c62d2b8a7e33457b5a1788a32bf:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODk0MGI4ZGNkZGNkMDdhZDYwODk5ODBhMTgzYmU5NGNhYjI1NTRkNDVkY2YwY2NmNDJiYTgwNmM3OGNhY2M2ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzAzNGQ3ZDk2Mzc3MTMxNGMwOTM2ODZjYjI2NjUzYWQzZGNiN2Y3ZDQ4MDlhZGZhNWZjNzI1Y2YyZTBlNzlmNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmI1ODBlOTY0ZjgzYTQ3M2Y0M2Q0NDM4NDYyOTQ5ZDY4YjU2MDBmZGE3ODdmMTYzNzQ1ZDAwZGU4OWNiZjM2YSJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1048-L1050",
+          "version": "repo-lines-v1:sha256:f4484d0c3590ac12a4f328b9c0c5ab7b462fc74bbc6dd99aef5e15fbbbdfbefe:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzg0OGM5OGFmOTgyY2YyZmQ0YWU2OTQ1M2RjZWQ4NzJlODVhMGQ3NDk0NjE0YTE1MGVlMzYwZmNlODM2YjhkMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmU0NGRmOGRiNTkwNTY4YjVjZTUxZGJhOGU5ZTA4NGM1MjFjOTdiOGM3YzIxOTk3OTgxY2Q0YjI1ZGU4YTcwYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmQzMjFhMDA4NTc5NmY0NDBlMmYzODA3YzkxOWM5NDQyOTVjMDJmODI1OGI4NGY3YTdmNWZiNzAwNThlM2Y5MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGNhNTM5OGYwMDFjYWU1MTA5ZWRhOTZhYTJjZmVjMjVmZjA2Nzk1ZWY0OTllNTZhOGMyMzdjM2FiODM0MzIwNyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_11d05db6420a45c8b947999cb0dc0a97",
+      "statement": "MAX_TOOLS 默认 30，可由 --max-tools 或 PR_MAX_TOOLS 覆盖。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L84-L85",
+          "version": "repo-lines-v1:sha256:36a5bc4a8646464bf83d80249218baeb2824960d95fedb1ae9c60b127ac206f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTg1OGViMmFkODdmNjEzM2VjNjIzNGRhNjM1YTM4ZjlmZDA4ZjRhZWEzNzczNjI1YjAwMGIzZTRiMDNhYTVkMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmI1OWIyNjk1OWZlZTEzOTcxOTM0ODllMzMxNzliZjk0MDI1ZjcxNzliM2M3ZjVlMmU4M2JmNDJiYWJkMWE1NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDhhMTU4YzcxNjY2ZDE2NTA4ZjZjY2E0OGZlMzdiMzNlNjZjOGUzNmQ5ZjdjZWFkYjQ2ZTNhMzY3Y2YyZWE0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzA5NDI0OWM0NjQyMWJjZDNiYTUwZmQzYThhYWM1YTNkYjAyYjQ2NDYyYTllYzY0ODA3MDg5ZTgxNDQxNzBkOSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b2abf5d386d14a87b724f6b6f64545c1",
+      "statement": "tools/list 最多等待脚本列表 6 秒，超时先返回固定工具，列表晚到后暂存并触发工具变化通知。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L983-L1002",
+          "version": "repo-lines-v1:sha256:f40f98583b154cbd2b571799ec06cdc28af0c4a8e9c334fc3f9bca592eb288dd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhYTMyMjNjYzhiOTE4YmJlZjVhY2MxNDQxZGYyNmVjYWZjYjhkMTA1MDdhMjA5YzU1MWEyZTUxYmE5MWI5NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmMDA5YzI3YzdhZjkxMjMzYTYwYzZiMzE1ZDI4NjI3OTkyNzRkZGViN2Y5ZjM1MzZiNDkyNmUzODlmYmY1OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzZDliYzkzNjk0NTA5MWFiNmFlNzJlNzhhZTY2MDhhNDIyMTRjNjM4ZWNmOWViYjUxMTliZGI3NmFlZTQwZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0MjkwNWMzNjI4ZmVmNjJlZmYwMjkyMGJmOGIwZGY2NTRkNzkwNTg4MWYwNTBhODg3ZTE3ZjU0NDViNTExYTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c6d98866634540b68fb22885adc9d4fa",
+      "statement": "search_apis 优先返回匹配全部关键词的接口，没有全匹配时才返回部分匹配。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1155-L1155",
+          "version": "repo-lines-v1:sha256:2c91d12c3923514b7aa8b4caa97c7b90e3d6c3c0bee3dccfa19a6af8378f6064:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmM5MWQxMmMzOTIzNTE0YjdhYThiNGNhYTk3YzdiOTBlM2Q2YzNjMGJlZTNkY2NmYTE5YTZhZjgzNzhmNjA2NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmM5MWQxMmMzOTIzNTE0YjdhYThiNGNhYTk3YzdiOTBlM2Q2YzNjMGJlZTNkY2NmYTE5YTZhZjgzNzhmNjA2NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGEwMGM3ZjgzYmVhYWI0ODBkZWNiMDljNDhkOWRhYjM2ODcyMDgyYWZlYTAwYWE1M2NjZWU3OGEzZGYwNjdjOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjIxYmJhNWNlOWY2OGU1OThiZWMxMjU0ZWJhYzhiMTdiZTQ5MTQwZDNlY2M3ZjQ3MmZkNjgwOTE0ZmMzMjk4YiJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1065-L1081",
+          "version": "repo-lines-v1:sha256:060d2c860ea50c0ab036f29086bb2bfacf669fa5eaae62b38e826ef3cbf59fab:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NmQ5ZjRkNjA2NTQwYzA1ZGUxODY5YWM0ZTQxZTJiYmVhNTZhNWZkNjZiZjEzYTgzZjcwMGI0NDY0MmY1MzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3NjRlMzA1NGRkY2FjZmZiMjgzNTgzNDZlMTdiZmE4NmMxZTk5YzU5YzM3Mzk4YjQzYmIzZTk5MDQ2NmEwMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzZTVjMTYzMzhmZTQyYzEyYzgxYTYwYzhhNTJiNzc1MGNiNWZjNWM4YjFkZjE4MjQ4ZTE4MzRhMjYyNzJkZTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f1704139995d47289178c62bd70ba65f",
+      "statement": "中文连写关键词按相邻两字拆分，命中过半时以半分匹配。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1057-L1063",
+          "version": "repo-lines-v1:sha256:9890832ad0947a5685230239a5b4345f05dd6aa9871a58ecdb86d4fdfe8e4393:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTBhYTJiNzY2Y2JhMWFkMGJlZjYwZGQ0MDJiZTJjNDY5NzFjNGFhZjEwMjdjMmZkZGYyNmY5MDIyMzU3YzlkYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjNjNjA3OTc0OGE1ODNkOGJlYzcyZWRjMWIyMGEzY2FjMzE0MzUyZWVlNjkyY2JlYThlYzU4Zjc0NTVhN2NhMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTU0ZjEzZDE4ODJkNDBiMjBiM2NkMTlmZmY1YTYwNzM1NDgwMGVjMzgwY2YwMDU1Mjg1ZjNhYTk4ZTNmZDRkNyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f488ddfa50444f48974739cfe04e71d",
+      "statement": "接口名超过 300 字符时，search_apis 的 api 字段改为可调用的函数名，并把截短原名放到 api_name。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1143-L1148",
+          "version": "repo-lines-v1:sha256:122e96887dcf9ee2f2e0a24ade27123e67b5103108bba64f7b8c24316f53b2ff:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmY2MDYyZTIxMjBhN2Q0Mjc3NTY1Y2U3YWQ0NzcyZWM1M2MxNTFlN2E2NDMyNTRjNWQwNzA4YWVjY2ZhYWM0MCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmIzM2I1OWE2NTBiZjkyNjk5NjgzOTI3OGQ4YzZkYTY1NTM2MTQ1OGJkODUwZDk1ZjE0MzdmZmNkYjA1MWQzZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGFmZTg1ZTEzOWRhMzVhMDQ4MWIyN2NiMjQ3Yzg3NDY4OGEyMzM2MzQwZTNhMGZlZWMyZWIxYjc3M2UzYzIyMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWQ0ODIxYmNjYjRiMjlmYTEzMWEwYjY0ODI2NTQ1MDhmNzc3YmIzZDhjOWMzMmQ4OTRiNWUxNmRlMmUxNGQ0OSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_848ff7ba9f7f4a2a8aab97957fcb9d80",
+      "statement": "list_recordings 的 query 要求所有关键词都命中，不退回部分匹配。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1165-L1167",
+          "version": "repo-lines-v1:sha256:d1dc0223d295ce52ac095a0d343ffccb39e109c4f7d08bc71163708c04afa5f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDAwYWE3ZDU1YTczZjEyZDY2MjI1YWVhNTcyYmZkMWE4M2Y5YmU2MTY2YWUwODc0Zjk2YmVjMDc3NTFjNTY5MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDI5NjU2MGMxOThhY2VmMTA0MzA2Yjg4ZGM2YzQ5ZmNmZTE5NTNiMjM3ZmNjOWUwNWI5ZTAxOTBjYmRmYWQ5YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjQ1MWNiMWM0MWQwZDFiNDUyNWIxOWQ5MmVjNmE2NzI5ZTc3ZDkyZTI1OGQwMWEyYzhiNGNjZjU3YzA0M2FlZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTNiYzIzMzIyZWY3Y2QyZmM3MTRiYjI3NzY0ZGVlMTNhOTkxYjQ4Yzc2Mzg3NzkyMzdjNGYzNDg3NjBmNzAzNCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_0a140a02ad8b492d96637781707074c6",
+      "statement": "结果缓存保留最近 30 次、30 分钟内的结果，总量默认不超过 64MB，单条超过总量上限时不缓存。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1229-L1255",
+          "version": "repo-lines-v1:sha256:1f7478318c16f1fb176f1bfc8c911dd8163dc1c82da364c9c03d838c61e1f493:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkZTBiODQ3ZGU0ZTQxM2UwMjgxNTdjNjBkZWVhNjE1ODZjZGM4NWExZDRhZTE0YmQwNWNlYjc2OWM0NTJhN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhOWI1MGNjYzFiNzhmMWI1NDcyMmI4MGFmOGM4YWI1NzRhM2VhM2U2OTBiZWI5YzQ4ZDgwOWE3YmQ1NWU4MGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4N2M0NWU1MGU2MDg3ZDhkYzI0NTliMTEyZjM3Y2ZkMTliNDc3YzdjMTM3YjAzMjhmODgwM2ZiYTQ1YjUwYzAifQ"
+        },
+        {
+          "resource": "repo://bridge/server.js#L753-L753",
+          "version": "repo-lines-v1:sha256:1df7a0cc9a98a03488df90282b69ab2cdcc121a2b8669c661fa9a39b39eeb81f:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWRmN2EwY2M5YTk4YTAzNDg4ZGY5MDI4MmI2OWFiMmNkY2MxMjFhMmI4NjY5YzY2MWZhOWEzOWIzOWVlYjgxZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWRmN2EwY2M5YTk4YTAzNDg4ZGY5MDI4MmI2OWFiMmNkY2MxMjFhMmI4NjY5YzY2MWZhOWEzOWIzOWVlYjgxZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTU2MzVlNzY5NTY0OTEwMWQ3NGM4ODcxZDNiMGU3ZjUyMDY1MTk3ZWZlYzY4YWJiNzljOTRiZDFhZmE1MmNiZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODhmNTEyNGZjNWIxYTRkOTI2NGRiM2YyNDlmNWZkMmJmNTUwY2M1MWE2MTJlZDJkMjFlMmNiOGJiNjFmNDA2ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_abd75c27060d4068af7df9b8c3f6c9ae",
+      "statement": "结果缓存在处理 RPC 的进程内，MCP 进程重启后 result_id 失效。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1231-L1231",
+          "version": "repo-lines-v1:sha256:b78c5837d36bada08b28ff7a609cfc24efceac0b4449130c9657580b2e27e1ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjc4YzU4MzdkMzZiYWRhMDhiMjhmZjdhNjA5Y2ZjMjRlZmNlYWMwYjQ0NDkxMzBjOTY1NzU4MGIyZTI3ZTFlZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjc4YzU4MzdkMzZiYWRhMDhiMjhmZjdhNjA5Y2ZjMjRlZmNlYWMwYjQ0NDkxMzBjOTY1NzU4MGIyZTI3ZTFlZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjRhZWU2MDM4ZjdiODZhN2UxY2IwNWEwYThlOGZiZTk2ZTY5ZGIzNTI4Y2RiZGI3N2YzODQwODA2MmQzNzNkMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmRiMDM2NWRiN2EyZjQ4ZDMxNTgzMTMyNjEyZjRjNTRhYjAzNWUxNzA5NmE1NmE2NGM2YmYzYjQzNTc5ZTU3MyJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1608-L1611",
+          "version": "repo-lines-v1:sha256:62042efb099181d705922ba9775ab487e4004c2a1e709c4ce4e56fba5f8f48d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWI3N2Y0NDI1MjY5NmQ3MjFmYWFhMjY2OTEzNjVhZmVlNzlhNmU4ZWVkNTExNDM3ZWEzYmE2NWIyZjdhMzRlNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzEwZmU0NGQ5NzJjZTJiNGY2ZmVmOWI2MmEzYWRiZWYyZWNjZWM5NTgyYjgxOWQwZGE2MjVjOTcxMjk1MmU3OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzYxNjU4NDFmMjhjNGNlZThiZTYxYjgyM2Y4MGFhNTY4YmM0OThkNjk4NjU1Zjg1MGQxNDM1YTViNjFiNjZlZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjA3ZTcxNzFjMDZmMjQzYzExMzgwZTBkN2FhODk3ZjRkOWQ0NmNiOWYxZDQ5MmEzNWU0ZDI0NTI4M2Y1NWZkYyJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1992-L1992",
+          "version": "repo-lines-v1:sha256:57e2eb3e0dc9477b1d6ffb0df485584147ce9555a0d1bb4a80d5a55c8f90fc38:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTdlMmViM2UwZGM5NDc3YjFkNmZmYjBkZjQ4NTU4NDE0N2NlOTU1NWEwZDFiYjRhODBkNWE1NWM4ZjkwZmMzOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTdlMmViM2UwZGM5NDc3YjFkNmZmYjBkZjQ4NTU4NDE0N2NlOTU1NWEwZDFiYjRhODBkNWE1NWM4ZjkwZmMzOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGM1MWVmZjM2MjJjNTdkNDhiNTYxNzc5Y2NlOWMxNmJhMzM0YWM1OTE2MzVhNTBiZGU1YjQxOTk3YWNmODEwNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzhlMjZhMjQ0NTJkODdmOTk3MDgxNjUwM2RiYWE2M2M5Njg2ZjNhYTY3MDUzYzQzMTEwNGZhMmM4NmFkNDBhZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_427c7ff14fda4a899d6722a51291f659",
+      "statement": "result_path 写错时返回错误、整体预览和 result_id，避免为修正路径重新执行接口。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1468-L1476",
+          "version": "repo-lines-v1:sha256:7d3d1cb189d6d7ca4a9de0345f3db19a210400c8b98b7147562634cdfc4615d0:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTFkZjg3YTQ3MzE2YzcwOGM1NTAyMDk4ZTlhZjZjNDQ1MzRlYjgwYmVhZGNmNjA2MzAyOGVmY2E4NTkzN2FiZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTgxNGE1YmIwZGM5ZTk5YmY3ZTNkZDc2ZGE0OTZlZDczZmI1NGIwMGM1NGU5OWI1MDkyMjAwOTZhODhmYjhlZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWU5NDczYWQwNmM1MmNhNGQ3NzlhYmI5YmMzYjM2MWMzYzAxZjRiYjIxMTRiM2JhOGYzNTA4ZWY3ZGY3ZGJlYiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_0c412b82eae04b65aa083beec78b6e4f",
+      "statement": "AI 结果最多展开 4 层嵌套 JSON 字符串，并记录展开位置。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1292-L1305",
+          "version": "repo-lines-v1:sha256:4599889a31728788b3cbeb7c0d776a6ac85706dab41119cd13c3b9e1f9b977af:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3Nzg5YzJkODg1Yzk1MTZkNzQzZDhjOTgzODY4Nzc4ZWZkYzQ1NmEwMzE3N2UwODA0YTEwYTgzMDc4ODI5MDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhYzVjZTE1NDM4MTZkNTZjMTZiOTk5MzBkZTIwZDg4NDYxMzhhYjAxZmQ1YmJiMDk4ZDNlZjZkMjY0NDkyOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyZTI1MTJjODA1YWQ0OWU4NzhkNjY4OTRhZmI4MWU1MjFkNjIxNDVjY2IxZjk2ZGM3NWZkYzNiMWVlNjM2ZjYifQ"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1449-L1453",
+          "version": "repo-lines-v1:sha256:e3455181e12658238ca919358da41e2804c6b321b805ca2f048aa5749d16b489:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjU2MzJjMjIyOTAyN2NmMjgwNjdiODUyMmYzOGZiMjgwMTJmMmM0MDEzMjYzYTVlYWUzZWMyNTU2MDM3M2QyYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTY4ZGEzYzRlYTQ4YjllNDc4ZmI5NzBjOWZlNWNjYWM0MzkxYmQ1ZWRhOGFiZGFhMjNlZmI4YjhiMjk2ZDU3YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIyNzc1ZGNjNjc0MWMxN2ZiMTViZDI4ZTgwYzc1Nzc2ZTNmZDVmYWM4MTBhNzU1OWFjM2M3ZDY0ODhjZGIyMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTYxZTZkODk5YTE1NzgzMTJkMTkwODRhM2JkZGEyZmQzN2RlOWZiNmNjZGFkMzIyNWM4MWVkY2U4NmY2ZTQ2MCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d270f78a1e3b4954aad58d8364cdd169",
+      "statement": "接口或脚本自身拥有同名结果参数时，该名字归接口所有，不作为结果裁剪参数。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1521-L1524",
+          "version": "repo-lines-v1:sha256:94f8b97c0e42c6d0dc82d4cc7609cb80809fcb93812bffdc89bc9627efbfb4c8:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzdkZmRkNmUxZmNiNWViZjU1ZWM1NWQxYmIwYTdlMWYzNTMzZDA2NzkxOWM1MGYwNDVhMmI2NmMzZjU0NDdkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTk3Yzg3MDUzYzFjM2ZkZmYzNTcxMDg3NTVjNGMyYWViYmM2YzQzNTlhODVlMWE1MzZiY2E5M2ViMTczZTExZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjllZTgwZWQyZTFlOTFkYTJlYTdhODlmNzYxYTI4ZGIyY2YwOTQ2ZWMyNGE2Mzk4MzI2ZDFlYjNlY2E5YTRhNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODAzZTg2MDU5MDBlYzY1MThkZGY1YWFjMjc2ZWM4OWRhZWUwMDgyMGVlOTU5OTBhNjhmNThkODdmYjk5Njg4YSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_f46c88ee00d34b2581788636b7671f4e",
+      "statement": "REST 的 run 和 call 路由直接返回 extCall 的完整结果，不经过 aiText。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1884-L1892",
+          "version": "repo-lines-v1:sha256:6fd90cedfa8ac9d9f9dfdbbdc845a066208d1616dd6cf2647c1a89e9f4dee101:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGY0Y2E5MjVmNmQ1OWMwY2IyMDY4NzBjYzQ1YzliOWRlM2FkODc0MDFkZTMzOTE4ZGQ2ZGQzYWRjMWExZTU3MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDJkYjIzMWY1NDFmNmQ0NTIwZDJjNzQ1NGY5MDBiNDNjNDdiNzE1YWExZTAwMjQ4NGM5NGYyYjk4M2VhOGRkMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjA2MDEzNDIwYjYxYTUyNDBhYzNiMDNmMTVhMmIwZDFkZWQ4YTE0ZGRiYzAzNzJhNzVjODAyMWQzYzdlMWFkZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGI3MTQ0YTY3YjZlMzlkNzgyNjIzOWM4NzM0NmY2ZTY2Mzc5ZmU5OGRjNzFmN2M3N2JjMDM3MTllNTYwMGM2NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4449de6a8954e63b45cf4228729fcb2",
+      "statement": "initialize 只回显受支持的 MCP 协议版本，否则返回最新支持版本。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/server.js#L1653-L1655",
+          "version": "repo-lines-v1:sha256:48b9ba74e34b66c4349c49830eeff55542b1e78bf374b2385374346b21c03c1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTUxNzBkOTliOWFjOGY2NmZiYjI4YjBhNTU5MTI3MzM2ZWE0YmYxMmFlNTg0MjM0MTdiMGE2MDJjOGU2OWY0NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2MwMDBhMjI2M2I1ZjE1ZWEyZDgzMmY3YzM0NzA0NDIxOWMyNDc1MDY4ODk1MGMyNTY5ZGNmMTQwNjZkMzBlZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmI1ODBlOTY0ZjgzYTQ3M2Y0M2Q0NDM4NDYyOTQ5ZDY4YjU2MDBmZGE3ODdmMTYzNzQ1ZDAwZGU4OWNiZjM2YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmI3YTgxNGY1ZjkxOGZjNDJiNWJiYjFhZjRmZTJkZjdjNWY0NDEzYTFlNzEyNzI1Mzk1MTc5YjA2MDI5ODVlMiJ9"
+        },
+        {
+          "resource": "repo://bridge/server.js#L1662-L1664",
+          "version": "repo-lines-v1:sha256:369cde3bcb6e1c781ba037ebd4e5a4cd352b08f4e206fe735db16212bac84017:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTZhZmE2ZjUxNGJhYjYwOTVlM2ZkODNmZTM3NjMzYjZlMzliMDgyYmIxMjRmMjYwYjRkYjI0NDc5NzFiYjNjOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmEwMWRiZmUxYjQ0ZWEwM2Q5YzFmODllOWY1ZTliM2VmZDFkZjIyNWVlMjMxYzAwZGJhODAxMDZlMDk0MWE5MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmE4MzlhZGJjMTM0N2VmYTBiNTg4ZWU5NGMwZDBkNTgwYWIwMzg0Y2Y1OGE4YWMwODY2OTg1YzgzMmE3MDI2YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTUwYWZkYTJjOTYxZjhhNzkwN2M0MmI4NDU0MWM5ZWM0NzQ5MDQ0ODVjODdlM2VhNDUxOGJjMjc0ZjQ4MzA4MSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e84a3a0b3f6a412bb19716fcf5d7583b",
+      "statement": "技能按首条命中的规则处理失败：结果未知或 writeRejected 时先确认，notSent 按错误处理，鉴权被拒时让页面自己发，业务返回码失败时提交类接口先确认没生效。",
+      "evidence": [
+        {
+          "resource": "repo://skills/page-recorder/SKILL.md#L34-L45",
+          "version": "repo-lines-v1:sha256:7de65e1ea13389718f945b7a3b206035c87f71addbf5d7d828b9ebed35a58e50:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1YTIxNTJhMGJiMWJmNjc2ODViNGU4ZjYyNzA0NjdmMDIyMmVmNDY3MDFjZmEyZmU0NmIyYmMyNjQ3YTQ1M2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2Y2U4ZTMyMjkwY2U4ZjFhYmVjYjllZWQ1NDg5MTliMGZlNDZmZDFkZWU5YWU3OGRlYzIxZTk4OWRlMTM0MTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkM2Q4MjYzMDgwZDY0MGRkMTY3NTNlZGYyNTZhYTVkNGFiNjgwMzVlMTIwNjllZjM0ZTA2ZmIyNmIxNGIzNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3Y2E3N2M4ZjVmYTE3YTJiNmE5Y2RkMmNiNzgwM2VmZGY0Y2FiZjI4NTk1NDIxZDg1YjA5N2MxYzdlODEzZDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8224991df09b4c449d4c906f3fcf357d",
+      "statement": "技能目录包含在 npm 包中，桥接更新已安装到 WorkBuddy 或 Claude Code 的技能文件。",
+      "evidence": [
+        {
+          "resource": "repo://bridge/updater.js#L212-L228",
+          "version": "repo-lines-v1:sha256:9442d05b5ab79903c345c6eac1657cd4502c197c14c3eeb2560c9fc35eb1651b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMjIwYjFlMzRmYWQ1YTJhOGYyYmVhY2QxMDU0Y2RhNGQ0YzE4MzhkZTFmNmEyN2E0ZDg0MzNkNWE1ODA4ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3Mzk1ZjkyM2Q5YTAzMjZiZTY2Mjc1MWM3YjM3MTcwNGRiMjY3ODM4ZTUxZGYwYWY3Y2Q4ODc4NjQ3NTJhNzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0ZGFlZGE4MzAzNDI5YTEzZWIzM2M3NDljZDQ0NDA5ODkwYjA4MjQ4YzJlNGFkMjViMTdiNjg5NGQwZDA3OGIifQ"
+        },
+        {
+          "resource": "repo://bridge/updater.js#L67-L68",
+          "version": "repo-lines-v1:sha256:6c126dcac4d9c282e7b7f8696bddb6d567923dd25a7879ddccf1d1c891414d5e:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTAzZmRmZDUxNzU2Y2MwYTdkOTlkNTY5OTk2NzVkMzZhY2IyYzI3NjNhZDNlYTg3OTBhMWNjNzY5OGIzM2VjNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjQzYzA1NTNiZTk0MjcwMzA2ZTM3ZTc5M2Y0ZTI1ZWJlYmQyMTQzZGZiNTY1MWMxZWJkYmQ3OTA4MzQwNmJjZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGVkYTkzMGU1Zjc5MTU5NjY3NmM2YTM2NzMwN2UwZDRlMTE4ZGNlZWNjOWYyODk4NjlhZjY4M2ZiYTEzNzg5MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzMyODUwMTQ4NzMwZDEzODg4ZjU2ZDliNmFkMjZlMGJiNGUxOTU0MDA1Yjg2MTVjYzFjZDJlZGM3NDllNGVjZSJ9"
+        },
+        {
+          "resource": "repo://package.json#L25-L37",
+          "version": "repo-lines-v1:sha256:974e4ca286a609a56fcd98a367049410c0b09e72b5592bdd5bc687c580effdd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2NDZjMGJmMDM5NTI4MWMwY2RiNmI4YWU4YmU1YzRmMDY4ZTdkOTU5NzA5ZDA4ZjY0ZWUwODU4MGYwOThkYjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2NGQ4YzA3MzQyOTg5MzEwMTU3NmQ4OGQ5OTEyN2U4OWQ2ODkxZDNiMTdlODlkZjAyZWM5YWU3MDcwNWQ4YmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmOGFkNDRjYzg2YjBkNWE1N2QxMjEzYzdiYjlhOTgwMzMyNzk5NjI2NzdjZTZjNDk4M2NmYmQwYjc4MTFiODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlN2RmZjlkNjI2NTMzYzE0Njk5NjhhZTU0OTNhNzY2ZGRiYzFkNGNkMTMyZjIzZTNkNDhiYjIwZTVkYWEyZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9d4c02bb06ef42f090fbaf1af5e791eb",
+      "statement": "writeRejected 由 run_recording 的直接请求流程设置，call_api 的结果没有这个字段。",
+      "evidence": [
+        {
+          "resource": "repo://background.js#L1236-L1262",
+          "version": "repo-lines-v1:sha256:1fb8353a6aeb4178956c7d1aafa51671652e6e1a129845b7c241b81a9ca4a574:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0MTA2OTdkMzY4MTUxOTk2ZTM5MDIxMjc0MWVlZjdlYjc5NTM2NmIxNTkxZGNlNDdmZDFkZDIxNTJmNWJhNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5Yjk5NGFhMzdhZmVhZjc1ZGFlODBmYTBkZTJkNjI5OGE1YTc0NmIzYmU0ZmFiYTkyMjBjNGM4OWFhMzE1YjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzNDk0N2VjOGUxNTgzMmYwOTQ3M2FjNGNlYTUxOTVjMzA2NmRlYmQ5Mzc3OTkwY2ZkNDQ1NmZmYmU5MDAxMjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5MjQyMDRkOTA3NmQ2Yjc0MjU1MTNlZDM5NDYwY2Q5YjMxYzNhMGY3MzFiY2U1MWM5ZDkzMTE1YTNmNTM3MDIifQ"
+        },
+        {
+          "resource": "repo://background.js#L1343-L1346",
+          "version": "repo-lines-v1:sha256:77616717aa11a831454f5ebea20debba629b2c53fccda6c3d177484ba4bfd42e:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjM2ZjM1NWNjYzhkYTRkNDkyYTQxYTI4NWI2OGExMTYzNTIzYmMxZDg0ODRjMjBjODU5NWEyY2RhNDM5NTY3ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWI2MmY2MGQ4NTkwYTU3OWNmNDZmOGQ2NzM3OGM0YzU3MmI5NjJjZWNjZGI5MGM3YTVmN2I0MmI5NjA3ODJhNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmUyMjZhYWU0OTdhNTgxYmMzNDRhNzQ4NDZlZmEwNTBhYzdlNTE5YTI2M2M2MTc3YWFhN2I4YTY4MjVmMjAwZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWEwZmMzMjU0YWExMWE5MmQ5ZTU1ZTc2ODNkYTYxMTEyODMxYmM5NzJjMWJkZjkzZGE5OWM0NjE2NGRlNDZmOCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-23T04:07:50.896Z"
+  }
+}

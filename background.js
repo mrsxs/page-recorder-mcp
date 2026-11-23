@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS = {
   bridgeUrl: 'ws://127.0.0.1:17321/ext',
   // 回放时用浏览器调试接口发真实的鼠标、键盘输入（回放期间页面上方会出现“正在调试此浏览器”的提示条）
   realInput: true,
+  autoUpdate: true,      // 桥接发现新版时自动更新扩展目录并重新加载（录制、回放中不动）
   // 多个浏览器资料都装了扩展时，桥接用这个名字区分（AI 调用时可用 browser 参数指定）
   profileLabel: '',
 };
@@ -150,6 +151,7 @@ async function syncLibrary(c) {
     c.libIndex = c.libIndex.filter((x) => x.id !== c.state.id);
     await chrome.storage.local.remove('lib:' + c.state.id);
     await chrome.storage.local.set({ libIndex: c.libIndex });
+    await noteLibDeleted(c.state.id);
     bridgeNotify('libraryChanged');
     return;
   }
@@ -164,18 +166,30 @@ async function syncLibrary(c) {
     aiDocs: c.aiDocs,
     settings: c.settings,
   };
-  const cnt = counts(c);
-  let params = {};
-  let direct = false; // 有没有关联输入参数的接口（能不能直接请求）
-  try {
-    const A = PR_EXPORTER.analyze(c.events, c.settings, c.state, c.apiOverrides, c.aiDocs);
-    params = A.params;
-    direct = A.apis.some((a) => !a.ignore && /\{\{[^{}]+\}\}/.test(JSON.stringify(a.editParams || {})));
-  } catch (e) { /* ignore */ }
-  const entry = { id: item.id, name: item.name, description: item.description, startUrl: c.state.startUrl, savedAt: item.savedAt, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(c.aiDocs && (c.aiDocs.title || Object.values(c.aiDocs.apis || {}).some((d) => d.fn || d.title || d.description))), params, direct };
+  const entry = libEntryOf(item);
   c.libIndex = [entry, ...c.libIndex.filter((x) => x.id !== item.id)];
   await chrome.storage.local.set({ ['lib:' + item.id]: item, libIndex: c.libIndex, state: c.state });
   bridgeNotify('libraryChanged');
+}
+function libEntryOf(item) {
+  const cnt = counts({ events: item.events });
+  let params = {};
+  let direct = false; // 有没有关联输入参数的接口（能不能直接请求）
+  try {
+    const A = PR_EXPORTER.analyze(item.events, item.settings, item.state, item.apiOverrides, item.aiDocs);
+    params = A.params;
+    direct = A.apis.some((a) => !a.ignore && /\{\{[^{}]+\}\}/.test(JSON.stringify(a.editParams || {})));
+  } catch (e) { /* ignore */ }
+  const docs = item.aiDocs;
+  return { id: item.id, name: item.name, description: item.description, startUrl: item.state.startUrl, savedAt: item.savedAt, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(docs && (docs.title || Object.values(docs.apis || {}).some((d) => d.fn || d.title || d.description))), params, direct };
+}
+// 删掉的脚本记下来：桥接没开时删的，下次连上也要从本机目录里删，不能被恢复回来
+async function noteLibDeleted(id) {
+  await withLock('libDeleted', async () => {
+    const all = (await chrome.storage.local.get('libDeleted')).libDeleted || {};
+    const next = Object.fromEntries(Object.entries({ ...all, [id]: Date.now() }).sort((a, b) => b[1] - a[1]).slice(0, 1000));
+    await chrome.storage.local.set({ libDeleted: next });
+  });
 }
 async function getLibItem(c, ref) {
   const r = ref == null ? '' : String(ref).trim();
@@ -658,7 +672,7 @@ async function saveDocsTo(c, ref, docs) {
   item.aiDocs = mergeDocs(item.aiDocs, docs);
   if (!item.state.name && item.aiDocs.title) item.name = item.aiDocs.title;
   item.savedAt = Date.now();
-  c.libIndex = c.libIndex.map((x) => (x.id === item.id ? { ...x, name: item.name, hasDocs: true, description: item.description || item.aiDocs.description || '' } : x));
+  c.libIndex = c.libIndex.map((x) => (x.id === item.id ? { ...x, name: item.name, savedAt: item.savedAt, hasDocs: true, description: item.description || item.aiDocs.description || '' } : x));
   await chrome.storage.local.set({ ['lib:' + item.id]: item, libIndex: c.libIndex });
   bridgeNotify('libraryChanged');
   return { ok: true, id: item.id };
@@ -1241,6 +1255,7 @@ async function runApiMode(item, b, apis, opts) {
       out.error = `${a.name}：${r.error || 'HTTP ' + r.status}`;
       // 服务端明确拒绝（业务码不对、4xx）或者根本没发出去才算“没执行”；超时、5xx、网络错误结果未知
       out.rejected = !!r.rejected || !!r.notSent || (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429);
+      if (out.rejected && !PR_EXPORTER.canFallback(a.method, r)) out.writeRejected = true;
       if (r.unknown) out.unknown = true;
       break; // 一个失败就停，后面的不再发
     } catch (e) {
@@ -1322,9 +1337,13 @@ async function runRecording(item, opts) {
     if (!reasons.length && !mism.length && !unverified.length) {
       const r = await runApiMode(item, b, callable, opts);
       // 直接请求被服务端明确拒绝（缺签名、登录态要页面现算等）或根本没发出去，而且这次没有任何接口已经成功：
-      // 改成回放页面操作，让页面自己发请求、只改参数。已经有接口成功、或者失败原因不确定（超时、5xx）时不回退，
-      // 免得把已经生效的提交再做一遍
+      // 改成回放页面操作，让页面自己发请求、只改参数。已经有接口成功、失败原因不确定（超时、5xx）、
+      // 或者写接口返回了业务错误时不回退，免得把已经生效的提交再做一遍
       if (r.ok || !b.recording.steps.length || !r.rejected || r.succeeded) return r;
+      if (r.writeRejected) {
+        r.warnings = (r.warnings || []).concat('这是写接口，返回失败时说不准有没有生效，没有自动再发一次。确认没生效后再用 mode: "ui" 重试');
+        return r;
+      }
       await markDirectRejected(item, r.error);
       const ui = await runRecording(item, Object.assign({}, opts, { mode: 'ui', fallbackFrom: 'api' }));
       ui.fallback = { from: 'api', reason: r.error || '直接请求失败' };
@@ -1729,9 +1748,98 @@ async function importPackage(c, pkg) {
   bridgeNotify('libraryChanged');
   return { ok: true, id, name };
 }
+// ---------- 脚本库同步到本机目录（桥接来取、来补）----------
+let libraryOffers = [];
+let libExport = null; // { id, text }：一条脚本分段发给桥接时留着，发完就放掉
+const libImports = new Map(); // id → 分段收到的文字
+// 步骤可能录在 about:srcdoc、blob: 这样的框架里；起始页面只能是真实地址
+const validLibUrl = (value, inFrame) => {
+  try {
+    const u = new URL(value);
+    return (inFrame ? /^(https?|wss?|file|about|blob):$/ : /^(https?|file):$/).test(u.protocol) && !u.username && !u.password;
+  } catch (e) { return false; }
+};
+// 本机目录里的文件也当外部输入：格式不对、地址不对的不进脚本库
+function validLibItem(x) {
+  return !!(x && typeof x === 'object' && /^[A-Za-z0-9_-]{1,128}$/.test(x.id || '') && Number.isFinite(x.savedAt) && x.state && typeof x.state === 'object' && Array.isArray(x.events)
+    && validLibUrl(x.state.startUrl) && x.events.every((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && Number.isFinite(e.ts)
+      && (e.url == null || validLibUrl(e.url, true)) && (!e.frame?.url || validLibUrl(e.frame.url, true))));
+}
+function libraryChunk(id, item, offset, limit) {
+  if (!libExport || libExport.id !== id || !offset) {
+    // 和录制包同样脱敏，并清掉密码框的值，不看这条录制自己的开关：这个目录会长期留在磁盘上
+    const { item: clean } = packageOf({ ...PR_EXPORTER.scrubBackup(item), settings: DEFAULT_SETTINGS });
+    libExport = { id, text: JSON.stringify({ ...clean, id: item.id, savedAt: item.savedAt, imported: !!item.imported }) };
+  }
+  const start = Math.max(0, Number(offset) || 0);
+  const end = start + Math.min(8e6, Math.max(1, Number(limit) || 4e6));
+  const done = end >= libExport.text.length;
+  const chunk = libExport.text.slice(start, end);
+  if (done) libExport = null;
+  return { chunk, done };
+}
+async function restoreLibItem(c, raw, sourceExtension) {
+  if (!validLibItem(raw)) throw new Error('本机保存的脚本格式不对');
+  const deletedAt = ((await chrome.storage.local.get('libDeleted')).libDeleted || {})[raw.id] || 0;
+  const cur = c.libIndex.find((x) => x.id === raw.id);
+  if (deletedAt >= raw.savedAt || (cur && cur.savedAt >= raw.savedAt)) return { ok: true, skipped: true };
+  // 不带本机文件路径。这个扩展自己录的照常用；别的扩展 ID 存的按导入的录制包对待（不用页面 SDK，实时身份不跟随重定向）
+  const events = raw.events.map((e) => (e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e));
+  const own = sourceExtension === chrome.runtime.id && !raw.imported;
+  const item = { ...raw, events, imported: !own, state: { ...raw.state, recording: false }, settings: c.settings };
+  c.libIndex = [libEntryOf(item), ...c.libIndex.filter((x) => x.id !== item.id)];
+  await chrome.storage.local.set({ ['lib:' + item.id]: item, libIndex: c.libIndex });
+  bridgeNotify('libraryChanged');
+  return { ok: true };
+}
+// ---------- 自动更新：写文件前先确认空闲，写完立刻重新加载（否则页面里注入的是新代码、后台还是旧代码）----------
+let updateUntil = 0;
+let activeOps = 0; // 进行中的回放、接口调用（包括还没占上标签页的准备阶段）
+const updateBusy = (c) => !!(activeOps || stopInFlight || c.state.recording || aiRunning || runningTabs.size || callingTabs.size || navigatingTabs.size);
+function assertNotUpdating() {
+  if (Date.now() < updateUntil) throw new Error('扩展正在更新，请几秒后重试');
+}
+async function trackOp(fn) {
+  assertNotUpdating();
+  activeOps++;
+  try { return await fn(); } finally { activeOps--; }
+}
 async function bridgeHandle(method, p) {
   const c = await load();
   switch (method) {
+    case 'libraryManifest': {
+      const all = (await chrome.storage.local.get('libDeleted')).libDeleted || {};
+      const here = new Set(c.libIndex.map((x) => x.id));
+      return { items: c.libIndex.map((x) => ({ id: x.id, savedAt: x.savedAt })), deleted: Object.entries(all).filter(([id]) => !here.has(id)).map(([id, at]) => ({ id, at })) };
+    }
+    case 'libraryGet': {
+      const item = (await chrome.storage.local.get('lib:' + p.id))['lib:' + p.id];
+      return item ? libraryChunk(p.id, item, p.offset, p.limit) : null;
+    }
+    case 'libraryRestore': {
+      const id = String(p.id || '');
+      const text = (p.start ? '' : libImports.get(id) || '') + String(p.chunk || '');
+      if (!p.done) { libImports.set(id, text); return { ok: true }; }
+      libImports.delete(id);
+      return restoreLibItem(c, JSON.parse(text), p.sourceExtension);
+    }
+    case 'libraryOffer':
+      libraryOffers = Array.isArray(p.offers) ? p.offers.slice(0, 20) : [];
+      return { ok: true };
+    case 'updatePrepare':
+      if (c.settings.autoUpdate === false) return { ok: false, disabled: true };
+      if (updateBusy(c)) return { ok: false, busy: true };
+      updateUntil = Date.now() + 120000;
+      return { ok: true };
+    case 'updateAbort':
+      updateUntil = 0;
+      return { ok: true };
+    case 'updateReload':
+      if (c.settings.autoUpdate === false) throw new Error('自动更新已关闭');
+      if (updateBusy(c)) return { ok: false, busy: true };
+      await persist(true);
+      setTimeout(() => chrome.runtime.reload(), 150); // 先把这次的响应发回去
+      return { ok: true };
     case 'list': {
       const out = [];
       for (const e of c.libIndex) { try { out.push(recordingSummary(await getLibItem(c, e.id))); } catch (err) { /* skip */ } }
@@ -1759,8 +1867,8 @@ async function bridgeHandle(method, p) {
       const item = await getLibItem(c, p.recording);
       return { name: item.name, script: buildItem(item).script };
     }
-    case 'run': return runRecording(await getLibItem(c, p.recording), p);
-    case 'call': return callApi(await getLibItem(c, p.recording), p.api, p.args, p);
+    case 'run': return trackOp(async () => runRecording(await getLibItem(c, p.recording), p));
+    case 'call': return trackOp(async () => callApi(await getLibItem(c, p.recording), p.api, p.args, p));
     case 'saveDocs': return saveDocsTo(c, p.recording, p.docs || {});
     case 'exportPackage': return packageOf(await getLibItem(c, p.recording));
     case 'importPackage': return importPackage(c, p.pkg);
@@ -1779,7 +1887,7 @@ function bridgeConnect() {
     if (ws !== sock || sock.readyState !== 1) return;
     // profile：多个浏览器资料都装了扩展时给桥接看的名字（设置里可以填，没填就空着，桥接按 instanceId 区分）
     const profile = String((cache && cache.settings.profileLabel) || '').slice(0, 40);
-    sock.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version, instanceId, profile }));
+    sock.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version, instanceId, profile, capabilities: ['librarySync', 'selfUpdate'] }));
     clearInterval(wsKeep);
     wsKeep = setInterval(() => { if (ws === sock && sock.readyState === 1) sock.send(JSON.stringify({ type: 'ping' })); }, 20000);
   };
@@ -1925,10 +2033,10 @@ async function handle(msg, sender) {
       if (ev) { Object.assign(ev, msg.patch); if (msg.patch && msg.patch.members) groupMembers(c, ev); persist(); }
       return { ok: !!ev };
     }
-    case 'start': await start(c, msg.tabId, !!msg.fresh); return { ok: true };
+    case 'start': await trackOp(() => start(c, msg.tabId, !!msg.fresh)); return { ok: true };
     case 'stop': await stop(c); return { ok: true };
     case 'getData':
-      return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, bridge: bridgeConnected() };
+      return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, libraryOffers, bridge: bridgeConnected() };
     case 'clear':
       c.events = [];
       c.apiOverrides = {};
@@ -2092,6 +2200,7 @@ async function handle(msg, sender) {
       return { ok: true };
     }
     case 'aiAnalyze':
+      assertNotUpdating();
       startAiJob(c); // 后台运行，进度和结果通过 getData 的 aiStatus 查看
       await sleep(50);
       return { ok: true, aiStatus: c.aiStatus };
@@ -2124,9 +2233,15 @@ async function handle(msg, sender) {
       c.libIndex = c.libIndex.filter((x) => x.id !== msg.id);
       await chrome.storage.local.remove('lib:' + msg.id);
       await chrome.storage.local.set({ libIndex: c.libIndex });
+      await noteLibDeleted(msg.id);
       bridgeNotify('libraryChanged');
       return { ok: true };
-    case 'libRun': return { result: await runRecording(await getLibItem(c, msg.id), { active: true, keepTab: true, params: msg.params || undefined, fresh: !!msg.fresh, newTab: !!msg.newTab, mode: msg.mode || 'ui' }) };
+    case 'libRestoreOffer':
+      if (!bridgeConnected()) throw new Error('桥接没有连接，暂时不能恢复');
+      ws.send(JSON.stringify({ type: 'event', event: 'libraryRestore', owner: String(msg.owner || '') }));
+      libraryOffers = libraryOffers.filter((x) => x.owner !== msg.owner);
+      return { ok: true };
+    case 'libRun': return { result: await trackOp(async () => runRecording(await getLibItem(c, msg.id), { active: true, keepTab: true, params: msg.params || undefined, fresh: !!msg.fresh, newTab: !!msg.newTab, mode: msg.mode || 'ui' })) };
     case 'bridgeReconnect': if (ws) ws.close(); ws = null; bridgeConnect(); await sleep(600); return { bridge: bridgeConnected() };
     default:
       return { error: 'unknown message' };
@@ -2161,5 +2276,15 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
 // 浏览器重启后标签页编号会重新分配，记下的“扩展开过的标签页”可能对到用户自己的标签页上：清掉
 chrome.runtime.onStartup.addListener(() => { chrome.storage.local.remove('ourTabs').catch(() => {}); });
+// 更新后打开着的页面里，旧的 content script 已失效（录不到接口、真实输入发不出去）：换上新的，不用用户刷新页面
+async function reinjectOpenTabs() {
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  await Promise.all(tabs.filter((t) => !t.discarded).map((t) => chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ['content/recorder.js'] }).catch(() => {})));
+}
+// 重新加载（自动更新、手动点）后定时器可能没了：靠这个事件唤醒后台，马上连回桥接
+chrome.runtime.onInstalled.addListener((d) => {
+  load().then(bridgeConnect);
+  if (d.reason === 'update') reinjectOpenTabs().catch(() => {});
+});
 
 load().then((c) => { setBadge(!!c.state.recording); setRecKeep(!!c.state.recording); bridgeConnect(); });
