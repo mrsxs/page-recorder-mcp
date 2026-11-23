@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:96ea7fe982deb7932a4d6f92dd87d635b30c16fdc2d34dd997d44e37276df9d4",
+  "claims": [
+    {
+      "id": "claim_1b9e139490f742e5b9e76be4f2d1c43d",
+      "statement": "build 先运行 analyze，再生成回放 bundle、导出脚本、原始 JSON、Markdown 说明、工具 schema 和 AI 提示词。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1805-L1822",
+          "version": "repo-lines-v1:sha256:fd56622463a47b2671290d3eed4406d6df50144020788d90491a9842261e9902:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwODI3YWRkZDRmMjkwYjZlZDdjMzRiMzVjNDhmOTg4YTMxNDA2Njc5MWNmMzg1NTkxYjM2MDcxOWFkYTkwMjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1MGVhYTA0ZGRkOTEyYzU5NjUwMzc2MzUxYTg0MmM2YTdkODQ3Y2ViOTFiNGRhNjk3OTc2ODMyYjBiOTYxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwNWQ4ZGQ2Mjg3NGZkNjIwZTI3NTNjNDI2ZDQ1ZjM0YmRjZWNmYzBlNzVkY2IzZjkwMDE3NGUxYTk0MGEwNjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c546dbbcc38741faa67bcd3e85a687ef",
+      "statement": "recordingData 的 outward 视图会额外遮盖请求头值，扩展内部视图保留按名字遮盖的结果。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1612-L1614",
+          "version": "repo-lines-v1:sha256:2b89aa206d5ed6b7a092a60e6a07424e19472253515098789ae00c921408e135:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGE1YjNmZTNmYzJlMzU0OGUwNDZjZmJhMDhiY2Y1NDk0ZTA1MGQxY2UxZDhjY2I5NTFiZWY0YTVhZGEyNjIyMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2JlNTI2Y2RlYWVlN2JmNmVhMjI3YmRjNWY0NmEzYTEzZWFkOWU5ZjYzNDUxMTg5OWI0ODM0MDM3NjU0YzA4NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmEzNGUzMGJlODhhYTdkNmE3MTRkZGVjYjM2ZWEyM2EzYTFlOWVmMzQwZmQ4NzU2OGM1MjA0N2YzNjg5YWUzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDA4NzEwYTNmZmFjZDI1ZTY1OWE4ZWQ5OWQwNzEyNzFlZDY4ODM5OWM2YjM1MDQxMDc1MjQ4MWNhYmU0MjdhOCJ9"
+        },
+        {
+          "resource": "repo://lib/exporter.js#L1688-L1688",
+          "version": "repo-lines-v1:sha256:a7170cc8e763199ecc7de6eef23dadde89fa40aa5eec3b1e69cd321a22d0f07f:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTcxNzBjYzhlNzYzMTk5ZWNjN2RlNmVlZjIzZGFkZGU4OWZhNDBhYTVlZWMzYjFlNjljZDMyMWEyMmQwZjA3ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTcxNzBjYzhlNzYzMTk5ZWNjN2RlNmVlZjIzZGFkZGU4OWZhNDBhYTVlZWMzYjFlNjljZDMyMWEyMmQwZjA3ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2M3YjE4MmQzNjA3YzBlNjgwYjhhMjA3MTQ3Y2Y5OWRmYzljMzVkMTcwYWYwZjc0ZjRmMzAxM2FkNDg0OGI4MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzM5ZDhlZTlhOWNjNDQxYzkxMTE3NWZiZWU1ZDg4ZTA2NmNhNDBlOTI4MDQ2NmQ3OGQzYTRkNmYxM2ZjNDkwYiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ffd1835e59794c8bb09ba8d4a59fb4a1",
+      "statement": "接口身份由方法、主机、路径模板、路由参数和请求体操作组成。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L927-L940",
+          "version": "repo-lines-v1:sha256:ffc4d48b10444f491f712ebfbe54bdc12a4438db476701d7917221adb4f0e5fe:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdhNzc5Y2FjMjdiNWU3NjQyNjZkZTAxNTJkZGM5M2VhNWU5ZTY4NDhjNmYzYzkyNzNjODQ2MDZiMTUxMTJjZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4MDFiODM0ODI0NWU4ZDc2YzVlOTkzOWFlMjQwZGFhOTcyZWY2YThlMzJiYWUyOTU0NGEyMWRlMGQ4NzUwZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgzNmM0ZDY3ZjRkZjE3Y2JjZTM5OWQ3OTQ0MzllYzBiZDE2NGYwY2NiMDBhMWQzZjk4ZGNiNTY3ZmI2ZGI1MmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1e04f44907f24717b420a6647ccc2d4e",
+      "statement": "路径中的数字、UUID 和长标识会被识别为路径模板参数。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L34-L54",
+          "version": "repo-lines-v1:sha256:4c1b9462da8350d1c57b6980b71a26206de495bf263c09ca7866091ce376aa55:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlMWQ3MzVjYWUwZWEzMTE1OGM0ODI3OGY4MjMzODg0M2IzOTdkMGVhOWNkYmQyZDQxNTE4MThhNTEwYzlhN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3ZjA1OTYyODA5YzIwN2JkNjU3OWE5MmY3NTY4ZjM1OGRmN2M1MzMxZTUwZjkxMWM3ODg2MDE2MGNhMmQ3NGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjN2IyZDFkODRkMDY2NGU2YjkzOWQ1YWM5OTYyYTE4YzZmMzhlNjA3OTRiODJmZWQzOTY4MDA4ZjQyZGMwYWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b05652bb49af4902a340c05dc5f934f3",
+      "statement": "网关式接口按 operationName、JSON-RPC method、action 类字段和嵌套 data 中的操作标识拆分。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L69-L110",
+          "version": "repo-lines-v1:sha256:20a989f7ea0b83781f5c333b3e897509dfa55616b1ec0d0838ed4939408700e8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNWM2MjUyZDJhMGU1ZTE3ZDcyZGQyZmJhYTZhZTk3YjZmYjU0YWI2ZGNhNDgzODhhZWExOGQxMzUyZDVhMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhOTU2OTExNzE1OTQwMWMwNTJiZGYxYzUyYTc4NTY3MWY3MGI1NWY4YjEwMDg1NzIyMjQ1NWYwYzI5MDI2ZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4YzA2NjA5MmNiODQ2NGVkM2NhYTY1NGQ0ZTkxZDlkNTRhOGI1NzQ1YzFlZDg0ZDk5NDY5ZWMzZWQ0OWUzZmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_99646208c65a4e6dafba501e9eee8a72",
+      "statement": "参数命名先处理历史类型，再处理单选、复选和多选，后者不能改变已有参数名。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L830-L867",
+          "version": "repo-lines-v1:sha256:0dad7e850f8c790e3fd5d2fabb7b7aae6b0c66a41d6063f2de17ae324881062a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiNTJlMmQzMGI4YTUwNzk4ZTg5NGRlM2M5MTJmN2I2NTllNmQ4N2ZhNmE5MzEyZWRhYjk1MDg5MTkwMGQzNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2MzQzMzUwNWVlOGIyNWVhM2JmZDQ0MDFkMTQzNTZiYzM1N2JiZDNlOWNjODJiZDZkNjBhYjk1OWNjZTQ1YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzMGM0YzUzN2MxNDM3OTg0ODcxMzc2YjNkNmZjZmQ0NjVmNjY1YzI4MTY4MDg2NTViNTQ4ZWQ1NjM2ZmM5ODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1NWFjYTNlNzRmNjJiMDNlMWRmMmJmZjUwMDRiOGY0NGYwYjEwZjQ3NjMxNmY4OWMwODI1OGM1YzJiYzNkM2YifQ"
+        },
+        {
+          "resource": "repo://test/params.test.mjs#L9-L19",
+          "version": "repo-lines-v1:sha256:e0bc596b9c03b177b72ee95e0c017207006691b3b599d539fe2761178a108dc3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ODdmZTQzZmNlMDU3MGJlZjk5ZWUxY2FjYjljNDFhZGFhMzgzYTIxNTc4MDBlZWM4YTdjOTU2ODhlZTVkZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkNGY3N2M2YmE0ZWYyMjdlNDUxZTYxMjIwZjg5NjZmZWZhMTA1ZjdiZmUxMzkxMGYyNWQzYmJjOTU5ZmZmODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0MmFkZGY2OWJiZGY5M2YyNWU1MjNlZDM2Njk5YmI3NTc2NTQ3MmJlNDZhNDc2MzllM2UwNDliNzMwZTQ3OTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_920b135bcfff4f498fe62e799cafa7a2",
+      "statement": "两个输入框录到相同值时，该值因歧义不自动关联。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L942-L955",
+          "version": "repo-lines-v1:sha256:f6bcfb277b6d6babc9347e40c6f1cd5d6407c21db283c9d00fc4923b92a0becd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlOWU2ZjJiNzA1NWQxNmE3ZDgwZjYwN2IyM2FhNDI4MzM3ZWNlYjBmYjRjYzQwZDU1NjQ4MTkwYTUwZjgxMWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4Y2Y5NjZiZThkODhiMzI1ZGVlOTk1ZDNkMGRkYmU4MWI3YzVlMzE3Y2EwYWFiYTRiOGVhNzQyNTg2NDU3MjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU0MzdmMDY3NWVlNDlkYjY4MGYyZmI4OTM0YzNiNDgwZmIxNGJiM2I0NjQ3YjE3YWIzMzU5YTllZTVmNjk1Y2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f01bcd3a3d594178a03a2f6a457df569",
+      "statement": "字段只关联在该次调用之前填完的参数，并排除参数开始填写前已出现的同值字段。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1006-L1010",
+          "version": "repo-lines-v1:sha256:fe6f12e65c83a315fc54979534703415948e1f0af7769e60d65d1dc118b2dbbb:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGEzMjY1M2M3NzUwOTIxN2JkY2M2OWZhYjhmNDZkYmUyY2I5ZDdhNTM1YWEyOWMwODgyNmVlNDk0OGE3ODEwOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzgzMWUwNGRjNjlhNjUwNDMxY2ZlMzY5NTJlOGI2NmIwOGYxMWFiZTdkYzkxMjI5ZmFhZjhmNTIzNmJlMjM4ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzA5NmIxZmY0NzQ3ZDMxM2RlMjIzNTY4MGJhZWZmMWUyZWYwNzg5NzI2YjM1YWZmNDRkMWIxMTFjMzVkZTY3ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTU1MWM2MDU4MTFiYTI2MWVlNTRkNjNjNjdmYmFjOTMyYmFhNWViZTI5ODI2YzA0MmE5MjJmY2U2MDQ2OTI0YyJ9"
+        },
+        {
+          "resource": "repo://lib/exporter.js#L1028-L1028",
+          "version": "repo-lines-v1:sha256:0e23496695cff3a1680e07278ad90022bc2ac6c6358fa72ead1df957e9d6c429:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUyMzQ5NjY5NWNmZjNhMTY4MGUwNzI3OGFkOTAwMjJiYzJhYzZjNjM1OGZhNzJlYWQxZGY5NTdlOWQ2YzQyOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUyMzQ5NjY5NWNmZjNhMTY4MGUwNzI3OGFkOTAwMjJiYzJhYzZjNjM1OGZhNzJlYWQxZGY5NTdlOWQ2YzQyOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTBmMTU0YWI3ZjFjZDE1M2Q3MGM3ZDQ4NWFlMTUyYmI3MjRmYjZhMWVjYTYxYzQ5NDM3MWY4MjZkNTgzZTI1MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWIwODM0MjJmM2YxZmNiMzFkMjNjMTFlNWJlMTNkNmQ0NjgzNDBkMDdmMzEzMTA1NDY4ZmMzODBhYWNkNWRjNSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_2cbd95e19c7f4b5d916bfe2fbe1fa975",
+      "statement": "一两位数字只有在下拉框 name 与字段名对应时才作为输入值关联。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1026-L1028",
+          "version": "repo-lines-v1:sha256:181ca20ba808f99e9a898965d7664182314279515089e3a595642a1fc7ec129b:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzJlYjI1OWU4MjNhMzBjODVmNDJlYWEwOTQ2OTAzYjI1YzhhNTg4MjY2ODQxMDJiYmUwZWM0NDI2YTkxYmYxOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUyMzQ5NjY5NWNmZjNhMTY4MGUwNzI3OGFkOTAwMjJiYzJhYzZjNjM1OGZhNzJlYWQxZGY5NTdlOWQ2YzQyOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTNiMjRlNzcyOWEwYjM2Mjk2NGE5MDc5NTk0MjE5ZTFjYTI1MzM0ZWIwMjc4NTA0YzZlNWMxZjc3OTVlMGJhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWIwODM0MjJmM2YxZmNiMzFkMjNjMTFlNWJlMTNkNmQ0NjgzNDBkMDdmMzEzMTA1NDY4ZmMzODBhYWNkNWRjNSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_f6083634a5644a10b58eba0b135fdd0d",
+      "statement": "接口参数取关联输入最多的调用，并列取最早；全部无关联时取输入完成后的第一次调用。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1090-L1098",
+          "version": "repo-lines-v1:sha256:b320dc898bfb9920b321dbc5edffa4e00341a925025b18c69b4652bbc7eb4de5:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjZlZjBjMmY0NzI5ZTYwNWM3MGQ3MmRmOWZkOWEyZWRiNzFiYWY4YWFlMzQwOTllYWQyMTk0MmViZjAzMmFmNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWI2MmY2MGQ4NTkwYTU3OWNmNDZmOGQ2NzM3OGM0YzU3MmI5NjJjZWNjZGI5MGM3YTVmN2I0MmI5NjA3ODJhNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmJmMjA1MGMxM2NmZTBmYWNiM2Q2Y2M5NjQwODc3ODBjZjY1NmQ0NTBjYjY5Mjc4ZjFlYzlmOGY3MTlkOWNiZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWJiZTVmMGY4OTVhNTIxZjk2N2JlOWFiNTY3NzQ4N2ZiNjQxNWQ1ODQzNDA0NjM0M2I4ZGQ1ZDM2NmJiYzg4NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_af7135beae2146c29990e7bc8a184823",
+      "statement": "选项表挖掘要求数组包含录制文字和选后请求发送的编码，并排除编码或文字重复的候选表。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L744-L792",
+          "version": "repo-lines-v1:sha256:ef4906dada57e12c8f93c62f3f819a0f7a5897be83e8a9da98a954636d656bc9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NzYzNDEyYjM5NDFmNGJkN2U4MTRmODkwMTYzMWZhZGE1N2E4NDlmYjk0MGE5YjZkNTQ0OTc0NDEyN2NiNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM1YzE3YWRiZTdmZmEzYmU1OWZhM2ViOWMyNmQyMDIyZTBlOTdjZGJiY2FjNzJkM2ZhNzU3ZjliZjFiZjdmYTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0ZjMwN2U3MGI0NTgzNDcwNmIwNmE2N2JjY2VmMjdiOTI0ZmMwNjQxMGNmZWUxNDdjNDkzNDllNzVmY2M3ZmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b7d9aea071da4058b97dcf1f0747f6e2",
+      "statement": "apiOverrides 在关联后应用，__deleted 值会从接口参数中移除字段。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1131-L1137",
+          "version": "repo-lines-v1:sha256:45fa54a7753c5adc7ac9465dd6f795ac85f1653ce1e84343ce15206acf6a2efe:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2RiNmNmZDRjZGVkYjUzMDBjZGQ4M2M1NTE2ZjNjYmI5MGE3OTFmMGU2ZmVhZjUwNWQwMzlmYWEyZDg5M2NlMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWI2MmY2MGQ4NTkwYTU3OWNmNDZmOGQ2NzM3OGM0YzU3MmI5NjJjZWNjZGI5MGM3YTVmN2I0MmI5NjA3ODJhNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjk2M2ZjNWIwNTI3MmQ2Y2UzMWZjYWJmMGJhZmM0ZmYyNmE1MjdkMmViYTEwNGQzNDIyZWFkNzIzMDU4MzgzOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmY1OTBmMGI0ZWJjMWVmNGFlMGVkYWIyZWQ4OThmMTYwMTM3MjdjODQ2YWNkYTFkMzVmZTBmZmJlNjM4ZTBhNCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_dba268914e4f4daebc60e7f4aa49e9cd",
+      "statement": "截断、二进制、含文件 multipart、EventSource 和 WebSocket 请求被标记为不可直接重发。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1159-L1162",
+          "version": "repo-lines-v1:sha256:4bc7a52a16918106afe7764fd674558cfc839788249195e9223ffd6c98483f9c:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE0ODdlYzFkN2VlYWFmN2ZhMjFmMzY3ZGQxOTM0Njg0ZjBiMTM1ZWEyMDQxNjliYWQ3NTA1MTk1ODlmYWQ1ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmIzMzc0ZDU4ZWRhNWY4OWJkNzUxN2VlZDUwNDVlNmY0MGU1NmRlM2E4Y2RkZjY5MjE0MzU0MGIwZDNmYjFkMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDRmZGE3N2U1NDA0N2RlYTg3N2FkOTMxZTE5ZGZkYzFiNzJmNDkyOTdmODgyZmFhYzEwNGM4YmZmNDBhMDYzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzVjODEyNDE3ZTg3NWQzOTJlY2NiMjVmNzkxYjQ5NzAzOTZlNGQzNjJhNGVkMzEyOTYxNzk1MGJiY2I3ZTVmZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_be4bacbd823b45f7aa224f6473ce5548",
+      "statement": "步骤 waitFor 只包含选值后 5 秒内、同框架、fetch 或 XHR 发出的最多 5 个接口。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1217-L1221",
+          "version": "repo-lines-v1:sha256:cfb3c2c939ad85966e388a0a114fea8b41b6364e3e2a060c87ec507298700878:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWU1ZDQ5OTRlM2NlNzlhNDgwNTFhZjgwN2NhZTdiZDNkMjQ3MTUxZDQ4YWQ1M2QxMWE4Mzk1Zjk3NDNkNjI1OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjdiZDcyY2QxZDI4ZGM5Mzk4YzAyN2EwMTNlNzU3ZWQ4MDVmZTMzODdjZDE5NjBmMzE3MDkwNWUxMjU0N2IyYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJkY2VkOGM4MmUyNTMzY2VkMjZhYTlkYzFhN2JjMjQwMzVhMjM0ODEyM2IxMzI3NWE1MmYxY2Q4NmM0NmZiOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmU4NGFlOTE4ODczOWU1MjNjOWI3ZGJmYTg0OTI3ZTliYjFkZWQxM2FmMTA4ZWFlNzgyYTQ0OGViMjg3ZWU4MSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_3f9114980b844717acd5b5ed8db5342b",
+      "statement": "值为 JSON 字符串的字段会展开成嵌套工具参数，每个字段最多 40 个，递归深度有限。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L598-L620",
+          "version": "repo-lines-v1:sha256:396c102f239404cb7bb119378d9f0e3b8001408a1d9bf7d4e932e65d60c8b8bc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMmMyMjczNTZiNTlhMDliZjIxYzE0NWQzYWJiMjJjYmU0ODgyZWY5MWQ5ZTJkZmVmODQzMzhhNzY5NTc1NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliNjJmNjBkODU5MGE1NzljZjQ2ZjhkNjczNzhjNGM1NzJiOTYyY2VjY2RiOTBjN2E1ZjdiNDJiOTYwNzgyYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVkMzFkZmUyZmIyMmY0ODc0YzY5ZTRlZjI5NWY2YTdiMTQ3MWI4MzEzYWU1ZmM1YmI5YzRjYjEzZjlkMzcwMGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3MjhiMGY5Yjk1NzJmZmRiNzM4YjA2ZjVkNDEwNjBiMWIxYTNjNjk4ZTJlNTEyYzNkYzE1YmI1Njg1MDMyNjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9c1b2331a1084d75a476f242596d02e8",
+      "statement": "导出脚本通过 __pageRecorderRuntime.toString() 内嵌回放引擎。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1698-L1735",
+          "version": "repo-lines-v1:sha256:ea6f2ac6d1008cdc4d0001afe44222a62049be2d2277b1c557d7cc7cc7299bb1:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmZTk1ZjU0MGFmNDA1ZTA0MzM2N2VkYTJhMGQ3YzNmY2NhMTAyZWIwNzYwNzYyNGFhZjdiMWQ1NmRiMzFlYWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmNTRkOWRiM2M5Y2YyZmY2Zjc0Yjc3MDg5Y2Y4NmM3OThhY2VmYTk0NTQ3MDYwZWY1ZTY0YjEyMWUxMjMxOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlZWVmZGQ1MTEzZDk5MDU2ZjFlMTlkZTFiN2Q1YmVkZTZlMGEzMDFmOWU4ZjdiZTRlYWQzZjhmOGRhODY2YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3ZjVjYTQwMWJkNmM1NWYxNmIyMTc3ZGUyYTdmNjdhOWY4ODI1NWQ2NjAyNjQ4MDFhMDllMGVjMDE0YWU0MjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5e4800f0b10b4c00adae60e65f1d241f",
+      "statement": "成功信号从业务码和包装字段推导，响应形态记录 JSON 类型和顶层键。",
+      "evidence": [
+        {
+          "resource": "repo://lib/exporter.js#L1560-L1590",
+          "version": "repo-lines-v1:sha256:d2fd11d5408dcbed7cf5feec6258893495a1ad46c979f3b638ed925ab0c6bc69:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4Mjc0YzkzMTEwNmFhZWM3NTAyODUwN2JlOGZlMmU5NGI0NTVkYzY3NmEwNjNmN2JlOGU1ZjdjYmRmMzdlNGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5YzU3NTE5OGRjYzIyMTllZjU0MWFjNjRmZWEzNjczZjBmYTM1YWY4ZDQzMmNkMmQwNDQ3YTFjYTY3NWRmNmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4YTk0NzkyZTc1NWFlNjJkY2IxZWI1OWQzNzFjMjYxYWM5MThiMjQ2NTcxNjg2MTNhMTgyZDFmNDZjYjUyMGIifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-23T01:54:25.069Z"
+  }
+}

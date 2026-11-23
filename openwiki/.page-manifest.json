@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "pages": {
+    "/openwiki/architecture/system-overview.md": {
+      "pageVersion": "sha256:e9dff733efa5708d7cb713eaa1251a27ea8cd9726c666b07ac8ced887254b5cc",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/bridge/library-backup.md": {
+      "pageVersion": "sha256:b46d4f432a91536beae1d845dc12b03a5c98e162b14a43e5442c56c913e0340f",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/bridge/mcp-tools-and-results.md": {
+      "pageVersion": "sha256:582ab4da1623115de3359e3810a5c7131fbd9f12fa9b273477ea159b7fc93a80",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/bridge/server-lifecycle.md": {
+      "pageVersion": "sha256:5c9e2989360358995ebe1d9c344639970a387901126cc950a7c6a6b915f21c05",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/extension/library-and-ai-docs.md": {
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:ecbdc0a16133309e9203bab8d5d7b625f9de14e11250a06fae7f632684d703d1",
+      "pageVersion": "sha256:335c93e91e18f8fbd0496d1f1985d67549a3c3343ca43a5091fe6c6a385d2634",
+      "completedBy": "claude-code",
+      "completedRunId": "44ce7b78-6401-456b-98eb-0c84e03e67f3"
+    },
+    "/openwiki/operations/auto-update.md": {
+      "pageVersion": "sha256:d645d8acd41bd49a78b735f2be82db4f7f14a7fd9ef86eaa6c8772e0e4c8105c",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/operations/testing-and-release.md": {
+      "pageVersion": "sha256:1169f33d8d08bfef24c2060584e504dcd3248b5d4e0a4a15ce2181f54f8e370c",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/quickstart.md": {
+      "pageVersion": "sha256:105ff7a5d97e3b915bb37c975f8dd6b5fd028dafdbf4c319a7fcea44c50065eb",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/recording/analysis-and-parameters.md": {
+      "gitHead": "feb2501cfc05fc5e90562ebad827c76cc19585a3",
+      "sourceFingerprint": "sha256:f7fb35098f10bd0dcc6148636101146f9bdf12ee627a18034d3f4a110b781f63",
+      "pageVersion": "sha256:96ea7fe982deb7932a4d6f92dd87d635b30c16fdc2d34dd997d44e37276df9d4",
+      "completedBy": "claude-code",
+      "completedRunId": "c6ce2841-15ab-4b7a-956f-77715433ee54"
+    },
+    "/openwiki/recording/capture-pipeline.md": {
+      "pageVersion": "sha256:30624663c9f5dee4cc4871075a6cfcfbc9aab15515bd9aa00af5c0abf53fdca2",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/replay/execution-routing.md": {
+      "pageVersion": "sha256:af45d992cb75c5e6ea2e060c93246f03df17ee3392fafe356eaaffef0e829f08",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    },
+    "/openwiki/replay/runtime-engine.md": {
+      "gitHead": "feb2501cfc05fc5e90562ebad827c76cc19585a3",
+      "sourceFingerprint": "sha256:f7fb35098f10bd0dcc6148636101146f9bdf12ee627a18034d3f4a110b781f63",
+      "pageVersion": "sha256:7d07d85e104ae958c34d113e25d362aa7415bc1af3894aa0a361dbe4bea2117a",
+      "completedBy": "claude-code",
+      "completedRunId": "c6ce2841-15ab-4b7a-956f-77715433ee54"
+    },
+    "/openwiki/security/credentials-and-trust.md": {
+      "pageVersion": "sha256:d2ef5e95d569545eec1fa95163386810228f5dcfc10fcec8d01a439dbdd7d44d",
+      "completedBy": "claude-code",
+      "completedRunId": "69824cf9-5af6-42df-8682-d09553d98860",
+      "gitHead": "2d5bde565d62ccb648008500b759b1d095b830e6",
+      "sourceFingerprint": "sha256:76da0696426e062487590a97329eed2c041c2519ed7960a388dffeb2911e38a8"
+    }
+  }
+}

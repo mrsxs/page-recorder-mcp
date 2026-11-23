@@ -54,11 +54,12 @@
   const onInit = (e) => {
     const d = e.data;
     if (!e.isTrusted || e.source !== window || !d) return;
-    if (d[TAG] === 'helloHook' && !port) { announce(); return; }
-    if (d[TAG] !== 'init' || !e.ports?.[0] || port) return;
+    if (d[TAG] === 'helloHook') { announce(); return; }
+    if (d[TAG] !== 'init' || !e.ports?.[0]) return;
     e.stopImmediatePropagation();
+    // 扩展更新后新的 content script 来接管：换到它的端口（这里传的只是这个页面自己的请求）
+    if (port) { try { port.close(); } catch (x) { /* ignore */ } }
     port = e.ports[0];
-    window.removeEventListener('message', onInit, true);
     port.onmessage = (ev) => onContentMsg(ev.data);
     sendToContent({ [TAG]: 'initAck' });
   };

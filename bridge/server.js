@@ -13,6 +13,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
+const { createLibrary, syncBrowser, restoreOwner } = require('./library');
+const { createUpdater, EXTENSION_FILES } = require('./updater');
 
 const ROOT = path.resolve(__dirname, '..'); // 扩展本体所在目录（npm 包根目录）
 let VERSION = '0.0.0';
@@ -26,6 +28,8 @@ function flag(name) {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : undefined;
 }
+// 后台桥接的日志、本机转发用的口令文件、脚本库副本（PR_BRIDGE_DIR 可改，测试用）
+const STATE_DIR = process.env.PR_BRIDGE_DIR || path.join(os.homedir(), '.page-recorder');
 
 if (argv[0] === '--help' || argv[0] === '-h') {
   process.stdout.write(`page-recorder-mcp ${VERSION}
@@ -43,6 +47,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   --no-daemon       --stdio 时不在后台起桥接，自己监听端口（旧做法）
   --max-tools <数量> 脚本和接口拆出的工具最多列多少个，默认 30；超过就一个都不列，   PR_MAX_TOOLS
                     改用 search_apis 按关键词找接口、call_api 调用（0 = 总是这样）
+  --no-auto-update  不自动更新扩展目录和技能                         PR_AUTO_UPDATE=0
+脚本库会同步到 ~/.page-recorder/library/，升级、重装扩展不影响。
 --stdio 时会在后台起一个桥接，之后各个 AI 工具、各次会话都复用它，扩展不用反复重连；
 启动它的程序（WorkBuddy、Cursor 等）都退出后，后台桥接自动关闭。日志在 ~/.page-recorder/。
 改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext；
@@ -59,12 +65,14 @@ if (argv[0] === '--version' || argv[0] === '-v') {
 if (argv[0] === 'extension') {
   const out = path.resolve(argv[1] || path.join(os.homedir(), 'page-recorder-extension'));
   fs.mkdirSync(out, { recursive: true });
-  for (const f of ['manifest.json', 'background.js', 'content', 'inject', 'lib', 'popup', 'icons']) {
+  for (const f of EXTENSION_FILES) {
     fs.cpSync(path.join(ROOT, f), path.join(out, f), { recursive: true, force: true });
   }
+  // 记下这个目录，之后的新版由桥接自动更新进来
+  try { createUpdater({ root: ROOT, version: VERSION, stateDir: STATE_DIR, home: os.homedir(), log: () => {} }).rememberExtensionDir(out); } catch (e) { process.stderr.write(`记录扩展目录失败，这个目录不会自动更新：${e.message}\n`); }
   process.stdout.write(`Page Recorder 扩展 ${VERSION} 已生成到 ${out}
-在 Chrome 打开 chrome://extensions → 打开「开发者模式」→「加载已解压的扩展程序」→ 选这个文件夹。
-以后升级：再运行一次这个命令，然后在扩展卡片上点「重新加载」。
+在 Chrome 打开 chrome://extensions → 打开「开发者模式」→「加载已解压的扩展程序」→ 选这个文件夹（已经加载过的话点「重新加载」）。
+以后有新版时，AI 工具启动桥接就会自动更新这个目录并重新加载扩展。请一直用这个目录：换目录会变成另一个扩展。
 `);
   process.exit(0);
 }
@@ -78,8 +86,6 @@ const MAX_TOOLS = maxToolsOpt !== undefined && maxToolsOpt !== '' && Number(maxT
 const STDIO = argv.includes('--stdio');
 const DAEMON = argv.includes('--daemon'); // stdio 实例在后台起的桥接：启动它的程序都退出后自己关闭
 const NO_DAEMON = argv.includes('--no-daemon');
-// 后台桥接的日志，以及本机转发用的口令文件（PR_BRIDGE_DIR 可改，测试用）
-const STATE_DIR = process.env.PR_BRIDGE_DIR || path.join(os.homedir(), '.page-recorder');
 const STATE_FILE = path.join(STATE_DIR, `bridge-${PORT}.json`);
 // 监听端口的实例写进 STATE_FILE；转发过来的请求带上它，说明是本机 stdio 实例（AI 客户端自己起的进程）发的
 const SECRET = crypto.randomBytes(24).toString('hex');
@@ -243,6 +249,7 @@ function register(conn, instanceId, info) {
   if (conn.instanceId === instanceId) { // 重复的 hello：只更新资料名、版本
     conn.profile = String(info.profile || conn.profile || '');
     conn.version = String(info.version || conn.version || '');
+    conn.capabilities = capabilitiesOf(info);
     return;
   }
   const pinned = instanceOrigins.get(instanceId);
@@ -258,6 +265,7 @@ function register(conn, instanceId, info) {
   conn.instanceId = instanceId;
   conn.profile = String(info.profile || '');
   conn.version = String(info.version || '');
+  conn.capabilities = capabilitiesOf(info);
   const old = instances.get(instanceId);
   instances.set(instanceId, conn);
   if (old && old !== conn) {
@@ -271,7 +279,11 @@ function register(conn, instanceId, info) {
   }
   invalidateIndex();
   while (extWaiters.length) extWaiters.shift()();
+  scheduleLibrarySync(conn);
+  scheduleAutoUpdate();
 }
+// 扩展在 hello 里声明自己支持什么；旧版扩展不声明，就不给它发新方法
+const capabilitiesOf = (info) => (Array.isArray(info.capabilities) ? info.capabilities.map(String).slice(0, 16) : []);
 function failPending(conn, message) {
   for (const [id, p] of conn.pending) {
     clearTimeout(p.timer);
@@ -296,6 +308,9 @@ function onExtMessage(conn, text) {
   } else if (m.type === 'event' && m.event === 'libraryChanged') {
     invalidateIndex();
     toolsChanged();
+    scheduleLibrarySync(conn);
+  } else if (m.type === 'event' && m.event === 'libraryRestore') {
+    runLibraryRestore(conn, m.owner);
   }
 }
 function toolsChanged() { libraryListeners.forEach((fn) => fn()); }
@@ -504,7 +519,7 @@ function spawnDaemon() {
   try { if (fs.statSync(logFile).size > 1e6) fs.truncateSync(logFile, 0); } catch (e) { /* 还没有日志 */ }
   const out = fs.openSync(logFile, 'a');
   // token 走环境变量，不出现在进程列表里
-  const child = spawn(process.execPath, [__filename, '--daemon', '--port', String(PORT), '--host', HOST, '--max-tools', String(MAX_TOOLS)], {
+  const child = spawn(process.execPath, [__filename, '--daemon', '--port', String(PORT), '--host', HOST, '--max-tools', String(MAX_TOOLS), ...(argv.includes('--no-auto-update') ? ['--no-auto-update'] : [])], {
     detached: true, windowsHide: true, stdio: ['ignore', out, out],
     env: Object.assign({}, process.env, TOKEN ? { PR_BRIDGE_TOKEN: TOKEN } : {}, { PR_EXTENSION_ID: [...EXT_ID_ALLOW].join(',') }),
   });
@@ -640,6 +655,81 @@ if (DAEMON) {
   }, 2000);
 }
 
+// ======================= 脚本库副本、自动更新 =======================
+const library = createLibrary(path.join(STATE_DIR, 'library'));
+const canSync = (conn) => !conn.dead && (conn.capabilities || []).includes('librarySync');
+const connCall = (conn) => (method, params, timeoutMs) => callConn(conn, method, params, timeoutMs);
+function scheduleLibrarySync(conn) {
+  if (!canSync(conn)) return;
+  clearTimeout(conn.syncTimer);
+  conn.syncTimer = setTimeout(() => runLibrarySync(conn), 300);
+}
+async function runLibrarySync(conn) {
+  if (!canSync(conn)) return;
+  if (conn.syncing) { conn.syncAgain = true; return; }
+  conn.syncing = true;
+  try {
+    const offers = await syncBrowser(library, conn, connCall(conn), { extensionId: extensionOriginId(conn.origin), connected: new Set(instances.keys()), log });
+    conn.libraryOffers = new Set(offers.map((x) => x.owner));
+  } catch (e) {
+    if (!conn.dead) log(`同步脚本库失败：${e.message}`);
+  } finally {
+    conn.syncing = false;
+    if (conn.syncAgain) { conn.syncAgain = false; scheduleLibrarySync(conn); }
+  }
+}
+async function runLibraryRestore(conn, ownerId) {
+  if (!canSync(conn) || typeof ownerId !== 'string') return;
+  try {
+    const n = await restoreOwner(library, conn, connCall(conn), ownerId, { extensionId: extensionOriginId(conn.origin), offered: conn.libraryOffers || new Set(), connected: new Set(instances.keys()), log });
+    log(`已恢复 ${n} 条脚本到 ${browserLabel(conn)}`);
+    scheduleLibrarySync(conn);
+  } catch (e) { log(`恢复脚本失败：${e.message}`); }
+}
+// 从源码目录运行时不自动改东西（开发、跑测试）
+const AUTO_UPDATE = !argv.includes('--no-auto-update') && process.env.PR_AUTO_UPDATE !== '0'
+  && (process.env.PR_AUTO_UPDATE === '1' || !fs.existsSync(path.join(ROOT, '.git')));
+const updater = createUpdater({ root: ROOT, version: VERSION, stateDir: STATE_DIR, home: os.homedir(), log });
+const browserStatus = (c) => Object.assign(browserInfo(c), { version: c.version, extensionId: extensionOriginId(c.origin), capabilities: c.capabilities || [] });
+// 这个进程可能只是转发的 stdio 实例：连着哪些浏览器要问监听端口的那个
+function connectedBrowsers() {
+  if (isPrimary) return Promise.resolve([...instances.values()].map(browserStatus));
+  return new Promise((resolve) => {
+    const req = http.get({ host: BRIDGE_HOST, port: PORT, path: '/api/status', headers: bridgeHeaders() }, (res) => {
+      let d = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { d += c; });
+      res.on('end', () => { try { resolve(JSON.parse(d).browsers || []); } catch (e) { resolve([]); } });
+    });
+    req.on('error', () => resolve([]));
+    req.setTimeout(3000, () => req.destroy());
+  });
+}
+let updateTimer = null;
+let updateRunning = false;
+function scheduleAutoUpdate(ms = 1500) {
+  if (!AUTO_UPDATE) return;
+  clearTimeout(updateTimer);
+  updateTimer = setTimeout(runAutoUpdate, ms);
+  updateTimer.unref();
+}
+async function runAutoUpdate() {
+  if (updateRunning) return;
+  updateRunning = true;
+  try {
+    // 技能更新失败不影响扩展更新
+    const skills = await updater.updateSkills().catch((e) => { log(`更新技能失败：${e.message}`); return { retry: false }; });
+    const r = await updater.updateExtensions(await connectedBrowsers(), (b, method, params, timeoutMs) => extCall(method, params, timeoutMs, b.instanceId, 0));
+    if (skills.retry || r.retry) scheduleAutoUpdate(60000); // 扩展正忙（录制、回放中）或别的进程在更新：过一会儿再试
+  } catch (e) {
+    log(`自动更新失败：${e.message}`);
+  } finally {
+    updateRunning = false;
+  }
+}
+libraryListeners.add(() => scheduleAutoUpdate());
+ready.then(() => scheduleAutoUpdate(500));
+
 // ======================= MCP 工具 =======================
 const SAVE_DOCS_FORMAT = `{
   "title": "脚本中文名",
@@ -705,7 +795,7 @@ const STATIC_TOOLS = [
   },
   {
     name: 'run_recording',
-    description: '在用户的浏览器中（带登录态）运行录制脚本。默认：录制里有接口关联了输入参数时，不操作页面，直接在已开着的页面里请求这些接口（快，第二次起复用页面；带页面最新的登录/签名请求头；业务返回码不对时自动改为回放页面操作、由页面自己发请求）；否则回放页面操作（真实鼠标键盘输入）。返回接口数据(responses)、提取数据(extracted)、执行记录(log)、用的标签页(tab)。可修改输入参数（输入框、日期、下拉、上传文件路径）和接口请求参数。',
+    description: '在用户的浏览器中（带登录态）运行录制脚本。默认：录制里有接口关联了输入参数时，不操作页面，直接在已开着的页面里请求这些接口（快，第二次起复用页面；带页面最新的登录/签名请求头；业务返回码不对时自动改为回放页面操作、由页面自己发请求；写接口只有 401/403 或没发出去时才自动回放，其他失败返回 writeRejected，先确认有没有生效）；否则回放页面操作（真实鼠标键盘输入）。返回接口数据(responses)、提取数据(extracted)、执行记录(log)、用的标签页(tab)。可修改输入参数（输入框、日期、下拉、上传文件路径）和接口请求参数。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1220,7 +1310,7 @@ function unwrapJson(v, notes, path, strDepth, depth) {
   return o;
 }
 // 说明结果成败的字段：对象再宽也先留着它们
-const STATE_KEY = /^(ok|error|errors|err|status|code|success|message|msg|ret|rejected|unknown|notSent|warnings|mode|total|count|result_id)$/i;
+const STATE_KEY = /^(ok|error|errors|err|status|code|success|message|msg|ret|rejected|writeRejected|unknown|notSent|warnings|mode|total|count|result_id)$/i;
 // 按结构压缩到大约 budget 个字符：小的字段原样留，大的数组只留开头几项，长文本截短；省略的地方写明完整内容的路径。
 // 分到的额度很小时只留一句“省略了什么、多大”（它在哪就是它所在的路径）
 function compactValue(v, path, budget, depth) {
@@ -1716,7 +1806,7 @@ async function route(req, res) {
       return sendJson(res, 200, {
         ok: true, name: 'page-recorder-bridge', version: VERSION, pid: process.pid, extensionConnected: instances.size > 0,
         ...(DAEMON ? { background: true, owners: [...owners] } : {}),
-        browsers: [...instances.values()].map((c) => Object.assign(browserInfo(c), { version: c.version })),
+        browsers: [...instances.values()].map(browserStatus),
         endpoints: {
           'GET  /api/recordings': '脚本列表（含每个接口拆出的工具；多个浏览器时汇总，每条带 browser）',
           'GET  /api/recordings/:id': '脚本详情（步骤、接口、参数、参数说明 paramInfo、响应结构）',
