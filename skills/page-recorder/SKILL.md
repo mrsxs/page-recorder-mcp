@@ -7,8 +7,8 @@ description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本�
 
 录制脚本的接口都在用户自己已登录的浏览器里执行，有两种发法：
 
-- **直接请求**（`call_api`，或 `<脚本>__<接口>` 工具）：不操作页面，在开着的那个页面里按你给的参数发请求，带浏览器 Cookie，签名、令牌类请求头用页面最近一次请求同一接口时的值（结果里 `liveHeaders` 列出用了哪些）。快，参数随便改。
-- **页面自己发**（`run_recording`，`mode: "ui"`）：回放录制的页面操作，页面自己组请求、现算签名。`api_params` 在请求发出前改接口参数，`params` 改输入框、日期、下拉。慢，签名一定有效。
+- **直接请求**（`call_api`，或 `<脚本>__<接口>` 工具）：不操作页面，在开着的那个页面里按你给的参数发请求，带浏览器 Cookie，签名、令牌类请求头用页面最近一次请求同一接口时的值（结果里 `liveHeaders` 列出用了哪些，`omittedHeaders` 列出没补上的）。快，参数随便改。
+- **页面自己发**（`run_recording`，`mode: "ui"`）：回放录制的页面操作，页面自己组请求、现算签名。`api_params` 在请求发出前改接口参数，`params` 改页面上的控件，写法见 `paramHelp`：单选和下拉填已有选项，复选框填 `true` / `false`，多选传已有选项组成的数组。慢，签名一定有效。
 
 `run_recording` 不传 `mode` 时会先直接请求、被拒就整段回放，并且之后一天都走回放。按下面的步骤明确传 `mode`，每一步都由你决定用哪种发法。
 
@@ -31,17 +31,26 @@ description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本�
 
 返回正常、业务码和录制时一致：之后换参数都这样直接请求。
 
-## 3. 被拒时让页面自己发
+## 3. 失败时按状态处理
 
-直接请求返回 401 / 403、`rejected: true`，或业务返回码和录制时不同（错误里常见 sign、签名、token、风控），说明这个接口要页面现算签名。依次：
+从上往下，按第一条命中的处理：
+
+| 结果 | 含义 | 下一步 |
+|---|---|---|
+| `unknown: true`，或 5xx / 408 / 429 | 结果未知，服务端可能已经处理 | 先查询确认结果。查询类接口可以稍后重试，提交类接口确认没生效后才重发 |
+| `notSent: true` | 请求没发出 | 按 `error` 补参数，或走下面的「让页面自己发」 |
+| 401 / 403，且有 `omittedHeaders` | 页面最近没发过这些鉴权头 | 走「让页面自己发」的第 1、2 步，拿到最新的头 |
+| 其余 401 / 403、`rejected: true`，或业务返回码和录制时不同（错误里常见 sign、签名、token、风控） | 服务端明确拒绝，请求没生效，常见原因是要页面现算签名 | 走「让页面自己发」 |
+
+### 让页面自己发
 
 1. **页面发一次**：`run_recording`，`mode: "ui"`，`api_params` 写上这次要改的参数（键是接口目录里的 `name`，按 `query` / `body` / `path` 分），例如 `{"POST /sbn/new_goods/get_skc_diagnose_list": {"body": {"pageIndex": 2}}}`，复用开着的标签页（不传 `new_tab`）。页面自己发请求、按你的参数改写，结果里就有数据；同时那个页面记下了最新的签名头。
 2. **同一页面再直接请求**：紧接着换个参数 `call_api` 一次。通过：签名能复用一段时间，回到第 2 步的做法，过期被拒时再做一次第 1 步。
 3. **签名每次现算**：还被拒，就每次都让页面自己发——
    - 改 `api_params` 的结果正确：每次换参数都用 `run_recording` + `mode: "ui"` + `api_params`；
-   - 改 `api_params` 也被拒（签名覆盖了参数）：用 `params` 改页面上的输入框、日期、下拉，让页面按新条件组请求；要改的条件不在 `params` 里时，告诉用户要重新录制哪个操作。
+   - 改 `api_params` 也被拒（签名覆盖了参数）：用 `params` 改页面上的控件，让页面按新条件组请求；要改的条件不在 `params` 里时，告诉用户要重新录制哪个操作。
 4. **写回结论**：用 `save_api_docs` 把这个接口的请求方式写进它的 `description`，例如「要页面现算签名，直接请求 403；用 run_recording mode=ui + api_params 改 pageIndex / pageSize」。下次按结论直接选发法。
 
 ## 结果太大
 
-调用时带 `result_path` / `result_fields` / `result_limit`；拿到 `result_id` 后用 `read_result` 翻页、换字段，不会重复请求接口。`result_id` 只在当前这轮对话里有效（有的 AI 工具每条消息都重启 MCP），过期了就重新调用并直接带 `result_path`。
+调用时带 `result_path` / `result_fields` / `result_limit`；拿到 `result_id` 后用 `read_result` 翻页、换字段，不会重复请求接口。`result_id` 保留最近 30 次、30 分钟内的结果，MCP 进程重启后失效（有的 AI 工具每条消息都重启）。失效后，查询类接口重新调用并直接带 `result_path`，提交类接口先确认能重复执行。
