@@ -396,8 +396,26 @@ function keepRequest(r, s) {
 // 一条请求进当前录制：过滤 → 脱敏 → 入库。页面钩子后到的完整记录顶掉浏览器层面先补的那条（见“浏览器层面的兜底抓取”）
 const sameRequest = (a, b) => a.method === b.method && String(a.url).split('#')[0] === String(b.url).split('#')[0] && Math.abs(a.ts - b.ts) < 5000;
 // scrubbed：后台自己已经脱敏过的（浏览器层面补记的）。只认这个参数，不看事件对象上的字段（事件对象来自页面，可以伪造）
+// 录制中最近几个返回里的字符串值（脱敏前的原值，只在后台内存里、录制结束就清掉）：
+// 之后的请求里像令牌、票据的值在这里出现过，就记下它的“发放接口”（见 PR_EXPORTER.findSources）
+const recentResponses = [];
+function rememberResponse(ev) {
+  const values = PR_EXPORTER.responseValues(ev.responseBody);
+  if (!values.size) return;
+  recentResponses.push({ id: ev.id, endTs: Number(ev.endTs) || Number(ev.ts) || 0, values, method: ev.method, url: ev.url, pageUrl: ev.pageUrl, frameUrl: ev.frameUrl });
+  while (recentResponses.length > 40) recentResponses.shift();
+}
 async function ingestRequest(c, ev, scrubbed) {
   if (!keepRequest(ev, c.settings)) return false;
+  if (!scrubbed) {
+    // 发放接口按脱敏前的原值对（入库后令牌都打了码就对不上了）；页面传来的同名字段不认
+    ev = Object.assign({}, ev);
+    delete ev.sources;
+    const sources = PR_EXPORTER.findSources(ev, recentResponses);
+    if (c.state.recording) rememberResponse(ev);
+    // 追到发放接口的值是令牌一类（名字看不出来的也是）：入库前按位置打码，直接请求时先调发放接口拿新的
+    if (Object.keys(sources).length) ev = Object.assign(PR_EXPORTER.maskSourced(ev, sources), { sources });
+  }
   // 请求入库前脱敏：录到的密码按值换成占位符，名字像令牌、签名的字段换成标记（明文不进本地存储、导出和 AI 提示词）
   // 鉴权、令牌、签名一类的请求头入库时就换成 ***（设置里关掉“隐藏请求头”的除外）
   if (!scrubbed) ev = PR_EXPORTER.scrubRequest(ev, await secretsOf(), c.settings.maskPasswords !== false, c.settings.maskHeaders !== false);
@@ -438,6 +456,22 @@ function setRecKeep(on) {
   if (on && !recKeep) recKeep = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
   else if (!on && recKeep) { clearInterval(recKeep); recKeep = null; }
 }
+// 起始地址带会过期的参数（令牌、签名、时间戳）时，记下它是从哪个页面打开的（打开它的标签页、上一页）：
+// 弹窗里提醒回到那个页面再点进来录，点进来的那一步录进去，以后回放每次都由站点发新参数。来源页只存去掉这类参数的地址
+async function entryOf(tab) {
+  const removed = PR_EXPORTER.stripDynamic(tab.url || '').removed;
+  if (!removed.length) return undefined;
+  // 先看上一页（同一标签页里点进来的就是它）；没有再看打开这个标签页的那个标签页，它现在还在同一站点才算
+  let from = '';
+  const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.referrer }).catch(() => []);
+  if (r && typeof r.result === 'string' && /^https?:/i.test(r.result)) from = r.result;
+  if (!from && tab.openerTabId != null) {
+    const o = await chrome.tabs.get(tab.openerTabId).catch(() => null);
+    if (o && /^https?:/i.test(o.url || '') && siteOf(o.url) === siteOf(tab.url)) from = o.url;
+  }
+  if (from && PR_EXPORTER.pageKey(from) === PR_EXPORTER.pageKey(tab.url)) from = '';
+  return { removed: [...new Set(removed)].slice(0, 10), from: from ? PR_EXPORTER.stripDynamic(from).url : undefined };
+}
 async function start(c, tabId, fresh) {
   const tab = await chrome.tabs.get(tabId);
   if (!/^(https?|file):/i.test(tab.url || '')) throw new Error('当前页面不支持录制（仅支持 http/https/file 页面）');
@@ -445,10 +479,11 @@ async function start(c, tabId, fresh) {
   const prevTab = c.state.recording ? c.state.tabId : null;
   if (fresh || !c.events.length) {
     clearSecrets();
+    recentResponses.length = 0;
     c.events = [];
     c.apiOverrides = {};
     c.aiDocs = {};
-    c.state = { recording: true, tabId, id: uid(), name: '', startedAt: Date.now(), startUrl: tab.url, title: tab.title };
+    c.state = { recording: true, tabId, id: uid(), name: '', startedAt: Date.now(), startUrl: tab.url, title: tab.title, entry: await entryOf(tab) };
   } else {
     c.state = { ...c.state, recording: true, tabId, childTabs: (c.state.childTabs || []).filter((id) => id !== tabId) };
   }
@@ -475,6 +510,7 @@ async function stop(c) {
     netListen(false);
     setRecKeep(false);
     clearSecrets();
+    recentResponses.length = 0;
     const tabId = c.state.tabId;
     for (const id of c.state.childTabs || []) chrome.tabs.sendMessage(id, { type: 'capture', on: false }).catch(() => {});
     c.state = { ...c.state, recording: false, stoppedAt: Date.now(), childTabs: [] };
@@ -1321,6 +1357,8 @@ async function runRecording(item, opts) {
     if (unlinked.length) reasons.push(`参数 ${unlinked.join('、')} 没有关联到接口字段（改了直接请求也不会生效）`);
     const raw = linked.filter((a) => a.replayable === false && !a.optionalOnly);
     if (raw.length) reasons.push(`接口 ${raw.map((a) => a.name).join('、')} 的请求体不能直接重发`);
+    const gen = callable.filter((a) => (a.pageGenerated || []).length);
+    if (gen.length) reasons.push(`接口 ${gen.map((a) => a.name).join('、')} 带页面每次请求现算的反爬串（${[...new Set(gen.flatMap((a) => a.pageGenerated))].join('、')}），只有页面自己发才有效`);
     if (b.recording.steps.some((s) => s.type === 'extract')) reasons.push('录制里有提取页面内容的步骤，只有页面回放拿得到');
     // 选择参数靠录到的选项表把文字换成接口要的编码：表里没有这个值就换不出来
     const eff = Object.assign({}, b.params, opts.params || {});
@@ -1384,6 +1422,9 @@ async function runUi(item, b, opts, calibrateNames, required) {
   let locked = opts.tabId || null;
   const why = { reason: opts.newTab ? '调用时传了 new_tab' : '' };
   const capture = opts.capture !== false; // 回放期间抓下这个标签页里所有框架的接口返回，放在结果的 network 里
+  // 起始地址带会过期的参数：用开着的同一页面现在的地址，或者去掉这些参数再打开（见 liveUrlOf）
+  const start = await liveUrlOf(b.recording.startUrl);
+  let openedStart = false; // 真的用 start.url 打开或跳转过（没动标签页就不说“调整了地址”）
   try {
     let old = reuse ? await reusedTab('run:' + item.id, b.recording.startUrl, why) : null;
     for (let k = 0; old && callingTabs.has(old.id) && k < 50; k++) await sleep(100);
@@ -1395,22 +1436,25 @@ async function runUi(item, b, opts, calibrateNames, required) {
       if (capture) startCapture(old.id);
       // 默认不刷新（最快）；fresh: true 时回到起始页面重新加载（含 hash SPA 同文档时显式 reload），从干净的页面状态开始
       if (opts.fresh) {
-        const sameDoc = sameSitePath(old.url, b.recording.startUrl) && (() => { try { return new URL(old.url).search === new URL(b.recording.startUrl).search; } catch (e) { return false; } })();
-        if (old.url !== b.recording.startUrl) await chrome.tabs.update(old.id, { url: b.recording.startUrl });
+        const sameDoc = sameSitePath(old.url, start.url) && (() => { try { return new URL(old.url).search === new URL(start.url).search; } catch (e) { return false; } })();
+        if (old.url !== start.url) await chrome.tabs.update(old.id, { url: start.url });
         if (sameDoc) await chrome.tabs.reload(old.id);
+        openedStart = true;
       } else if (!sameSitePath(old.url, b.recording.startUrl)) {
-        await chrome.tabs.update(old.id, { url: b.recording.startUrl });
+        await chrome.tabs.update(old.id, { url: start.url });
+        openedStart = true;
       }
       if (opts.active) await chrome.tabs.update(old.id, { active: true });
       picked = { tabId: old.id, created: false };
       await rememberTab('run:' + item.id, old.id, b.recording.startUrl);
     } else {
       // 先开空白页、打开抓包，再跳到起始页面：页面一加载发的请求也能抓到
-      picked = await pickTab(capture && !opts.tabId ? 'about:blank' : b.recording.startUrl, { ...opts, reuseTab: false });
+      picked = await pickTab(capture && !opts.tabId ? 'about:blank' : start.url, { ...opts, reuseTab: false });
       runningTabs.add(picked.tabId); // 新开的标签页立刻占上，免得导航期间被接口调用选走
       locked = picked.tabId;
       if (capture) startCapture(picked.tabId);
-      if (capture && picked.created) await chrome.tabs.update(picked.tabId, { url: b.recording.startUrl });
+      if (capture && picked.created) await chrome.tabs.update(picked.tabId, { url: start.url });
+      openedStart = !!picked.created;
       if (reuse) await rememberTab('run:' + item.id, picked.tabId, b.recording.startUrl);
     }
   } catch (e) {
@@ -1496,12 +1540,23 @@ async function runUi(item, b, opts, calibrateNames, required) {
       }
       total.calibration = { params: total.ok ? verdicts : Object.fromEntries(calibrateNames.map((n) => [n, 'unknown'])), details: details.slice(0, 40) };
     }
+    if (start.adjusted && openedStart) total.startPage = { how: start.adjusted === 'open-tab' ? '用了开着的同一页面现在的地址' : '去掉了会过期的参数再打开', removed: start.removed };
+    const moved = start.removed && start.removed.length && total.log.find((l) => l && l.step === 1 && l.redirected);
+    if (moved) {
+      const from = b.recording.entry && b.recording.entry.from;
+      total.warnings = (total.warnings || []).concat(`起始地址带会过期的参数（${start.removed.join('、')}），打开后跳到了 ${PR_EXPORTER.maskUrl(moved.redirected, true)}：可能参数过期或登录失效。${from ? `这个页面录制时是从 ${PR_EXPORTER.maskUrl(from, true)} 打开的，建议从那里开始重新录制（把点进来的那一步也录进去）` : '建议从站点首页开始重新录制，把点进这个页面的那一步也录进去'}`);
+    }
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     total.finalUrl = PR_EXPORTER.maskUrl(tab?.url || '', true);
     total.responses = total.responses.map((r) => ({ ...r, url: PR_EXPORTER.maskUrl(r.url, true), data: PR_EXPORTER.maskDeep(r.data, true) }));
     total.recording = b.name;
     const cap = captures.get(tabId);
     if (cap) {
+      // 等某个接口（只让页面自己发、页面一打开就发的那个）：页面加载完之后才异步发的也等到，最多 10 秒
+      if (typeof opts.waitCapture === 'function') {
+        const until = Math.min(deadline, Date.now() + 10000);
+        while (Date.now() < until && !cap.list.some(opts.waitCapture)) await sleep(300);
+      }
       await drainCapture(cap);
       total.network = cap.list.slice().sort((x, y) => x.ts - y.ts);
     }
@@ -1554,6 +1609,19 @@ function addCapture(cap, ev, sender) {
     frame: sender.frameId ? sender.url : undefined, type: rb ? rb.type : null, truncated: !!(rb && rb.truncated), data,
   });
 }
+// 要打开的页面地址带会过期的参数（令牌、签名、票据、时间戳、录制时打了码的）：先找浏览器里开着的同一页面，
+// 用它现在的地址（参数是站点新发的）；没有就去掉这些参数再打开，让站点自己重新发。返回 { url, adjusted?, removed? }
+async function liveUrlOf(url) {
+  const { url: stripped, removed } = PR_EXPORTER.stripDynamic(url || '');
+  if (!removed.length) return { url };
+  const key = PR_EXPORTER.pageKey(url);
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }).catch(() => []);
+  // 扩展自己留着复用的标签页不算（上面可能还是录制时的旧参数）；只认用户自己开着的
+  const ours = new Set(Object.values(await ourTabs()).map((x) => x && x.tabId));
+  const open = tabs.find((t) => t.url && !t.incognito && !ours.has(t.id) && PR_EXPORTER.pageKey(t.url) === key);
+  if (open) return { url: open.url, adjusted: 'open-tab', removed };
+  return { url: stripped, adjusted: 'stripped', removed };
+}
 // 复用的标签页还在同一个站点同一个路径上，就不用重新打开
 function sameSitePath(a, b) {
   try { const x = new URL(a); const y = new URL(b); return x.origin === y.origin && x.pathname === y.pathname; } catch (e) { return false; }
@@ -1600,12 +1668,20 @@ async function callApi(item, api, args, opts) {
   const b = buildItem(item).bundle;
   const a = b.recording.apis.find((x) => x.name === api || x.fn === api) || b.recording.apis.find((x) => x.name.includes(api));
   if (!a) throw new Error(`「${b.name}」中没有接口 ${api}。可用：${b.recording.apis.map((x) => x.fn + ' (' + x.name + ')').join(', ')}`);
+  // 带页面每次现算反爬串的接口：旧值发出去必被风控拒，也不拿页面上采来的值伪造，只让页面自己发
+  if ((a.pageGenerated || []).length && !opts.noTrigger) return triggerApi(item, b, a, args, opts);
   // 在“发出这个接口的页面”里调用：iframe 里的接口在那个 iframe 的页面里调；跨域接口也照页面当初的方式发
   // （带着浏览器的 Cookie、登录态，不额外跨域）
   const ctxUrl = a.pageUrl || b.recording.startUrl;
   let ctx = '';
   let siteOrigin = '';
   try { ctx = new URL(ctxUrl).origin; siteOrigin = new URL(b.recording.startUrl).origin; } catch (e) { /* ignore */ }
+  // 没有开着的页面、要打开一个时打开哪个地址：iframe 里的接口打开嵌着它的主页面（iframe 地址里的令牌由主页面现发，
+  // 直接打开录制时的 iframe 地址多半已经过期），再在里面找这个 iframe；地址带会过期的参数时见 liveUrlOf
+  // 主页面地址来自录制数据（导入的录制包不可信）：只认 http(s)、和录制的起始页面或接口页面同一站点的
+  const hostUrl = typeof a.hostUrl === 'string' && /^https?:\/\//i.test(a.hostUrl) && [siteOf(ctxUrl), siteOf(b.recording.startUrl)].includes(siteOf(a.hostUrl)) ? a.hostUrl : null;
+  let opened = null;
+  const openUrl = async () => opened || (opened = await liveUrlOf(hostUrl || ctxUrl));
   const deadline = opts.deadline || Date.now() + (opts.timeout || 90000);
   // 默认复用：先找上次为这个页面源开的接口调用标签页，再找其他开着的页面（包括 iframe）；都没有才新开一个并留着。
   // reuseTab: false 时用全新标签页，默认用完关掉（keepTab: true 保留）
@@ -1627,8 +1703,8 @@ async function callApi(item, api, args, opts) {
           const f = (await listFrames(kept.id)).find((x) => x.url.startsWith(ctx + '/'));
           if (f) { target = { tabId: kept.id, frameId: f.frameId, how: 'kept-frame' }; ok = true; } else {
             navigatingTabs.add(kept.id);
-            await chrome.tabs.update(kept.id, { url: ctxUrl });
-            target = { tabId: kept.id, frameId: 0, how: 'kept-navigated' };
+            await chrome.tabs.update(kept.id, { url: (await openUrl()).url });
+            target = { tabId: kept.id, frameId: 0, how: 'kept-navigated', findFrame: !!hostUrl };
             ok = true;
           }
         }
@@ -1644,9 +1720,9 @@ async function callApi(item, api, args, opts) {
   }
   let created = false;
   if (target) { if (!target.claimed) callBegin(target.tabId); } else {
-    const t = await pickTab(ctxUrl, { ...opts, tabId: undefined, reuseTab: false });
+    const t = await pickTab((await openUrl()).url, { ...opts, tabId: undefined, reuseTab: false });
     created = t.created;
-    target = { tabId: t.tabId, frameId: 0 };
+    target = { tabId: t.tabId, frameId: 0, findFrame: !!hostUrl };
     callBegin(t.tabId);
     target.how = 'new';
     if (created && reuse && keep) await rememberTab('call:' + ctx, t.tabId, ctxUrl);
@@ -1656,6 +1732,22 @@ async function callApi(item, api, args, opts) {
   try {
     await waitTabComplete(tabId, Math.max(1000, Math.min(30000, left())));
     navigatingTabs.delete(tabId);
+    // 打开的是主页面：等它把 iframe 建出来（iframe 地址里的参数是主页面刚发的）
+    if (target.findFrame) {
+      const end = Date.now() + Math.max(1000, Math.min(15000, left()));
+      let f = null;
+      // 等到和录制时同一页面的那个 iframe（同源的别的框架先出来也不要）；到时间还没有，才退而用同源的子框架
+      const want = PR_EXPORTER.pageKey(ctxUrl);
+      let frames = [];
+      while (!f && Date.now() < end) {
+        frames = (await listFrames(tabId)).filter((x) => x.frameId && x.url.startsWith(ctx + '/'));
+        f = frames.find((x) => PR_EXPORTER.pageKey(x.url) === want);
+        if (!f) await sleep(400);
+      }
+      if (!f && frames.length === 1) f = frames[0];
+      if (!f) throw new Error(`打开主页面后没等到 ${ctx} 的 iframe（主页面可能要先点开菜单才会嵌进来），请用 run_recording 回放页面操作`);
+      target.frameId = f.frameId;
+    }
     if (left() <= 0) throw new Error('超时：页面还没准备好');
     // mtop 的站点 SDK 需要 MAIN world。它不接收扩展缓存的鉴权信息。
     const pageSdk = !item.imported && /^\/h5\/[^/]+\/[^/]+\/?$/i.test(new URL(a.url).pathname);
@@ -1673,7 +1765,8 @@ async function callApi(item, api, args, opts) {
       sleep(left() + 3000).then(() => { throw Object.assign(new Error('超时：接口没有在规定时间内返回（请求可能已经发出）'), { unknown: true }); }),
     ]);
     if (target.how === 'kept' || target.how === 'kept-frame' || target.how === 'kept-navigated') await rememberTab('call:' + ctx, tabId, ctxUrl);
-    const head = { api: a.name, fn: a.fn, tab: { id: tabId, how: target.how } };
+    const head = { api: a.name, fn: a.fn, tab: Object.assign({ id: tabId, how: target.how }, target.findFrame ? { via: '主页面里的 iframe' } : {}) };
+    if (opened && opened.adjusted && (target.how === 'new' || target.how === 'kept-navigated')) head.page = { how: opened.adjusted === 'open-tab' ? '用了开着的同一页面现在的地址' : '去掉了会过期的参数再打开', removed: opened.removed };
     if (!r || !r.result || typeof r.result !== 'object') return Object.assign(head, { ok: false, unknown: true, error: '页面里的调用没有返回结果（页面可能跳转或刷新了），请求可能已经发出' });
     const result = r.result;
     const secrets = Object.entries(b.paramInfo || {}).filter(([key, info]) => info.kind === 'secret' && typeof opts.params?.[key] === 'string')
@@ -1685,6 +1778,135 @@ async function callApi(item, api, args, opts) {
     callEnd(tabId);
     if (created && !keep) chrome.tabs.remove(tabId).catch(() => {});
   }
+}
+
+// ---------- 只让页面自己发这一个接口 ----------
+// call_api 的参数（工具参数名或 { path, query, body }）→ 页面回放时改写这个接口用的 { path, query, body }（JSON 请求体按 a.b.c 展开）
+function argsToSections(a, args) {
+  args = args && typeof args === 'object' ? args : {};
+  const out = { path: Object.create(null), query: Object.create(null), body: Object.create(null) };
+  const list = a.toolArgs || [];
+  const known = (a.params && a.params.body) || {};
+  const gen = new Set(a.pageGenerated || []);
+  const put = (sec, k, v) => {
+    if (BAD_KEY(k) || gen.has(`${sec}.${k}`)) return; // 页面现算的反爬串由页面自己填，不拿调用方给的覆盖
+    if (sec === 'body' && a.bodyType === 'json' && v && typeof v === 'object' && !Array.isArray(v) && !Object.hasOwn(known, k)) {
+      for (const [kk, vv] of Object.entries(v)) put(sec, `${k}.${kk}`, vv);
+    } else out[sec][k] = v;
+  };
+  const structured = ['path', 'query', 'body', 'headers', 'rawBody'];
+  if (Object.keys(args).some((k) => structured.includes(k) && !list.some((t) => t.arg === k))) {
+    if (args.headers || args.rawBody !== undefined) throw new Error('让页面自己发时不能改请求头、整个请求体（页面会自己组）');
+    for (const sec of ['path', 'query', 'body']) for (const [k, v] of Object.entries(args[sec] || {})) put(sec, k, v);
+    return out;
+  }
+  for (const [k, v] of Object.entries(args)) {
+    const t = list.find((x) => x.arg === k) || list.find((x) => !x.path && x.key === k);
+    if (t && t.path) throw new Error(`参数 ${k} 在 JSON 字符串字段 ${t.key} 里面，让页面自己发时改不了，请用 run_recording mode="ui" 改页面上的控件`);
+    if (t) put(t.sec, t.key, v);
+    else put(/^(GET|HEAD|DELETE)$/.test(a.method) ? 'query' : 'body', k, v);
+  }
+  return out;
+}
+// 接口带页面每次现算的反爬串（拼多多 anti-content / crawlerInfo 这类）：不直接请求，只重做发出它的那一步
+// （点「查询」「翻页」；页面一打开就发的就重新打开那个页面），由页面自己组请求、现算反爬串，
+// 发出前在页面里按调用参数改写业务字段。比整段回放快；做不到时返回 next，告诉 AI 改用整段页面回放
+async function triggerApi(item, b, a, args, opts) {
+  const steps = b.recording.steps;
+  const head = { api: a.name, fn: a.fn, via: 'page', pageGenerated: a.pageGenerated };
+  let sections;
+  try { sections = argsToSections(a, args); } catch (e) { return Object.assign(head, { ok: false, rejected: true, notSent: true, error: e.message }); }
+  const apiParams = { [a.name]: sections };
+  const next = { tool: 'run_recording', args: { recording: b.name, mode: 'ui', api_params: apiParams } };
+  const changed = ['path', 'query', 'body'].some((sec) => Object.keys(sections[sec]).length);
+  // 发出它的步骤：参数模板取自的那次调用的步骤（triggerStep）；它是打开页面时，取录制里发出过它的最后一个操作步骤（点查询、翻页）；
+  // 都是打开页面（页面一打开就发）就重新打开那一页
+  const isNav = (s) => s && (s.type === 'navigate' || s.type === 'url');
+  const at = (n) => (Number.isInteger(n) && n >= 1 && n <= steps.length ? n - 1 : null);
+  const base = at(a.triggerStep);
+  // 接口在不在 iframe 里：参数模板那次是操作步骤就看它，否则看接口有没有主页面（hostUrl）
+  const inFrame = base !== null && !isNav(steps[base]) ? !!steps[base].frame : !!a.hostUrl;
+  const acts = (a.triggeredBy || []).map(at).filter((i) => i !== null && !isNav(steps[i]) && !!steps[i].frame === inFrame);
+  let trig = base !== null && !isNav(steps[base]) ? base : acts.pop();
+  // 这一步还顺带发了提交、删除这类接口（点“删除”后页面刷新列表）：重做它会把写操作再做一遍，不自动做，也不给能直接照着调的 next
+  const writesToo = (i) => (steps[i].sends || []).some((n) => {
+    if (n === a.name) return false;
+    const [method, ...rest] = String(n).split(/\s+/);
+    return PR_EXPORTER.writeApi(method, rest.join(' ').replace(/^[^/]*(?=\/)/, '').split(/[?#]/)[0]);
+  });
+  if (trig != null && writesToo(trig)) {
+    return Object.assign(head, { ok: false, rejected: true, notSent: true,
+      error: `发出 ${a.name} 的第 ${trig + 1} 步（${steps[trig].desc || ''}）还会发提交类的接口，重做它会把那个操作再做一遍，没有自动执行。请先问用户，确认可以再做一遍后用 run_recording mode="ui"` });
+  }
+  // 页面前置：这一步前面最后一次打开 / 切换到的顶层页面（单页应用的路由变化也算），直接打开它；没有就是起始页面
+  const pageBefore = (i) => {
+    for (let k = i - 1; k >= 0; k--) if (isNav(steps[k]) && !steps[k].frame && steps[k].url) return { type: 'navigate', url: steps[k].url, desc: steps[k].desc || '打开页面', jump: true };
+    return { type: 'navigate', url: b.recording.startUrl, desc: '打开起始页面', jump: true };
+  };
+  let plan;
+  if (trig !== undefined && trig !== null) {
+    plan = { stepNo: trig + 1, fresh: false, steps: [pageBefore(trig), steps[trig]] };
+  } else {
+    // 页面加载时就发的：请求在回放能改写之前就发出去了，参数改不了
+    if (changed) {
+      return Object.assign(head, { ok: false, rejected: true, notSent: true, next,
+        error: `接口 ${a.name} 是页面一打开就自动发的，带页面现算的反爬串，参数改不了（页面加载时的请求来不及改写）。改条件请用 run_recording mode="ui"，通过 params 改页面上的控件` });
+    }
+    const navAt = (a.triggeredBy || []).map(at).filter((i) => i !== null && isNav(steps[i]) && !steps[i].frame).pop();
+    plan = { stepNo: navAt == null ? 0 : navAt + 1, fresh: true, pageLoad: true, steps: [navAt == null ? pageBefore(0) : Object.assign({}, steps[navAt], { type: 'navigate', jump: true })] };
+  }
+  // 只改写这一个接口（别的接口不动）
+  const only = Object.assign({}, b, {
+    apiParams: { [a.name]: (b.apiParams || {})[a.name] || {} },
+    recording: Object.assign({}, b.recording, { startUrl: plan.steps[0].url || b.recording.startUrl, steps: plan.steps }),
+  });
+  const out = Object.assign(head, { trigger: { step: plan.stepNo, desc: plan.steps[plan.steps.length - 1].desc || '' } });
+  // 抓到的请求是不是这个接口：方法、主机、路径模板、路由参数都对上
+  const pathOk = (url) => {
+    try {
+      const u = new URL(url);
+      const A = a.pathTemplate.split('/');
+      const B = u.pathname.split('/');
+      return u.host === a.host && A.length === B.length && A.every((x, i) => /^\{.+\}$/.test(x) || x === B[i])
+        && Object.entries(a.route || {}).every(([k, v]) => u.searchParams.getAll(k).join(',') === String(v));
+    } catch (e) { return false; }
+  };
+
+  let r;
+  try {
+    // 桥接等 call 的结果最多 90 秒：页面加载、注入、收尾都要时间，留足余量，超时前自己先结束
+    r = await runUi(item, only, Object.assign({}, opts, { params: opts.params || {}, apiParams, fresh: plan.fresh, config: Object.assign({}, opts.config, { strictWait: true }),
+      waitCapture: plan.pageLoad && !a.op ? (x) => x.method === a.method && x.status && pathOk(x.url) : undefined, timeout: Math.max(10000, Math.min(55000, (opts.deadline || Date.now() + 55000) - Date.now())) }), null, null);
+  } catch (e) {
+    // 说不准那一步做没做（提交类的可能已经生效）：不给能直接重跑的 next
+    return Object.assign(out, { ok: false, unknown: true, error: `让页面自己发没有完成：${(e && e.message) || e}。结果未知，先查询确认，再决定要不要用 run_recording mode="ui" 重来` });
+  }
+  out.tab = r.tab;
+  if (r.warnings) out.warnings = r.warnings;
+  if (r.startPage) out.page = r.startPage;
+  // 返回只认这一步等到的这个接口；页面一打开就发的，从这次重新打开后抓到的请求里按方法、路径、路由参数找（pathOk）
+  const fromStep = (r.responses || []).filter((x) => x.api === a.name && x.step === plan.steps.length).pop();
+  const hit = fromStep || (plan.pageLoad && !a.op ? (r.network || []).filter((x) => x.method === a.method && pathOk(x.url) && x.status).pop() : null);
+  if (!hit) {
+    const trigDone = (r.completed || 0) >= plan.steps.length;
+    const notReached = (r.completed || 0) < plan.steps.length - 1;
+    if (notReached) return Object.assign(out, { ok: false, rejected: true, notSent: true, next, error: `没走到第 ${plan.stepNo} 步（${r.error || '页面没准备好'}），请求没有发出。请用 run_recording mode="ui" 整段回放` });
+    return Object.assign(out, { ok: false, unknown: true,
+      error: trigDone ? `重做了第 ${plan.stepNo} 步，但没等到 ${a.name} 的返回（这一步可能依赖前面的操作，或者页面换了别的接口）。结果未知：查询类接口可以用 run_recording mode="ui" 整段回放；提交类先确认有没有生效`
+        : `第 ${plan.stepNo} 步执行到一半出错（${r.error || '未知'}），说不准请求发没发出去。先查询确认，再决定要不要用 run_recording mode="ui" 重来` });
+  }
+  const st = Number(hit.status) || 0;
+  const bad = st >= 200 && st < 300 ? PR_EXPORTER.okCheck(a, hit.data)
+    : st >= 400 && st < 500 && st !== 408 && st !== 429 ? { rejected: true, error: `HTTP ${st}` } : { unknown: true, error: `HTTP ${st}` };
+  Object.assign(out, { ok: !bad, status: st, url: PR_EXPORTER.maskUrl(hit.url, true), data: PR_EXPORTER.maskDeep(hit.data, true) });
+  if (bad) {
+    out.error = bad.error;
+    if (bad.rejected) out.rejected = true;
+    if (bad.unknown) out.unknown = true;
+    // 页面自己发、只改写了参数也被拒：反爬串可能连业务参数一起算进去了，改写不得，只能改页面上的控件让页面按新条件组请求
+    if (bad.rejected && changed) out.next = Object.assign({}, next, { note: '页面自己发、只改写参数也被拒：反爬串可能绑定了请求内容。改用 run_recording mode="ui" 并通过 params 改页面上的控件。提交类接口先确认没有生效再调' });
+  }
+  return out;
 }
 
 // ======================= 本地 AI 桥接 =======================
@@ -1713,7 +1935,10 @@ function recordingSummary(item) {
 // 不带设置（里面有 AI 的 API Key），请求按名字再脱敏一遍（旧版本录的请求入库时没脱敏）
 function packageOf(item) {
   const s = item.settings || DEFAULT_SETTINGS;
-  const events = (item.events || []).map((e) => e.kind === 'request' ? PR_EXPORTER.exportRequest(e, s) : PR_EXPORTER.maskStepUrls(e, s.maskPasswords !== false));
+  // 分析时才认出的页面现算长串（入库时没打码）也按位置打码
+  let raw = item.events || [];
+  try { raw = PR_EXPORTER.maskGenerated(raw, PR_EXPORTER.analyze(raw, s, item.state, item.apiOverrides, item.aiDocs)); } catch (e) { /* 分析不了就按名字脱敏 */ }
+  const events = raw.map((e) => e.kind === 'request' ? PR_EXPORTER.exportRequest(e, s) : PR_EXPORTER.maskStepUrls(e, s.maskPasswords !== false));
   const state = { ...item.state };
   state.startUrl = PR_EXPORTER.maskUrl(state.startUrl, s.maskPasswords !== false);
   delete state.tabId;
@@ -1943,6 +2168,8 @@ chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'bridge') load().then(
 // ======================= 消息 =======================
 const liveRequests = new Map();
 const LIVE_HEADER = /authorization|token|csrf|xsrf|api[-_]?key|signature|^sign$|credential/i;
+// 页面最新的鉴权头：名字像鉴权的，和导出时会打码的非标准长串头（x-gw-auth 这类）；页面每次现算的反爬串不记（直接请求不拿它发）
+const liveHeader = (name, value) => (LIVE_HEADER.test(name) || PR_EXPORTER.secretHeader(name, value)) && !PR_EXPORTER.antiKey(name) && !/^cookie$/i.test(name);
 const SHARED_HEADER = /^(authorization|x-csrf-token|x-xsrf-token|x-token|token|x-auth-token|x-access-token)$/i;
 function watchLiveRequest(d) {
   if (!cache || d.tabId < 0 || !d.documentId || !d.initiator || d.url.length > 8192) return;
@@ -1952,8 +2179,8 @@ function watchLiveRequest(d) {
   if (!netTabs(cache).includes(d.tabId) && !captures.has(d.tabId) && !callingTabs.has(d.tabId) &&
       !cache.libIndex.some((item) => sites.includes(siteOf(item.startUrl)))) return;
   const headers = Object.fromEntries((d.requestHeaders || []).filter((h) =>
-    LIVE_HEADER.test(h.name) && typeof h.value === 'string' && h.value.length <= 8192).map((h) => [h.name.toLowerCase(), h.value]));
-  const fields = Object.fromEntries([...url.searchParams].filter(([k, v]) => PR_EXPORTER.sensitiveKey(k) &&
+    typeof h.value === 'string' && h.value.length <= 8192 && liveHeader(h.name, h.value)).map((h) => [h.name.toLowerCase(), h.value]));
+  const fields = Object.fromEntries([...url.searchParams].filter(([k, v]) => PR_EXPORTER.sensitiveKey(k) && !PR_EXPORTER.antiKey(k) &&
     !/password|passwd|pwd|pin|otp|code/i.test(k) && v.length <= 4096));
   if (!Object.keys(headers).length && !Object.keys(fields).length) return;
   const put = (scope, data) => {
@@ -1967,7 +2194,9 @@ function watchLiveRequest(d) {
     while (liveRequests.size > 256) liveRequests.delete(liveRequests.keys().next().value);
   };
   put(url.origin + url.pathname, { headers, fields });
-  const shared = Object.fromEntries(Object.entries(headers).filter(([k]) => SHARED_HEADER.test(k)));
+  // 会话类鉴权头（x-gw-auth、x-auth-token 这类，名字带 auth / token / session、不是签名）整个站点通用：
+  // 页面刚给别的接口发过，直调这个接口也能补上；签名类只认同一路径
+  const shared = Object.fromEntries(Object.entries(headers).filter(([k]) => SHARED_HEADER.test(k) || (/auth|token|session/i.test(k) && !/sign/i.test(k))));
   if (Object.keys(shared).length) put(url.origin, { headers: shared });
 }
 chrome.webRequest?.onSendHeaders.addListener(watchLiveRequest, { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] }, ['requestHeaders']);
@@ -2030,10 +2259,12 @@ async function handle(msg, sender) {
         if (cap && ev.kind === 'request' && keepRequest(ev, c.settings)) addCapture(cap, ev, sender);
         return { ignored: true };
       }
-      // 来自 iframe：步骤记下所在框架（回放时按地址找到这个框架再执行），请求记下发出它的页面
+      // 来自 iframe：步骤记下所在框架（回放时按地址找到这个框架再执行），请求记下发出它的页面和嵌着它的主页面
+      // （iframe 地址里的令牌由主页面现发，直接请求时打开主页面再找这个 iframe）。这几个字段只认后台填的
+      if (ev.kind === 'request') { delete ev.frameUrl; delete ev.topUrl; }
       if (sender.frameId) {
         if (ev.kind === 'step') ev.frame = { url: sender.url || ev.url };
-        else ev.frameUrl = sender.url;
+        else { ev.frameUrl = sender.url; ev.topUrl = sender.tab.url; }
       }
       if (ev.kind === 'request') await ingestRequest(c, ev);
       else addEvent(c, ev);
@@ -2066,6 +2297,20 @@ async function handle(msg, sender) {
       return { ok: !!ev };
     }
     case 'start': await trackOp(() => start(c, msg.tabId, !!msg.fresh)); return { ok: true };
+    case 'restartAtEntry': {
+      // 起始地址带会过期的参数：回到打开它的来源页，加载完再重新开始录制，“点进来”的那一步就能录进去
+      const from = c.state.recording && c.state.entry && c.state.entry.from;
+      if (!from || !/^https?:/i.test(from)) return { ok: false };
+      const tabId = c.state.tabId;
+      const recId = c.state.id;
+      await chrome.tabs.update(tabId, { url: from });
+      await sleep(300);
+      const loaded = await waitTabComplete(tabId, 20000).then((t) => !!t && t.status === 'complete', () => false);
+      // 等页面加载时用户停了录制、换了标签页或重新开始了一条：不动它；来源页没加载完也不重开
+      if (!loaded || !c.state.recording || c.state.tabId !== tabId || c.state.id !== recId) return { ok: false };
+      await trackOp(() => start(c, tabId, true));
+      return { ok: true };
+    }
     case 'stop': await stop(c); return { ok: true };
     case 'getData':
       return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, libraryOffers, bridge: bridgeConnected() };
