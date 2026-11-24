@@ -1828,24 +1828,16 @@ async function triggerApi(item, b, a, args, opts) {
   const inFrame = base !== null && !isNav(steps[base]) ? !!steps[base].frame : !!a.hostUrl;
   const acts = (a.triggeredBy || []).map(at).filter((i) => i !== null && !isNav(steps[i]) && !!steps[i].frame === inFrame);
   let trig = base !== null && !isNav(steps[base]) ? base : acts.pop();
-  // 这一步还顺带发了提交、删除这类接口（点“删除”后页面刷新列表）：重做它会把写操作再做一遍，不自动做，也不给能直接照着调的 next
-  const writesToo = (i) => (steps[i].sends || []).some((n) => {
-    if (n === a.name) return false;
-    const [method, ...rest] = String(n).split(/\s+/);
-    return PR_EXPORTER.writeApi(method, rest.join(' ').replace(/^[^/]*(?=\/)/, '').split(/[?#]/)[0]);
-  });
-  if (trig != null && writesToo(trig)) {
-    return Object.assign(head, { ok: false, rejected: true, notSent: true,
-      error: `发出 ${a.name} 的第 ${trig + 1} 步（${steps[trig].desc || ''}）还会发提交类的接口，重做它会把那个操作再做一遍，没有自动执行。请先问用户，确认可以再做一遍后用 run_recording mode="ui"` });
-  }
-  // 页面前置：这一步前面最后一次打开 / 切换到的顶层页面（单页应用的路由变化也算），直接打开它；没有就是起始页面
-  const pageBefore = (i) => {
-    for (let k = i - 1; k >= 0; k--) if (isNav(steps[k]) && !steps[k].frame && steps[k].url) return { type: 'navigate', url: steps[k].url, desc: steps[k].desc || '打开页面', jump: true };
-    return { type: 'navigate', url: b.recording.startUrl, desc: '打开起始页面', jump: true };
-  };
+  // 页面前置：这一步前面最后一次打开 / 切换到的顶层页面（单页应用的路由变化也算）的步骤下标，没有就是 -1（起始页面）
+  const navBefore = (i) => { for (let k = i - 1; k >= 0; k--) if (isNav(steps[k]) && !steps[k].frame && steps[k].url) return k; return -1; };
+  const openAt = (k) => (k >= 0 ? { type: 'navigate', url: steps[k].url, desc: steps[k].desc || '打开页面', jump: true }
+    : { type: 'navigate', url: b.recording.startUrl, desc: '打开起始页面', jump: true });
   let plan;
   if (trig !== undefined && trig !== null) {
-    plan = { stepNo: trig + 1, fresh: false, steps: [pageBefore(trig), steps[trig]] };
+    // 打开那一页后，把从那里到这一步之间的操作（填日期、选筛选条件、切标签）也照录制做一遍，再做这一步：
+    // 页面只按和录制值不同的字段改写，跳过前面的操作，没传的条件就成了页面默认值（日期可能是空的），结果却当成功
+    const k = navBefore(trig);
+    plan = { stepNo: trig + 1, fresh: false, steps: [openAt(k), ...steps.slice(k + 1, trig + 1)] };
   } else {
     // 页面加载时就发的：请求在回放能改写之前就发出去了，参数改不了
     if (changed) {
@@ -1853,7 +1845,16 @@ async function triggerApi(item, b, a, args, opts) {
         error: `接口 ${a.name} 是页面一打开就自动发的，带页面现算的反爬串，参数改不了（页面加载时的请求来不及改写）。改条件请用 run_recording mode="ui"，通过 params 改页面上的控件` });
     }
     const navAt = (a.triggeredBy || []).map(at).filter((i) => i !== null && isNav(steps[i]) && !steps[i].frame).pop();
-    plan = { stepNo: navAt == null ? 0 : navAt + 1, fresh: true, pageLoad: true, steps: [navAt == null ? pageBefore(0) : Object.assign({}, steps[navAt], { type: 'navigate', jump: true })] };
+    plan = { stepNo: navAt == null ? 0 : navAt + 1, fresh: true, pageLoad: true, steps: [navAt == null ? openAt(-1) : Object.assign({}, steps[navAt], { type: 'navigate', jump: true })] };
+  }
+  // 要重做的步骤里还顺带发了会改动数据的接口（点“删除”后页面刷新列表）：重做会把那个操作再做一遍，不自动做，也不给能直接照着调的 next。
+  // 看不出是查询的（不带 delete、submit 这类词的 POST、GraphQL 的 mutation）也算，宁可拦下
+  // （打开页面不算：用户每次打开那一页都会这样发）
+  const risky = (s) => (isNav(s) ? [] : (s.sends || []).filter((n) => n !== a.name && PR_EXPORTER.sideEffectApi(n)));
+  const writer = plan.steps.find((s) => risky(s).length);
+  if (writer) {
+    return Object.assign(head, { ok: false, rejected: true, notSent: true,
+      error: `发出 ${a.name} 要重做的第 ${steps.indexOf(writer) + 1} 步（${writer.desc || ''}）还会发可能改动数据的接口（${risky(writer).slice(0, 3).join('、')}），重做会把那个操作再做一遍，没有自动执行。请先问用户，确认可以再做一遍后用 run_recording mode="ui"` });
   }
   // 只改写这一个接口（别的接口不动）
   const only = Object.assign({}, b, {
