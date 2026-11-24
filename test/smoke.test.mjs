@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync, chmodSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
@@ -44,6 +44,41 @@ test('extension 子命令生成扩展目录', () => {
     }
   } finally {
     rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('extension 子命令：中文路径下再生成一次（覆盖已有文件）也成功', () => {
+  const base = mkdtempSync(join(tmpdir(), 'pr-ext-'));
+  const out = join(base, '靖云', 'page-recorder-1.6.0');
+  try {
+    for (let i = 0; i < 2; i++) {
+      // 第二次：旧文件内容不同、还是只读的，照样换成新的
+      if (i === 1) { writeFileSync(join(out, 'lib', 'runtime.js'), 'old'); chmodSync(join(out, 'lib', 'runtime.js'), 0o444); }
+      const r = spawnSync(process.execPath, [server, 'extension', out], { encoding: 'utf8', env: { ...process.env, PR_BRIDGE_DIR: join(base, 'state') } });
+      assert.equal(r.status, 0, r.stderr);
+    }
+    assert.equal(readFileSync(join(out, 'lib', 'runtime.js'), 'utf8'), readFileSync(join(root, 'lib', 'runtime.js'), 'utf8'));
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    assert.equal(JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')).version, pkg.version);
+    assert.ok(existsSync(join(out, 'lib', 'runtime.js')));
+    const state = JSON.parse(readFileSync(join(base, 'state', 'update.json'), 'utf8'));
+    assert.deepEqual(state.extensionDirs, [out]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('extension 子命令不能生成到程序自己的目录（会把源文件删掉）', () => {
+  // 在复制出来的一份程序里试，不碰仓库本身
+  const base = mkdtempSync(join(tmpdir(), 'pr-self-'));
+  try {
+    for (const f of ['bridge', 'package.json', 'manifest.json', 'background.js', 'content', 'inject', 'lib', 'popup', 'icons']) cpSync(join(root, f), join(base, f), { recursive: true });
+    const r = spawnSync(process.execPath, [join(base, 'bridge', 'server.js'), 'extension', base], { encoding: 'utf8', env: { ...process.env, PR_BRIDGE_DIR: join(base, '.state') } });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /不能把扩展生成到 page-recorder-mcp 自己的目录/);
+    assert.ok(existsSync(join(base, 'manifest.json')) && existsSync(join(base, 'lib', 'runtime.js')), '源文件还在');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });
 
