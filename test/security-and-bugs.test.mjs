@@ -747,3 +747,36 @@ test('bridge: HTTP 扩展白名单、内部路由鉴权和批量上限同时生�
     bridge.stop();
   }
 });
+
+// 回放等接口：录制时这一步发过、这次页面不再发的接口（只加载一次的资源、批量埋点）不干等到超时
+async function replayWaiting(network, cfg) {
+  const { win } = createRuntimeEnv();
+  win.scrollTo = () => {};
+  const rec = {
+    startUrl: 'https://app.test/page',
+    steps: [{ type: 'url', url: 'https://app.test/page', desc: '页面地址', waitFor: [0] }],
+    apis: [{ name: 'GET /api/list', fn: 'list', method: 'GET', url: 'https://app.test/api/list', pathTemplate: '/api/list' }],
+  };
+  const t0 = Date.now();
+  const r = await win.__pageRecorderRuntime(rec, {}, {}, Object.assign({ autoRun: true, resume: false, verbose: false, highlight: false, netLog: false, rewriteRequests: false, waitRequests: true, stepDelay: 0, requestTimeout: 4000, requestQuiet: 200 }, cfg), { network: async () => network(Date.now() - t0, t0) });
+  return { r, ms: Date.now() - t0 };
+}
+test('runtime: 页面一直没发、也没有请求在等：安静一会儿就继续，不等到超时', async () => {
+  const { r, ms } = await replayWaiting(() => []);
+  assert.equal(r.ok, true);
+  assert.ok(ms < 2000, `等了 ${ms}ms`);
+  assert.match(r.warnings.join('\n'), /页面没再发接口：GET \/api\/list/);
+});
+test('runtime: 这一步发出的请求还没返回：照旧等，直到超时', async () => {
+  const { r, ms } = await replayWaiting((dt, t0) => [{ seq: 1, ts: t0 + 50, done: false, method: 'GET', url: 'https://app.test/api/other', api: -1 }]);
+  assert.ok(ms >= 3900, `只等了 ${ms}ms`);
+  assert.match(r.warnings.join('\n'), /等待接口超时：GET \/api\/list/);
+});
+test('runtime: 等的接口晚一点返回：照样等到并带上数据；requestQuiet: 0 时一直等到超时', async () => {
+  const late = (dt, t0) => [{ seq: 1, ts: t0 + 100, done: dt > 900, method: 'GET', url: 'https://app.test/api/list', api: 0, status: 200, body: { n: 1 } }];
+  const { r } = await replayWaiting(late);
+  assert.equal(JSON.stringify(r.responses.map((x) => x.data)), JSON.stringify([{ n: 1 }]));
+  assert.equal(r.warnings, undefined);
+  const { ms } = await replayWaiting(() => [], { requestQuiet: 0, requestTimeout: 1500 });
+  assert.ok(ms >= 1400, `只等了 ${ms}ms`);
+});

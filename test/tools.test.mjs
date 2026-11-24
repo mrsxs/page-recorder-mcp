@@ -239,3 +239,24 @@ test('接口名很长：search_apis 给的 api 仍能原样填回 call_api', asy
     assert.equal(got.ok, true);
   });
 });
+
+test('merge_recordings：各段原样交给扩展；两个浏览器连着时按第一段的脚本找浏览器，不用指定 browser', async () => {
+  const other = library(1).map((x) => Object.assign({}, x, { id: 'other0', name: '另一个店的订单' }));
+  await withBridge(library(1), [], async ({ tool, rpc }) => {
+    assert.ok((await rpc('tools/list', {})).tools.some((t) => t.name === 'merge_recordings'));
+    const parts = [{ recording: 'other0' }, { recording: 'other0', from_step: 3 }];
+    let got = await tool('merge_recordings', { parts, name: '合并后' });
+    assert.ok(!got.err, got.text);
+    let r = JSON.parse(got.text).got;
+    assert.equal(r.recording, 'other0');
+    assert.deepEqual(r.parts, parts);
+    assert.equal(r.name, '合并后');
+    // 有的 AI 把数组写成 JSON 字符串
+    got = await tool('merge_recordings', { parts: JSON.stringify(parts) });
+    assert.ok(!got.err, got.text);
+    assert.deepEqual(JSON.parse(got.text).got.parts, parts);
+    got = await tool('merge_recordings', { parts: [] });
+    assert.ok(got.err);
+    assert.match(got.text, /parts 至少给一段/);
+  }, other);
+});

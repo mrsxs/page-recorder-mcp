@@ -6,7 +6,7 @@
 </head>
 <body>
   <header>
-    <div class="brand"><span class="dot" id="dot"></span><b>Page Recorder</b><span class="status" id="status">未录制</span></div>
+    <div class="brand"><span class="dot" id="dot"></span><b>Page Recorder</b><span class="profile" id="profileName" hidden></span><span class="status" id="status">未录制</span></div>
     <div class="stats"><span>步骤 <b id="nSteps">0</b></span><span>接口 <b id="nReqs">0</b></span><span id="bridge" class="bridge" title="本地 AI 桥接服务（供 Claude Code / Accio 等调用）">桥接 ○</span></div>
   </header>
 
@@ -103,7 +103,7 @@
       <label class="row"><input type="checkbox" data-k="bridgeEnabled" /> 连接本地桥接服务（运行 bridge/server.js 后自动连接）</label>
       <label class="row"><input type="checkbox" data-k="autoUpdate" /> 有新版时自动更新扩展（录制、回放中不会更新）</label>
       <label class="row col">地址<input type="text" data-k="bridgeUrl" placeholder="ws://127.0.0.1:17321/ext" /></label>
-      <label class="row col">这个浏览器的名称（几个浏览器资料都装了扩展时，AI 用它指定在哪个浏览器执行，改完点“重新连接”）<input type="text" data-k="profileLabel" maxlength="40" placeholder="如 主 Chrome / 店铺B" /></label>
+      <label class="row col">这个浏览器的名称（几个浏览器资料都装了扩展时用来区分：显示在弹窗标题和扩展图标上，AI 用它指定在哪个浏览器执行）<input type="text" data-k="profileLabel" maxlength="40" placeholder="如 主 Chrome / 店铺B" /></label>
       <div class="row"><button id="btnReconnect" class="ghost">重新连接</button><span id="bridgeState" class="hint"></span></div>
     </div>
   </main>
