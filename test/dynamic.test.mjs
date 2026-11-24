@@ -369,7 +369,7 @@ test('只让页面自己发：打开页面后先照录制把筛选条件填好�
 
 test('只让页面自己发：要重做的步骤（包括前面的操作）会发看不出是查询的写接口时不自动做', async () => {
   for (const [m, p, w] of [['POST /goods/offline', true], ['POST /graphql #DeleteItem', true], ['POST /graphql #updateSku', true], ['POST /graphql', true],
-    ['POST /graphql #ProductList', false], ['POST /mms/list', false], ['POST erp.test/api/stat/summary?type=1', false], ['GET /api/list', false],
+    ['POST /graphql #ProductList', false], ['POST /graphql #op=ProductList', false], ['POST /graphql #op=RenameItem', true], ['POST /mms/list', false], ['POST erp.test/api/stat/summary?type=1', false], ['GET /api/list', false],
     ['GET /api/order/cancelOrder', true], ['PUT /api/x', true], ['POST /api/batchOperate', true]]) {
     assert.equal(E.sideEffectApi(m), p, m);
     void w;
