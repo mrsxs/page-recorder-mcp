@@ -7,14 +7,14 @@ Chrome 扩展（Manifest V3）：录制页面操作，抓取接口的请求参�
 需要 Node 18+，不用装任何依赖。
 
 ```bash
-npx -y page-recorder-mcp extension     # 生成浏览器扩展，默认放到 ~/page-recorder-extension（可以跟一个目录参数）
+npx -y page-recorder-mcp@latest extension     # 生成浏览器扩展，默认放到 ~/page-recorder-extension（可以跟一个目录参数）
 ```
 
 1. 打开 `chrome://extensions`，开启右上角「开发者模式」
 2. 点「加载已解压的扩展程序」，选择上面生成的文件夹（从源码用的话，选本仓库根目录）
 3. 安装前已打开的页面请刷新一次，否则抓不到首屏请求
 
-**以后升级不用手动操作**：AI 工具启动桥接时，发现有新版就更新这个文件夹并重新加载扩展（正在录制、回放时等忙完再更新），已安装的 WorkBuddy、Claude Code 技能也一起更新。请一直用这个文件夹（换文件夹会变成另一个扩展），并保持「开发者模式」打开：一关掉 Chrome 就会停用已解压的扩展，重新打开后在扩展卡片上启用即可。不想自动更新：在扩展「设置」里关掉，这个开关任何情况下都生效。启动桥接时加 `--no-auto-update`（`PR_AUTO_UPDATE=0`）只影响这个进程和它拉起的后台桥接，别的 AI 工具已经起好的后台桥接不受影响。
+**以后升级不用手动操作**：AI 工具启动桥接时，发现有新版就更新这个文件夹并重新加载扩展（正在录制、回放时等忙完再更新），已安装的 WorkBuddy、Claude Code 技能也一起更新。自己「加载已解压的扩展程序」选的文件夹（比如下载解压的）也一样会更新：桥接按扩展 ID 从 Chrome、Edge、Chromium、Brave 的资料里找到它，源码目录（带 `.git`）不动。请一直用这个文件夹（换文件夹会变成另一个扩展），并保持「开发者模式」打开：一关掉 Chrome 就会停用已解压的扩展，重新打开后在扩展卡片上启用即可。不想自动更新：在扩展「设置」里关掉，这个开关任何情况下都生效。启动桥接时加 `--no-auto-update`（`PR_AUTO_UPDATE=0`）只影响这个进程和它拉起的后台桥接，别的 AI 工具已经起好的后台桥接不受影响。
 
 从 1.5.0 或更早版本升上来时手动做最后一次，目录写你现在加载的那个：`npx -y page-recorder-mcp@latest extension <现有扩展目录>`，然后在扩展卡片上点「重新加载」，**重启 AI 工具**（旧的后台桥接退出后，备份和自动更新才生效），并**刷新已打开的页面**（否则这些页面录不到接口的返回内容）。
 
@@ -147,7 +147,7 @@ AI 工具 ──MCP / HTTP──▶ bridge/server.js ◀──WebSocket── �
 启动桥接服务（需要 Node 18+，无需 `npm install`）：
 
 ```bash
-npx -y page-recorder-mcp            # 或者从源码：node bridge/server.js
+npx -y page-recorder-mcp@latest     # 或者从源码：node bridge/server.js
 ```
 
 扩展会在 30 秒内自动连上，弹窗右上角显示「桥接 ●」。
@@ -158,9 +158,9 @@ npx -y page-recorder-mcp            # 或者从源码：node bridge/server.js
 
 ```bash
 # stdio 方式（推荐，不用先手动启动桥接服务）
-claude mcp add page-recorder -- npx -y page-recorder-mcp --stdio
+claude mcp add page-recorder -- npx -y page-recorder-mcp@latest --stdio
 
-# 或者 HTTP 方式（需要先运行 npx -y page-recorder-mcp）
+# 或者 HTTP 方式（需要先运行 npx -y page-recorder-mcp@latest）
 claude mcp add --transport http page-recorder http://127.0.0.1:17321/mcp
 ```
 
@@ -181,7 +181,7 @@ stdio 方式第一次启动时会在后台起一个桥接服务，之后各个 A
 }
 ```
 
-新录了脚本以后，在 Accio 里把 page-recorder 断开再连上，工具列表才会更新（通用的 `run_recording`、`call_api` 不受影响）。其他支持 MCP 的工具（WorkBuddy、Claude Desktop、Cursor 等）用同样的命令或 URL 添加。不支持 MCP 的工具，可以直接调下面的 REST API。
+新录了脚本以后，在 Accio 里把 page-recorder 断开再连上，工具列表才会更新（通用的 `run_recording`、`call_api` 不受影响）。其他支持 MCP 的工具（WorkBuddy、Claude Desktop、Cursor 等）用同样的命令或 URL 添加。命令里写 `page-recorder-mcp@latest`：发了新版，AI 工具下次启动就用上，扩展和技能也跟着更新；写成全局安装的 `page-recorder-mcp` 或固定版本就一直是旧版。Windows 上直接写 `npx` 启动不了的工具，改成 `"command": "cmd"`、参数前面加 `"/c", "npx"`。不支持 MCP 的工具，可以直接调下面的 REST API。
 
 ### 给 AI 的技能（可选）
 

@@ -1092,10 +1092,13 @@ async function ourTabs() {
   try { return (await chrome.storage.local.get('ourTabs')).ourTabs || {}; } catch (e) { return {}; }
 }
 // key：run:<录制> 或 call:<源>；url：要去的页面。先找这个 key 记下的，再找扩展在同一站点开过的其他标签页
-async function reusedTab(key, url) {
+// why：没找到能复用的标签页时写上原因（回放结果里给出来，排查为什么每次都新开标签页）
+async function reusedTab(key, url, why) {
   const all = await ourTabs();
   const site = siteOf(url);
   const list = [all[key], ...Object.entries(all).filter(([k, x]) => k !== key && x && x.site === site).map(([, x]) => x)].filter(Boolean);
+  const note = (reason) => { if (why && !why.reason) why.reason = reason; };
+  if (!list.length) note('这个站点还没有留着的回放标签页（第一次回放，或者浏览器重启过）');
   const deadIds = new Set();
   const pruneDead = () => {
     if (!deadIds.size) return Promise.resolve();
@@ -1109,10 +1112,13 @@ async function reusedTab(key, url) {
   for (const x of list) {
     let t = null;
     try { t = await chrome.tabs.get(x.tabId); } catch (e) { /* 已关闭 */ }
-    if (!t) { deadIds.add(x.tabId); continue; }
-    if (siteOf(t.url || t.pendingUrl || '') !== site || runningTabs.has(t.id) || navigatingTabs.has(t.id)) continue;
+    if (!t) { deadIds.add(x.tabId); note('上次留着的标签页已经关了'); continue; }
+    const at = siteOf(t.url || t.pendingUrl || '');
+    if (at !== site) { note(`上次留着的标签页现在在 ${at || '空白页'}，不是 ${site}`); continue; }
+    if (runningTabs.has(t.id) || navigatingTabs.has(t.id)) { note('上次留着的标签页还在回放或跳转（上一次调用可能还没结束）'); continue; }
     await pruneDead();
     if (t.discarded || t.status === 'unloaded') await chrome.tabs.reload(t.id).catch(() => {});
+    if (why) why.reason = ''; // 前面不能用的候选留下的原因不算
     return t;
   }
   await pruneDead();
@@ -1376,12 +1382,13 @@ async function runUi(item, b, opts, calibrateNames, required) {
   const reuse = !opts.tabId && !opts.newTab;
   const keep = !!opts.keepTab || reuse;
   let locked = opts.tabId || null;
+  const why = { reason: opts.newTab ? '调用时传了 new_tab' : '' };
   const capture = opts.capture !== false; // 回放期间抓下这个标签页里所有框架的接口返回，放在结果的 network 里
   try {
-    let old = reuse ? await reusedTab('run:' + item.id, b.recording.startUrl) : null;
+    let old = reuse ? await reusedTab('run:' + item.id, b.recording.startUrl, why) : null;
     for (let k = 0; old && callingTabs.has(old.id) && k < 50; k++) await sleep(100);
-    if (old) old = await chrome.tabs.get(old.id).catch(() => null);
-    if (old && (runningTabs.has(old.id) || callingTabs.has(old.id) || navigatingTabs.has(old.id))) old = null; // 拿到后同步复查再占用
+    if (old) { old = await chrome.tabs.get(old.id).catch(() => null); if (!old) why.reason = '上次留着的标签页刚被关掉了'; }
+    if (old && (runningTabs.has(old.id) || callingTabs.has(old.id) || navigatingTabs.has(old.id))) { old = null; why.reason = '上次留着的标签页正在回放或调用接口'; } // 拿到后同步复查再占用
     if (old) {
       runningTabs.add(old.id);
       locked = old.id;
@@ -1428,7 +1435,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
     if (last && last.key === key) { last.to = i + 1; last.allOptional = last.allOptional && !!s.optional; }
     else segs.push({ key, frame: s.frame || null, from: i, to: i + 1, allOptional: !!s.optional });
   });
-  const total = { ok: true, total: b.recording.steps.length, completed: 0, extracted: {}, responses: [], log: [], input: 'synthetic', tab: { id: tabId, reused: !created } };
+  const total = { ok: true, total: b.recording.steps.length, completed: 0, extracted: {}, responses: [], log: [], input: 'synthetic', tab: Object.assign({ id: tabId, reused: !created }, created && why.reason ? { newBecause: why.reason } : {}) };
   let skip = false; // 可选步骤组的跳过状态，跨段传递
   if (calibrateNames && calibrateNames.length) config.calibrate = calibrateNames;
   const verdicts = {}; // 各段校准结果汇总：有一段对不上就是对不上，有一段没看清就不算校准过

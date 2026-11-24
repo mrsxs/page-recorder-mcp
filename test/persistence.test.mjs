@@ -3,14 +3,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { createLibrary, syncBrowser, restoreOwner, CHUNK_CHARS } = require('../bridge/library.js');
-const { createUpdater, compareVersions, unpackedExtensionId, EXTENSION_FILES } = require('../bridge/updater.js');
+const { createUpdater, compareVersions, unpackedExtensionId, browserDataRoots, EXTENSION_FILES } = require('../bridge/updater.js');
 const PR_EXPORTER = require('../lib/exporter.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = (name) => realpathSync(mkdtempSync(join(tmpdir(), `pr-${name}-`)));
@@ -267,10 +267,10 @@ test('版本比较和已解压扩展 ID', () => {
 });
 
 // 一份“新版 npm 包”和一个旧版扩展目录
-function fixture(version = '9.0.0') {
+function fixture(version = '9.0.0', extName = 'ext', browserRoots = [], pkgName = 'pkg') {
   const base = tmp('update');
-  const pkg = join(base, 'pkg');
-  const ext = join(base, 'ext');
+  const pkg = join(base, pkgName);
+  const ext = join(base, extName);
   const home = join(base, 'home');
   const stateDir = join(base, 'state');
   for (const f of EXTENSION_FILES) {
@@ -280,11 +280,12 @@ function fixture(version = '9.0.0') {
   mkdirSync(join(pkg, 'skills/page-recorder'), { recursive: true });
   writeFileSync(join(pkg, 'skills/page-recorder/SKILL.md'), 'new skill');
   mkdirSync(join(ext, 'lib'), { recursive: true });
+  writeFileSync(join(ext, 'lib', 'a.js'), 'old lib');
   writeFileSync(join(ext, 'manifest.json'), JSON.stringify({ name: 'Page Recorder', version: '1.0.0' }));
   writeFileSync(join(ext, 'background.js'), 'old');
   mkdirSync(home, { recursive: true });
   const logs = [];
-  const updater = createUpdater({ root: pkg, version, stateDir, home, log: (x) => logs.push(x) });
+  const updater = createUpdater({ root: pkg, version, stateDir, home, log: (x) => logs.push(x), browserRoots });
   return { base, pkg, ext, home, stateDir, updater, logs };
 }
 const browser = (ext, extra) => ({ instanceId: 'i1', version: '1.0.0', extensionId: unpackedExtensionId(ext), capabilities: ['selfUpdate'], ...extra });
@@ -306,6 +307,143 @@ test('新版：先确认空闲，再写扩展目录，最后重新加载；同�
     const again = caller();
     await f.updater.updateExtensions([browser(f.ext)], again.call);
     assert.deepEqual(again.calls, [], '重载后版本没变也不反复重载');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('扩展目录在中文路径下（C:\\靖云\\page-recorder-1.6.0 这种）：照样覆盖成新版，不留临时目录', async () => {
+  const f = fixture('9.0.0', join('靖云', 'page-recorder-1.6.0'), [], join('用户', 'npm-cache', 'pkg'));
+  try {
+    f.updater.rememberExtensionDir(f.ext);
+    const c = caller();
+    await f.updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, ['updatePrepare', 'updateReload'], f.logs.join('\n'));
+    assert.equal(JSON.parse(readFileSync(join(f.ext, 'manifest.json'), 'utf8')).version, '9.0.0');
+    assert.equal(readFileSync(join(f.ext, 'lib', 'a.js'), 'utf8'), 'new lib');
+    assert.equal(readdirSync(dirname(f.ext)).some((x) => x.includes('.update-')), false);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+// 用户自己“加载已解压的扩展程序”选的目录：没登记过，从浏览器资料的 Preferences 里按扩展 ID 找到
+function withProfile(f, dirs) {
+  const roots = join(f.base, 'Chrome User Data');
+  mkdirSync(join(roots, 'Default'), { recursive: true });
+  mkdirSync(join(roots, 'Profile 1'), { recursive: true });
+  const settings = Object.fromEntries(dirs.map((d) => [unpackedExtensionId(d), { location: 4, path: d }]));
+  settings.storeext = { location: 1, path: 'storeext/1.0_0' };
+  writeFileSync(join(roots, 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: {} } }));
+  writeFileSync(join(roots, 'Profile 1', 'Secure Preferences'), JSON.stringify({ extensions: { settings } }));
+  return createUpdater({ root: f.pkg, version: '9.0.0', stateDir: f.stateDir, home: f.home, log: (x) => f.logs.push(x), browserRoots: [roots, join(f.base, '没装这个浏览器')] });
+}
+test('没登记的扩展目录：从浏览器资料里按扩展 ID 找到，第一次就更新', async () => {
+  const f = fixture('9.0.0', join('靖云', 'page-recorder-1.6.0'));
+  try {
+    const updater = withProfile(f, [f.ext]);
+    const c = caller();
+    await updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, ['updatePrepare', 'updateReload'], f.logs.join('\n'));
+    assert.equal(JSON.parse(readFileSync(join(f.ext, 'manifest.json'), 'utf8')).version, '9.0.0');
+    assert.match(f.logs.join('\n'), /在浏览器资料里找到扩展目录/);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.stateDir, 'update.json'), 'utf8')).extensionDirs, [f.ext], '记下来，下次不用再找');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('扩展放在源码仓库的子目录里（.git 在上级目录）：不动', async () => {
+  const f = fixture('9.0.0', join('repo', 'extension'));
+  try {
+    mkdirSync(join(f.base, 'repo', '.git'));
+    const updater = withProfile(f, [f.ext]);
+    const c = caller();
+    await updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, []);
+    assert.equal(JSON.parse(readFileSync(join(f.ext, 'manifest.json'), 'utf8')).version, '1.0.0');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('整个用户主目录是 git 仓库（管配置文件）：主目录下的扩展目录照样更新', async () => {
+  const f = fixture();
+  try {
+    const ext = join(f.home, 'page-recorder-extension');
+    mkdirSync(join(f.home, '.git'));
+    mkdirSync(ext);
+    writeFileSync(join(ext, 'manifest.json'), JSON.stringify({ name: 'Page Recorder', version: '1.0.0' }));
+    const c = caller();
+    await f.updater.updateExtensions([browser(ext)], c.call);
+    assert.deepEqual(c.calls, ['updatePrepare', 'updateReload'], f.logs.join('\n'));
+    assert.equal(JSON.parse(readFileSync(join(ext, 'manifest.json'), 'utf8')).version, '9.0.0');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('浏览器资料里还找不到这个扩展：隔一分钟再找，最多 3 次', async () => {
+  const f = fixture();
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const updater = withProfile(f, []);
+    const run = async (advance) => { now += advance; return (await updater.updateExtensions([browser(f.ext)], caller().call)).retry; };
+    // 第 1 次找；马上再触发不找；隔一分钟第 2、3 次；之后不再找、不再要求重试
+    assert.deepEqual([await run(0), await run(1000), await run(61000), await run(61000), await run(61000)], [true, true, true, false, false]);
+  } finally { Date.now = realNow; rmSync(f.base, { recursive: true, force: true }); }
+});
+test('更新锁：持有者还在就等下一轮；持有者没了、锁也过期了才回收', async () => {
+  const f = fixture();
+  try {
+    f.updater.rememberExtensionDir(f.ext);
+    const lock = join(f.stateDir, 'update.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), String(process.pid));
+    const old = new Date(Date.now() - 120000);
+    utimesSync(lock, old, old);
+    assert.equal((await f.updater.updateExtensions([browser(f.ext)], caller().call)).retry, true, '持有者还活着，锁再旧也不回收');
+    writeFileSync(join(lock, 'owner'), '999999999');
+    utimesSync(lock, old, old);
+    const c = caller();
+    await f.updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, ['updatePrepare', 'updateReload']);
+    assert.equal(existsSync(lock), false, '用完释放');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('扩展目录里的旧文件是只读的：照样换成新版', async () => {
+  const f = fixture();
+  try {
+    chmodSync(join(f.ext, 'background.js'), 0o444);
+    f.updater.rememberExtensionDir(f.ext);
+    const c = caller();
+    await f.updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, ['updatePrepare', 'updateReload'], f.logs.join('\n'));
+    assert.equal(readFileSync(join(f.ext, 'background.js'), 'utf8'), 'new background.js');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('扩展目录里有链接（符号链接、目录联接）：不自动更新，免得写到目录外面', { skip: process.platform === 'win32' }, async () => {
+  const f = fixture();
+  try {
+    const shared = join(f.base, 'shared');
+    mkdirSync(shared);
+    rmSync(join(f.ext, 'lib'), { recursive: true, force: true });
+    symlinkSync(shared, join(f.ext, 'lib'));
+    f.updater.rememberExtensionDir(f.ext);
+    const c = caller();
+    await f.updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, []);
+    assert.deepEqual(readdirSync(shared), []);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('浏览器资料目录：各系统的 Chrome / Edge 等，PR_BROWSER_DATA_DIRS 指定的排在最前', () => {
+  const win = browserDataRoots('C:\\Users\\a', 'win32', { LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local', PR_BROWSER_DATA_DIRS: 'D:\\fp\\1;D:\\fp\\2' });
+  assert.deepEqual(win.slice(0, 3), ['D:\\fp\\1', 'D:\\fp\\2', 'C:\\Users\\a\\AppData\\Local\\Google\\Chrome\\User Data']);
+  assert.ok(win.includes('C:\\Users\\a\\AppData\\Local\\Microsoft\\Edge\\User Data'));
+  const mac = browserDataRoots('/Users/a', 'darwin', {});
+  assert.equal(mac[0], '/Users/a/Library/Application Support/Google/Chrome');
+  const linux = browserDataRoots('/home/a', 'linux', { CHROME_CONFIG_HOME: '/opt/chrome-cfg' });
+  assert.equal(linux[0], '/opt/chrome-cfg/google-chrome');
+  assert.ok(linux.includes('/opt/chrome-cfg/chromium') && linux.includes('/home/a/.config/microsoft-edge'));
+});
+test('浏览器资料里记着的是源码目录（有 .git）：照样不动', async () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.ext, '.git'));
+    const updater = withProfile(f, [f.ext]);
+    const c = caller();
+    await updater.updateExtensions([browser(f.ext)], c.call);
+    assert.deepEqual(c.calls, []);
+    assert.equal(JSON.parse(readFileSync(join(f.ext, 'manifest.json'), 'utf8')).version, '1.0.0');
   } finally { rmSync(f.base, { recursive: true, force: true }); }
 });
 

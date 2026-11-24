@@ -14,7 +14,7 @@ const path = require('path');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
 const { createLibrary, syncBrowser, restoreOwner } = require('./library');
-const { createUpdater, EXTENSION_FILES } = require('./updater');
+const { createUpdater, copyTree, EXTENSION_FILES } = require('./updater');
 
 const ROOT = path.resolve(__dirname, '..'); // 扩展本体所在目录（npm 包根目录）
 let VERSION = '0.0.0';
@@ -65,9 +65,14 @@ if (argv[0] === '--version' || argv[0] === '-v') {
 if (argv[0] === 'extension') {
   const out = path.resolve(argv[1] || path.join(os.homedir(), 'page-recorder-extension'));
   fs.mkdirSync(out, { recursive: true });
-  for (const f of EXTENSION_FILES) {
-    fs.cpSync(path.join(ROOT, f), path.join(out, f), { recursive: true, force: true });
+  // 不能生成到程序自己的目录里（或者包含它的目录）：先删旧文件再复制，会把自己的源文件删掉
+  const realOut = fs.realpathSync(out);
+  const realRoot = fs.realpathSync(ROOT);
+  if (realOut === realRoot || realRoot.startsWith(realOut + path.sep) || realOut.startsWith(realRoot + path.sep)) {
+    process.stderr.write(`不能把扩展生成到 page-recorder-mcp 自己的目录：${out}。请换一个文件夹，比如 ${path.join(os.homedir(), 'page-recorder-extension')}\n`);
+    process.exit(1);
   }
+  for (const f of EXTENSION_FILES) copyTree(path.join(ROOT, f), path.join(out, f));
   // 记下这个目录，之后的新版由桥接自动更新进来
   try { createUpdater({ root: ROOT, version: VERSION, stateDir: STATE_DIR, home: os.homedir(), log: () => {} }).rememberExtensionDir(out); } catch (e) { process.stderr.write(`记录扩展目录失败，这个目录不会自动更新：${e.message}\n`); }
   process.stdout.write(`Page Recorder 扩展 ${VERSION} 已生成到 ${out}
@@ -706,16 +711,23 @@ function connectedBrowsers() {
   });
 }
 let updateTimer = null;
+let updateDue = 0;
 let updateRunning = false;
+let updateAgain = false; // 更新进行中又来了触发（比如扩展这时才连上）：这一轮看不到它，结束后再跑一轮
+// 已经排了更早的一轮就不往后推（扩展刚连上排的 1.5 秒，不能被“忙，一分钟后再试”盖掉）
 function scheduleAutoUpdate(ms = 1500) {
   if (!AUTO_UPDATE) return;
+  const due = Date.now() + ms;
+  if (updateTimer && updateDue <= due) return;
   clearTimeout(updateTimer);
-  updateTimer = setTimeout(runAutoUpdate, ms);
+  updateDue = due;
+  updateTimer = setTimeout(() => { updateTimer = null; runAutoUpdate(); }, ms);
   updateTimer.unref();
 }
 async function runAutoUpdate() {
-  if (updateRunning) return;
+  if (updateRunning) { updateAgain = true; return; }
   updateRunning = true;
+  updateAgain = false;
   try {
     // 技能更新失败不影响扩展更新
     const skills = await updater.updateSkills().catch((e) => { log(`更新技能失败：${e.message}`); return { retry: false }; });
@@ -725,6 +737,7 @@ async function runAutoUpdate() {
     log(`自动更新失败：${e.message}`);
   } finally {
     updateRunning = false;
+    if (updateAgain) scheduleAutoUpdate();
   }
 }
 libraryListeners.add(() => scheduleAutoUpdate());
