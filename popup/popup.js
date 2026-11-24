@@ -48,6 +48,10 @@ function renderHeader() {
   const here = rec && tab && st.tabId === tab.id;
   $('#dot').classList.toggle('on', rec);
   $('#status').textContent = rec ? (here ? '录制中' : '正在录制其他标签页') : data.events.length ? '已停止' : '未录制';
+  const label = String(data.settings.profileLabel || '').trim();
+  $('#profileName').hidden = !label;
+  $('#profileName').textContent = label;
+  $('#profileName').title = `这个浏览器叫「${label}」，在「设置」里改`;
   // 只算顶层步骤：归到语义步骤下的原始操作不算（和导出的步骤数一致）
   const member = grouping(data.events).member;
   $('#nSteps').textContent = data.events.filter((e) => e.kind === 'step' && !member.has(e.id)).length;

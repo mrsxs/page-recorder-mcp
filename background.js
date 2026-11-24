@@ -413,6 +413,11 @@ function setBadge(on) {
   chrome.action.setBadgeText({ text: on ? 'REC' : '' });
   chrome.action.setBadgeBackgroundColor({ color: '#e5484d' });
 }
+// 几个浏览器都装了扩展时，鼠标停在扩展图标上就能看出是哪个
+function setActionTitle(c) {
+  const label = String(c.settings.profileLabel || '').trim().slice(0, 40);
+  chrome.action.setTitle({ title: label ? `Page Recorder · ${label}` : 'Page Recorder' }).catch(() => {});
+}
 async function notifyTab(tabId, c, injectIfMissing) {
   const { maxBodyKB, maskPasswords, altExtract, recordScroll } = c.settings;
   const msg = { type: 'state', recording: !!(c.state.recording && c.state.tabId === tabId), settings: { maxBodyKB, maskPasswords, altExtract, recordScroll }, counts: counts(c) };
@@ -1748,6 +1753,25 @@ async function importPackage(c, pkg) {
   bridgeNotify('libraryChanged');
   return { ok: true, id, name };
 }
+// ---------- 合并：几条脚本按 AI 排好的顺序接成一条新脚本，原来的不动 ----------
+async function mergeRecordings(c, p) {
+  const parts = Array.isArray(p.parts) ? p.parts : [];
+  if (!parts.length || parts.length > 20) throw new Error('parts 要给 1 到 20 段');
+  const step = (v) => (v == null || v === '' ? undefined : Number(v));
+  const items = await Promise.all(parts.map(async (x) => {
+    const item = await getLibItem(c, x && x.recording);
+    return { item: { ...item, settings: item.settings || DEFAULT_SETTINGS }, from: step(x.from_step), to: step(x.to_step) };
+  }));
+  const id = uid();
+  const m = PR_EXPORTER.mergeRecordings(items, { id, name: p.name, description: p.description });
+  // 有一段是导入的就按导入的对待（不用页面 SDK）
+  const item = { id, name: m.state.name, imported: items.some((x) => x.item.imported), description: m.state.description, savedAt: Date.now(), ...m, settings: c.settings };
+  c.libIndex = [libEntryOf(item), ...c.libIndex];
+  await chrome.storage.local.set({ ['lib:' + id]: item, libIndex: c.libIndex });
+  bridgeNotify('libraryChanged');
+  const s = recordingSummary(item);
+  return { ok: true, id, name: s.name, steps: s.steps, params: s.params };
+}
 // ---------- 脚本库同步到本机目录（桥接来取、来补）----------
 let libraryOffers = [];
 let libExport = null; // { id, text }：一条脚本分段发给桥接时留着，发完就放掉
@@ -1872,6 +1896,7 @@ async function bridgeHandle(method, p) {
     case 'saveDocs': return saveDocsTo(c, p.recording, p.docs || {});
     case 'exportPackage': return packageOf(await getLibItem(c, p.recording));
     case 'importPackage': return importPackage(c, p.pkg);
+    case 'mergeRecordings': return mergeRecordings(c, p);
     default: throw new Error('未知方法 ' + method);
   }
 }
@@ -2147,9 +2172,12 @@ async function handle(msg, sender) {
       return { ok: true };
     case 'saveSettings': {
       const prevBridge = c.settings.bridgeUrl + c.settings.bridgeEnabled;
+      const prevLabel = c.settings.profileLabel;
       c.settings = { ...c.settings, ...msg.settings };
       await persist(true);
-      if (prevBridge !== c.settings.bridgeUrl + c.settings.bridgeEnabled) { if (ws) ws.close(); ws = null; bridgeConnect(); }
+      if (prevLabel !== c.settings.profileLabel) setActionTitle(c);
+      // 名字在连上桥接时告诉它：改了名重新连一次，桥接马上用新名字
+      if (prevBridge !== c.settings.bridgeUrl + c.settings.bridgeEnabled || prevLabel !== c.settings.profileLabel) { if (ws) ws.close(); ws = null; bridgeConnect(); }
       return { settings: c.settings };
     }
     case 'saveApiOverrides':
@@ -2287,4 +2315,4 @@ chrome.runtime.onInstalled.addListener((d) => {
   if (d.reason === 'update') reinjectOpenTabs().catch(() => {});
 });
 
-load().then((c) => { setBadge(!!c.state.recording); setRecKeep(!!c.state.recording); bridgeConnect(); });
+load().then((c) => { setBadge(!!c.state.recording); setRecKeep(!!c.state.recording); setActionTitle(c); bridgeConnect(); });

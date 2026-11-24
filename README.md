@@ -201,6 +201,7 @@ stdio 方式第一次启动时会在后台起一个桥接服务，之后各个 A
 | `read_result` | 从上一次运行 / 调用 / `get_recording` 的结果里按路径、字段、分页取一部分（不会再调接口） |
 | `get_script` | 获取导出的 JS 源码：长的按行分段给（`start_line` / `line_count`），`to_file: true` 写成文件 |
 | `save_api_docs` | 把 AI 对接口的分析写回：命名、函数名、用途、参数说明 |
+| `merge_recordings` | 把几条脚本按给定顺序接成一条新脚本（原来的不动）：每段可以用 `from_step` / `to_step` 截取，去掉后面几段重复的打开首页、登录。第二段起每段开头直接打开它的起始页面 |
 | `export_package` / `import_package` | 导出 / 导入录制包：导出写成文件（`~/.page-recorder/exports/`）、返回路径（HTTP 方式照旧直接返回内容），导入可以传 `file`（HTTP 方式导入要求服务设了 `--token`） |
 | `<脚本>__run` | 每个脚本一个，用于整段回放 |
 | `<脚本>__<函数名>` | **每个接口一个独立工具**，例如 `product_search__searchProducts` |
@@ -227,6 +228,11 @@ REST 接口（`/api/recordings/…/run`、`/call`）照旧返回完整的原始�
 
 可以直接对 Claude Code 说：
 > 用 page-recorder 看看脚本库，分析「商品搜索下单」每个接口是做什么的，把说明保存回去，然后搜索 macbook 第 2 页给我看结果。
+
+**分开录的几段流程合成一条**：比如「登录」「搜索商品」「导出订单」各录了一条，可以对 AI 说：
+> 用 page-recorder 把「登录」「搜索商品」「导出订单」排好先后合成一条新脚本，后面几段重复的登录步骤去掉。
+
+AI 会先看每条的起始页面和步骤，定好顺序后调用 `merge_recordings`，再核对步骤、写接口说明。几段在同一个输入框里输入过时，合并后前面几次的参数名带「_第N次」。
 
 ### REST API
 

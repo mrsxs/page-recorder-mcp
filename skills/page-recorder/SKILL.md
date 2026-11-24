@@ -1,6 +1,6 @@
 ---
 name: page-recorder
-description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本查数据、调接口时先读。按「摸清接口 → 在页面里改参数直接请求 → 被拒时让页面自己带签名发」的顺序选请求方式，并把结论写回接口说明。
+description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本查数据、调接口，或把几条脚本合成一条时先读。按「摸清接口 → 在页面里改参数直接请求 → 被拒时让页面自己带签名发」的顺序选请求方式，并把结论写回接口说明。
 ---
 
 # page-recorder：先摸清接口，再在页面里改参数请求
@@ -52,6 +52,16 @@ description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本�
    - 改 `api_params` 的结果正确：每次换参数都用 `run_recording` + `mode: "ui"` + `api_params`；
    - 改 `api_params` 也被拒（签名覆盖了参数）：用 `params` 改页面上的控件，让页面按新条件组请求；要改的条件不在 `params` 里时，告诉用户要重新录制哪个操作。
 4. **写回结论**：用 `save_api_docs` 把这个接口的请求方式写进它的 `description`，例如「要页面现算签名，直接请求 403；用 run_recording mode=ui + api_params 改 pageIndex / pageSize」。下次按结论直接选发法。
+
+## 把几条脚本合成一条
+
+用户把一个流程分成几条录（登录、搜索、导出……），要合成一条时：
+
+1. 每条都 `get_recording`，看起始页面和步骤列表。
+2. 排顺序：登录、切换店铺放最前；前一条拿到的数据（订单号、搜索结果）是后一条的输入时，前一条在前；用户说了顺序就照用户的。拿不准时把排好的顺序和理由告诉用户确认，再合并。
+3. 找要截掉的步骤：后面几条开头重复的打开首页、登录，用这一段的 `from_step` 截掉（步骤号就是 `get_recording` 里的编号，含两端）。
+4. `merge_recordings`，`parts` 按执行顺序排，带上 `name`。原来的脚本不动，返回新脚本的 id、步骤和参数。
+5. 核对返回的步骤顺序；参数里出现「_第N次」说明几段用了同一个输入框，告诉用户回放时各填哪个。再用 `save_api_docs` 写说明。
 
 ## 结果太大
 

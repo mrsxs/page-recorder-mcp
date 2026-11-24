@@ -429,8 +429,8 @@ async function listAll(params, timeoutMs, browser) {
   if (!browser && ok.length === results.length && gen === indexGen) indexCache = Promise.resolve(ok.map(({ conn, list }) => ({ conn, list: brief(list) })));
   return [].concat(...ok.map(({ conn, list }) => list.map((r) => Object.assign({}, r, { browser: browserInfo(conn) }))));
 }
-// 按录制找实例的方法；importPackage 不带录制，多个实例时必须指定 browser
-const RECORDING_METHODS = new Set(['get', 'script', 'run', 'call', 'saveDocs', 'exportPackage']);
+// 按录制找实例的方法（mergeRecordings 按第一段的脚本找）；importPackage 不带录制，多个实例时必须指定 browser
+const RECORDING_METHODS = new Set(['get', 'script', 'run', 'call', 'saveDocs', 'exportPackage', 'mergeRecordings']);
 async function pickConn(method, params, browser) {
   if (browser) return connByBrowser(browser, 35000);
   const all = [...instances.values()];
@@ -873,6 +873,32 @@ const STATIC_TOOLS = [
         browser: BROWSER_PARAM,
       },
       required: ['recording', 'docs'],
+    },
+  },
+  {
+    name: 'merge_recordings',
+    description: '把脚本库里的几条脚本按给定顺序接成一条新脚本（原来的不动），返回新脚本的 id、步骤和输入参数。用法：先用 get_recording 看每条的起始页面和步骤，排好先后（登录在前；前一段拿到的数据是后一段的输入时前一段在前），后面几段重复的打开首页、登录用 from_step 截掉；合并后用 get_recording 核对，再用 save_api_docs 起名、写接口说明。第二段起每段开头直接打开它的起始页面（截掉了开头时打开截取后第一步所在的页面）。几段在同一个输入框里输入过时，前面几次的参数名带“_第N次”。只给一段时就是把这条脚本的一部分另存成新脚本。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parts: {
+          type: 'array',
+          description: '按执行顺序排好的各段，1 到 20 段',
+          items: {
+            type: 'object',
+            properties: {
+              recording: { type: 'string', description: '脚本 id 或名称' },
+              from_step: { type: 'number', description: '可选。从第几步开始（get_recording 里的步骤号，从 1 开始），默认 1' },
+              to_step: { type: 'number', description: '可选。到第几步为止（含这一步），默认到最后一步' },
+            },
+            required: ['recording'],
+          },
+        },
+        name: { type: 'string', description: '可选。新脚本的名字，默认把各段的名字用“ + ”连起来' },
+        description: { type: 'string', description: '可选。新脚本完成了什么流程' },
+        browser: Object.assign({}, BROWSER_PARAM, { description: '可选。多个浏览器资料都装了扩展时，指定用哪个浏览器的脚本库：填 instanceId 或资料名。各段必须在同一个浏览器里；不传时按第一段的脚本找' }),
+      },
+      required: ['parts'],
     },
   },
   {
@@ -1615,6 +1641,12 @@ async function callTool(name, args, ctx) {
       if (typeof docs === 'string') docs = JSON.parse(docs);
       return text(await extCall('saveDocs', { recording: args.recording, docs }, 60000, browser));
     }
+    case 'merge_recordings': {
+      let parts = args.parts;
+      if (typeof parts === 'string') parts = JSON.parse(parts);
+      if (!Array.isArray(parts) || !parts.length) throw new Error('parts 至少给一段，如 [{"recording": "脚本 id 或名称", "from_step": 3}]');
+      return text(await extCall('mergeRecordings', { recording: parts[0] && parts[0].recording, parts, name: args.name, description: args.description }, 60000, browser));
+    }
     case 'export_package': {
       const r = await extCall('exportPackage', { recording: args.recording }, 60000, browser);
       const pkg = r && r.pkg ? r.pkg : r;
@@ -1664,7 +1696,7 @@ async function handleRpc(msg, ctx) {
           protocolVersion: params && MCP_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : MCP_VERSIONS[0],
           capabilities: { tools: { listChanged: true } },
           serverInfo: { name: 'page-recorder', version: VERSION },
-          instructions: '这些工具用于执行用户在浏览器中录制的网页操作脚本，并调用录制中抓到的接口（在用户自己的浏览器中执行，带登录态）。先用 list_recordings 查看可用脚本（paramHelp 说明每个输入参数怎么填）；脚本库里接口多时不会把每个接口都列成工具，用 search_apis 按关键词找接口，再用 call_api 调用；运行、调用接口的结果里，套在 JSON 字符串里的数据已经展开成对象；结果太大时只返回压缩过的预览和 result_id，用 read_result 按路径 / 字段 / 分页取具体数据（不会再调接口），也可以调用时直接带 result_path、result_fields 只要一部分；需要了解接口细节用 get_recording；如果接口还没有说明，可以分析后用 save_api_docs 写回。多个浏览器资料都连着桥接时，每个脚本带 browser 字段，同名脚本要用 browser 参数指定在哪个浏览器执行。export_package / import_package 用来导出、导入录制包。',
+          instructions: '这些工具用于执行用户在浏览器中录制的网页操作脚本，并调用录制中抓到的接口（在用户自己的浏览器中执行，带登录态）。先用 list_recordings 查看可用脚本（paramHelp 说明每个输入参数怎么填）；脚本库里接口多时不会把每个接口都列成工具，用 search_apis 按关键词找接口，再用 call_api 调用；运行、调用接口的结果里，套在 JSON 字符串里的数据已经展开成对象；结果太大时只返回压缩过的预览和 result_id，用 read_result 按路径 / 字段 / 分页取具体数据（不会再调接口），也可以调用时直接带 result_path、result_fields 只要一部分；需要了解接口细节用 get_recording；如果接口还没有说明，可以分析后用 save_api_docs 写回。多个浏览器资料都连着桥接时，每个脚本带 browser 字段，同名脚本要用 browser 参数指定在哪个浏览器执行。export_package / import_package 用来导出、导入录制包。用户分几条录了一个流程时，用 merge_recordings 按顺序合成一条新脚本。',
         });
       case 'notifications/initialized':
       case 'notifications/cancelled':
