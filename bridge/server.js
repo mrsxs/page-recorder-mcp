@@ -808,7 +808,7 @@ const STATIC_TOOLS = [
   },
   {
     name: 'run_recording',
-    description: '在用户的浏览器中（带登录态）运行录制脚本。默认：录制里有接口关联了输入参数时，不操作页面，直接在已开着的页面里请求这些接口（快，第二次起复用页面；带页面最新的登录/签名请求头；业务返回码不对时自动改为回放页面操作、由页面自己发请求；写接口只有 401/403 或没发出去时才自动回放，其他失败返回 writeRejected，先确认有没有生效）；否则回放页面操作（真实鼠标键盘输入）。返回接口数据(responses)、提取数据(extracted)、执行记录(log)、用的标签页(tab)。可修改输入参数（输入框、日期、下拉、上传文件路径）和接口请求参数。',
+    description: '在用户的浏览器中（带登录态）运行录制脚本。默认：录制里有接口关联了输入参数时，不操作页面，直接在已开着的页面里请求这些接口（快，第二次起复用页面；带页面最新的登录/签名请求头；业务返回码不对时自动改为回放页面操作、由页面自己发请求；写接口只有 401/403 或没发出去时才自动回放，其他失败返回 writeRejected，先确认有没有生效）；否则回放页面操作（真实鼠标键盘输入）。接口带页面每次现算的反爬串时自动回放页面操作。起始地址带会过期的参数（令牌、签名、时间戳）时，用开着的同一页面现在的地址或去掉这些参数再打开（结果里 startPage，跳到别的页面时 warnings 会说明）。返回接口数据(responses)、提取数据(extracted)、执行记录(log)、用的标签页(tab)。可修改输入参数（输入框、日期、下拉、上传文件路径）和接口请求参数。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -829,7 +829,9 @@ const STATIC_TOOLS = [
   },
   {
     name: 'call_api',
-    description: '不回放页面操作，直接调用录制中的某个接口：在已经开着的同源页面里发请求（带浏览器的 Cookie、登录态和录制时的请求头），没有就在后台打开一次并留着，之后的调用直接复用，很快。返回接口数据。参数可以是扁平的工具参数，也可以是 {path, query, body} 结构；未传的参数使用录制值。',
+    description: '不回放页面操作，直接调用录制中的某个接口：在已经开着的同源页面里发请求（带浏览器的 Cookie、登录态，鉴权头用页面最新的值），没有就在后台打开一次并留着，之后的调用直接复用，很快。返回接口数据。参数可以是扁平的工具参数，也可以是 {path, query, body} 结构；未传的参数使用录制值。'
+      + '会自己处理会过期的东西，不用你拼地址或签名：字段的值是别的接口发放的（票据、带令牌的地址），先调那个接口拿新值（结果里 chained）；接口带页面每次现算的反爬串（如拼多多 anti-content / crawlerInfo，结果里 pageGenerated），不发旧值，改为只重做发出它的那一步、让页面自己发（结果里 via="page"）；页面地址带会过期的参数时用开着的同一页面或去掉这些参数再打开（结果里 page）。'
+      + '失败时按结果里的 error 和 next 做：next 是下一步该调的工具和参数，照着调即可。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1562,6 +1564,10 @@ const resultNames = (own) => RESULT_ARGS.filter((k) => !(own || []).includes(k))
 const resultOpts = (args, own) => Object.fromEntries(resultNames(own).filter((k) => args[k] != null).map((k) => [k, args[k]]));
 const withoutResultArgs = (args, own) => { const drop = resultNames(own); return Object.fromEntries(Object.entries(args).filter(([k]) => !drop.includes(k))); };
 const aiResult = (result, args, own) => text(aiText(result, resultOpts(args || {}, own)));
+// 直接请求没成功：不按 result_path 截取（失败时 data 里没有要的那部分），整个给出来，AI 才看得到 error 和 next
+const callResult = (result, args, own) => (result && typeof result === 'object' && result.ok === false
+  ? text(aiText(result, { result_max_chars: resultOpts(args || {}, own).result_max_chars }))
+  : aiResult(result, args, own));
 
 // get_recording：接口多、响应示例长时整份有十几万字符，客户端放不下。先给概要（步骤、参数、接口目录），
 // 完整内容留在桥接里，用 read_result 按 apis[i] 取某个接口；带了 result_path 等参数就直接按参数取
@@ -1643,7 +1649,7 @@ async function callTool(name, args, ctx) {
       const timeout = Number(args.timeout_ms) || 180000;
       return aiResult(await extCall('run', { recording: args.recording, params: args.params, apiParams: args.api_params, mode: args.mode, keepTab: args.keep_tab, newTab: !!args.new_tab, fresh: !!args.fresh, active: !!args.visible, timeout }, timeout + 30000, browser), args);
     }
-    case 'call_api': return aiResult(await extCall('call', { recording: args.recording, api: args.api, args: args.args || {} }, 90000, browser), args);
+    case 'call_api': return callResult(await extCall('call', { recording: args.recording, api: args.api, args: args.args || {} }, 90000, browser), args);
     case 'read_result': {
       const entry = savedResult(args.result_id);
       if (!entry) throw new Error(`result_id ${args.result_id || '（没给）'} 已经不在了：只留最近 ${RESULT_KEEP} 次、30 分钟内的结果，MCP 进程重启后清空（有的 AI 工具每条消息都重启一次，上一条消息的结果读不到）。请重新调用并直接带 result_path / result_fields 取要的部分；get_recording 也一样，如 result_path="apis[3]"`);
@@ -1690,7 +1696,7 @@ async function callTool(name, args, ctx) {
       const info = dynamicMap.get(name);
       if (!info) throw new Error('未知工具：' + name);
       if (info.kind === 'run') return aiResult(await extCall('run', { recording: info.recording, params: withoutResultArgs(args, info.own), timeout: 180000 }, 210000, info.browser), args, info.own);
-      return aiResult(await extCall('call', { recording: info.recording, api: info.api, args: withoutResultArgs(args, info.own) }, 90000, info.browser), args, info.own);
+      return callResult(await extCall('call', { recording: info.recording, api: info.api, args: withoutResultArgs(args, info.own) }, 90000, info.browser), args, info.own);
     }
   }
 }

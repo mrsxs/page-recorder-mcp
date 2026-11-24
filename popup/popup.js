@@ -42,6 +42,7 @@ async function refresh(force) {
   }
 }
 
+let entryShown = null;
 function renderHeader() {
   const st = data.state || {};
   const rec = !!st.recording;
@@ -72,6 +73,18 @@ function renderHeader() {
   } else if (!n.dataset.sticky) {
     n.hidden = true;
     delete n.dataset.other;
+  }
+  // 起始地址带会过期的参数（令牌、签名、时间戳）：以后回放直接打开它多半已失效，提醒回到来源页再点进来录（每次录制提醒一次）
+  if (rec && here && st.entry && entryShown !== st.id && !n.dataset.sticky) {
+    entryShown = st.id;
+    const keys = esc((st.entry.removed || []).join('、'));
+    let from = '';
+    try { from = st.entry.from ? new URL(st.entry.from).host + new URL(st.entry.from).pathname : ''; } catch (e) { /* ignore */ }
+    showNotice(`这个页面的地址带会过期的参数（${keys}），以后回放直接打开它可能已经失效。` + (from
+      ? `它是从 <b>${esc(from)}</b> 打开的，建议回到那里再点进来，把“点进来”这一步也录进去。<button id="goEntry">回到来源页重新录制</button>`
+      : '建议从站点首页开始录制，把点进这个页面的那一步也录进去。'));
+    const go = $('#goEntry');
+    if (go) go.onclick = async () => { hideNotice(); await send({ type: 'restartAtEntry' }); refresh(true); };
   }
   const b = $('#bridge');
   b.classList.toggle('on', !!data.bridge);
