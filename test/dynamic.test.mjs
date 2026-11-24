@@ -393,3 +393,25 @@ test('只让页面自己发：要重做的步骤（包括前面的操作）会�
   assert.equal(ok.ran, true, ok.r.error);
   assert.equal(ok.r.ok, true, '打开页面时发的看不出是什么的 POST 不算（用户每次打开都会发），查询类的照常');
 });
+
+test('“打开页面”步骤的地址：导出 JSON、脚本、AI 提示词、给 AI 的录制概要里令牌打码；回放数据里留原地址', () => {
+  const secret = 'OLDTOKEN' + token(24);
+  const start = `https://app.test/promo?token=${secret}&id=7#/list`;
+  const moved = `https://app.test/promo/detail?ticket=${secret}&id=8`;
+  const events = [
+    { kind: 'step', id: 's0', ts: 1, type: 'navigate', url: start },
+    { kind: 'step', id: 's1', ts: 5, type: 'url', url: moved },
+    req('r1', 10, 'GET', 'https://app.test/api/list?id=7'),
+  ];
+  const out = E.build(events, {}, { startUrl: start });
+  for (const [where, v] of Object.entries({ raw: out.raw, script: out.script, prompt: out.prompt, summary: out.summary, steps: out.analysis.steps.map((s) => s.desc) })) {
+    assert.ok(!JSON.stringify(v).includes(secret), `${where} 里不该有原令牌`);
+  }
+  assert.match(out.analysis.steps[0].desc, /打开页面 https:\/\/app\.test\/promo\?token=.*id=7/, '描述里还看得出是哪个页面');
+  assert.equal(out.bundle.recording.steps[0].url, start, '回放数据要原地址（打开时再按会过期的参数处理）');
+
+  const bg = loadBackground([]);
+  const s = bg.recordingSummary({ id: 'x', events, state: { startUrl: start, name: 'n' } });
+  assert.ok(!JSON.stringify(s).includes(secret), 'list_recordings 给 AI 的概要不带原令牌');
+  assert.match(s.startUrl, /^https:\/\/app\.test\/promo\?token=/);
+});

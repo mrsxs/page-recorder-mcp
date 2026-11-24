@@ -1923,7 +1923,7 @@ function recordingSummary(item) {
     name: A.name,
     slug: (item.aiDocs && item.aiDocs.slug) || '',
     description: A.description,
-    startUrl: A.startUrl,
+    startUrl: PR_EXPORTER.maskUrl(A.startUrl, true), // 给 AI 看的：地址里的令牌、签名打码（回放用库里的原地址）
     savedAt: item.savedAt,
     steps: A.steps.map((s, i) => `${i + 1}. ${s.desc}`),
     params: A.params,
@@ -2107,7 +2107,7 @@ async function bridgeHandle(method, p) {
       const out = buildItem(item);
       const A = out.analysis;
       return {
-        id: item.id, name: A.name, description: A.description, startUrl: A.startUrl,
+        id: item.id, name: A.name, description: A.description, startUrl: PR_EXPORTER.maskUrl(A.startUrl, true),
         steps: A.steps.map((s, i) => ({ index: i + 1, desc: s.desc, apis: [...new Set(s.requests.map((r) => r.api))] })),
         params: A.params,
         paramInfo: A.paramInfo,
