@@ -245,23 +245,23 @@ test('background: 只让页面自己发——重做发出接口的那一步，�
   let got = null;
   bg.runUi = async (item, only, opts) => {
     got = { steps: only.recording.steps.map((s) => s.desc), apiParams: JSON.parse(JSON.stringify(opts.apiParams)), fresh: opts.fresh };
-    return { ok: true, completed: 2, responses: [{ step: 2, api: a.name, url: 'https://app.test/mms/list', status: 200, data: { success: true, result: [1] } }], tab: { id: 7 } };
+    return { ok: true, completed: 3, responses: [{ step: 3, api: a.name, url: 'https://app.test/mms/list', status: 200, data: { success: true, result: [1] } }], tab: { id: 7 } };
   };
   const r = await bg.triggerApi({ id: 'x' }, b, { ...a, triggerStep: 3 }, { pageNumber: 2 }, {});
   assert.equal(r.ok, true, r.error);
   assert.equal(r.via, 'page');
-  assert.deepEqual(JSON.parse(JSON.stringify(got)), { steps: ['打开页面', '点击 查询'], apiParams: { 'POST /mms/list': { path: {}, query: {}, body: { pageNumber: 2 } } }, fresh: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(got)), { steps: ['打开页面', '点击 日期', '点击 查询'], apiParams: { 'POST /mms/list': { path: {}, query: {}, body: { pageNumber: 2 } } }, fresh: false });
   assert.equal(r.trigger.step, 3);
   assert.deepEqual(JSON.parse(JSON.stringify(r.data)), { success: true, result: [1] });
 
-  bg.runUi = async () => ({ ok: true, completed: 2, responses: [{ step: 1, api: a.name, status: 200, data: { success: true } }] });
+  bg.runUi = async () => ({ ok: true, completed: 3, responses: [{ step: 1, api: a.name, status: 200, data: { success: true } }] });
   const other = await bg.triggerApi({ id: 'x' }, b, a, { pageNumber: 2 }, {});
   assert.equal(other.unknown, true, '不是这一步等到的返回（页面初始化时发的）不算这次的结果');
   assert.equal(other.next, undefined, '说不准有没有发出去时不给能直接重跑的 next');
   bg.runUi = async () => ({ ok: false, completed: 0, error: '找不到元素', responses: [] });
   const notRun = await bg.triggerApi({ id: 'x' }, b, a, { pageNumber: 2 }, {});
   assert.equal(notRun.notSent, true, '没走到那一步，请求没发出');
-  bg.runUi = async () => ({ ok: true, completed: 2, responses: [{ step: 2, api: a.name, status: 200, data: { success: false, errorMsg: '风控' } }] });
+  bg.runUi = async () => ({ ok: true, completed: 3, responses: [{ step: 3, api: a.name, status: 200, data: { success: false, errorMsg: '风控' } }] });
   const rej = await bg.triggerApi({ id: 'x' }, b, a, { pageNumber: 2 }, {});
   assert.equal(rej.rejected, true);
   assert.equal(rej.next.tool, 'run_recording');
@@ -332,4 +332,86 @@ test('第二轮复核：翻页游标入库不打码、接口照样能直接请�
     ['GET', '/api/order/cancelOrder', true], ['POST', '/api/addItem', true], ['DELETE', '/api/items/3', true], ['POST', '/api/credit/token', false]]) {
     assert.equal(E.writeApi(m, p), w, `${m} ${p}`);
   }
+});
+
+// ======================= 只让页面自己发：前面的操作不能跳过、会改动数据的步骤不重做 =======================
+
+test('只让页面自己发：打开页面后先照录制把筛选条件填好，再点查询（没传的条件用录制值，不是页面默认值）', async () => {
+  const bg = loadBackground([]);
+  const steps = [
+    { type: 'navigate', url: 'https://app.test/home', desc: '打开首页' },
+    { type: 'click', desc: '点击 推广', waitFor: [] },
+    { type: 'url', url: 'https://app.test/promo#/list', desc: '切到 推广列表' },
+    { type: 'fill', param: 'date', value: '2026-11-01', desc: '填写 日期', waitFor: [] },
+    { type: 'select', param: 'status', value: '投放中', desc: '选择 状态', waitFor: [] },
+    { type: 'click', desc: '点击 查询', waitFor: [0], sends: ['POST /mms/list', 'POST /mms/list/count'] },
+  ];
+  const a = { name: 'POST /mms/list', fn: 'list', method: 'POST', host: 'app.test', pathTemplate: '/mms/list', bodyType: 'json',
+    params: { body: { date: '2026-11-01', status: 1, pageNumber: 1, crawlerInfo: '' } },
+    toolArgs: [{ arg: 'pageNumber', sec: 'body', key: 'pageNumber' }], pageGenerated: ['body.crawlerInfo'], triggerStep: 6, triggeredBy: [6], okSignals: { success: true } };
+  const b = { name: '推广', params: { date: '2026-11-01', status: '投放中' }, apiParams: {}, config: {},
+    recording: { startUrl: 'https://app.test/home', steps, apis: [a] } };
+  // 模拟页面：筛选框只有回放里真的填过才有值，没填就是页面默认的空值；页面只改写和录制值不同的字段（翻页）
+  let seen = null;
+  bg.runUi = async (item, only, opts) => {
+    const done = only.recording.steps;
+    seen = done.map((s) => s.desc);
+    const filled = (p) => done.filter((s) => s.param === p).map((s) => s.value).pop();
+    const body = { date: filled('date') || '', status: filled('status') ? 1 : '', pageNumber: (opts.apiParams[a.name].body || {}).pageNumber || 1 };
+    return { ok: true, completed: done.length, responses: [{ step: done.length, api: a.name, status: 200, data: { success: true, echo: body } }] };
+  };
+  const r = await bg.triggerApi({ id: 'x' }, b, a, { pageNumber: 2 }, {});
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(JSON.parse(JSON.stringify(seen)), ['切到 推广列表', '填写 日期', '选择 状态', '点击 查询'], '从最后打开的那一页开始，中间的操作都做，不只做“查询”');
+  assert.deepEqual(JSON.parse(JSON.stringify(r.data.echo)), { date: '2026-11-01', status: 1, pageNumber: 2 }, '没传的条件是录制值');
+  assert.equal(r.trigger.step, 6);
+});
+
+test('只让页面自己发：要重做的步骤（包括前面的操作）会发看不出是查询的写接口时不自动做', async () => {
+  for (const [m, p, w] of [['POST /goods/offline', true], ['POST /graphql #DeleteItem', true], ['POST /graphql #updateSku', true], ['POST /graphql', true],
+    ['POST /graphql #ProductList', false], ['POST /graphql #op=ProductList', false], ['POST /graphql #op=RenameItem', true], ['POST /mms/list', false], ['POST erp.test/api/stat/summary?type=1', false], ['GET /api/list', false],
+    ['GET /api/order/cancelOrder', true], ['PUT /api/x', true], ['POST /api/batchOperate', true]]) {
+    assert.equal(E.sideEffectApi(m), p, m);
+    void w;
+  }
+  const bg = loadBackground([]);
+  const a = { name: 'POST /mms/list', fn: 'list', method: 'POST', host: 'app.test', pathTemplate: '/mms/list', bodyType: 'json', params: { body: {} }, pageGenerated: ['body.crawlerInfo'], triggerStep: 3, triggeredBy: [3] };
+  const run = async (steps) => {
+    let ran = false;
+    bg.runUi = async () => { ran = true; return { ok: true, completed: steps.length, responses: [{ step: steps.length, api: a.name, status: 200, data: {} }] }; };
+    const r = await bg.triggerApi({ id: 'x' }, { name: 'n', params: {}, apiParams: {}, recording: { startUrl: 'https://app.test/page', steps, apis: [a] } }, a, {}, {});
+    return { r, ran };
+  };
+  const nav0 = { type: 'navigate', url: 'https://app.test/page', desc: '打开页面', sends: ['POST /api/init'] };
+  const offline = await run([nav0, { type: 'click', desc: '点击 下架', sends: ['POST /goods/offline'] }, { type: 'click', desc: '点击 查询', sends: ['POST /mms/list'] }]);
+  assert.equal(offline.ran, false, '前面的“下架”也要重做，会再下架一次');
+  assert.equal(offline.r.notSent, true);
+  assert.match(offline.r.error, /第 2 步.*goods\/offline/);
+  const gql = await run([nav0, { type: 'fill', desc: '填写 名称' }, { type: 'click', desc: '点击 保存并刷新', sends: ['POST /graphql #RenameItem', 'POST /mms/list'] }]);
+  assert.equal(gql.ran, false, 'GraphQL 的修改操作也拦下');
+  const ok = await run([nav0, { type: 'fill', desc: '填写 名称' }, { type: 'click', desc: '点击 查询', sends: ['POST /mms/list', 'POST /graphql #ItemCount'] }]);
+  assert.equal(ok.ran, true, ok.r.error);
+  assert.equal(ok.r.ok, true, '打开页面时发的看不出是什么的 POST 不算（用户每次打开都会发），查询类的照常');
+});
+
+test('“打开页面”步骤的地址：导出 JSON、脚本、AI 提示词、给 AI 的录制概要里令牌打码；回放数据里留原地址', () => {
+  const secret = 'OLDTOKEN' + token(24);
+  const start = `https://app.test/promo?token=${secret}&id=7#/list`;
+  const moved = `https://app.test/promo/detail?ticket=${secret}&id=8`;
+  const events = [
+    { kind: 'step', id: 's0', ts: 1, type: 'navigate', url: start },
+    { kind: 'step', id: 's1', ts: 5, type: 'url', url: moved },
+    req('r1', 10, 'GET', 'https://app.test/api/list?id=7'),
+  ];
+  const out = E.build(events, {}, { startUrl: start });
+  for (const [where, v] of Object.entries({ raw: out.raw, script: out.script, prompt: out.prompt, summary: out.summary, steps: out.analysis.steps.map((s) => s.desc) })) {
+    assert.ok(!JSON.stringify(v).includes(secret), `${where} 里不该有原令牌`);
+  }
+  assert.match(out.analysis.steps[0].desc, /打开页面 https:\/\/app\.test\/promo\?token=.*id=7/, '描述里还看得出是哪个页面');
+  assert.equal(out.bundle.recording.steps[0].url, start, '回放数据要原地址（打开时再按会过期的参数处理）');
+
+  const bg = loadBackground([]);
+  const s = bg.recordingSummary({ id: 'x', events, state: { startUrl: start, name: 'n' } });
+  assert.ok(!JSON.stringify(s).includes(secret), 'list_recordings 给 AI 的概要不带原令牌');
+  assert.match(s.startUrl, /^https:\/\/app\.test\/promo\?token=/);
 });
