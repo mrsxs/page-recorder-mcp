@@ -48,16 +48,19 @@ function browserDataRoots(home, platform = process.platform, env = process.env) 
   const chrome = env.CHROME_CONFIG_HOME || config; // Chrome / Chromium 用它代替 XDG_CONFIG_HOME，下面照样接 google-chrome 这些
   return extra.concat(['google-chrome', 'google-chrome-beta', 'google-chrome-unstable', 'chromium'].map((x) => join(chrome, x)), [['microsoft-edge'], ['BraveSoftware', 'Brave-Browser']].map((x) => join(config, ...x)));
 }
-// 已解压扩展在资料里记的是绝对路径（商店装的是相对路径，不算）。异步一个个读，不卡住桥接；特别大的文件不读
+// 已解压扩展在资料里记的是绝对路径（商店装的是相对路径，不算）。异步一个个读，不卡住桥接；特别大的文件不读。
+// 资料目录可能是 <根>/<资料>/Preferences（Chrome），也可能直接就是一个资料（<根>/Preferences），
+// 或者指纹浏览器那样每个环境一个 --user-data-dir（<根>/<环境>/Default/Preferences）：三种都找
 const PREFS_MAX_BYTES = 32 * 1024 * 1024;
 async function unpackedDirsOf(roots, ids) {
   const out = new Set();
   for (const root of roots) {
-    let profiles = [];
-    try { profiles = (await fs.promises.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { continue; }
+    let children = [];
+    try { children = (await fs.promises.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { continue; }
+    const profiles = [root, ...children.map((c) => path.join(root, c)), ...children.map((c) => path.join(root, c, 'Default'))];
     for (const profile of profiles) {
       for (const file of ['Secure Preferences', 'Preferences']) {
-        const f = path.join(root, profile, file);
+        const f = path.join(profile, file);
         let settings = null;
         try {
           if ((await fs.promises.stat(f)).size > PREFS_MAX_BYTES) continue;
@@ -364,7 +367,21 @@ function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
       return { retry: false };
     });
   }
-  return { rememberExtensionDir, updateExtensions, updateSkills };
+  // 连上来的扩展是不是 Page Recorder：在记下的扩展目录、默认目录、程序自己的目录和浏览器资料里登记的已解压扩展目录里，
+  // 找按路径算出来的 ID 就是它、里面装的确实是 Page Recorder 的目录（开发用的源码目录也算）。找到返回目录，找不到返回空
+  async function extensionDir(id) {
+    const ours = (dir) => {
+      try {
+        return String(JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).name || '').startsWith('Page Recorder')
+          && fs.existsSync(path.join(dir, 'background.js')) && fs.existsSync(path.join(dir, 'lib', 'runtime.js'));
+      } catch (e) { return false; }
+    };
+    const known = [...readState().extensionDirs, path.join(home, 'page-recorder-extension'), root];
+    for (const d of known) if (extensionIdsOf(d).has(id) && ours(d)) return d;
+    for (const d of await unpackedDirsOf(browserRoots || browserDataRoots(home), [id])) if (extensionIdsOf(d).has(id) && ours(d)) return d;
+    return '';
+  }
+  return { rememberExtensionDir, updateExtensions, updateSkills, extensionDir };
 }
 
 module.exports = { createUpdater, compareVersions, unpackedExtensionId, copyTree, browserDataRoots, EXTENSION_FILES };

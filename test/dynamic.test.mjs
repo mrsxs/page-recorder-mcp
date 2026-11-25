@@ -226,9 +226,76 @@ function loadBackground(tabs) {
 test('background: 地址带会过期的参数时，先用开着的同一页面现在的地址，没有就去掉这些参数', async () => {
   const bg = loadBackground([{ url: 'https://app.test/other' }, { url: 'https://app.test/page?id=1&token=FRESHTOKEN3' }]);
   assert.deepEqual(JSON.parse(JSON.stringify(await bg.liveUrlOf('https://app.test/page?id=1&token=OLDTOKEN1'))), { url: 'https://app.test/page?id=1&token=FRESHTOKEN3', adjusted: 'open-tab', removed: ['token'] });
+  const plain = loadBackground([{ url: 'https://app.test/page?id=1' }]);
+  assert.equal((await plain.liveUrlOf('https://app.test/page?id=1&token=OLDTOKEN1')).adjusted, 'stripped', '开着的同一页面不带令牌：和去掉参数打开一样，不算');
   const none = loadBackground([]);
   assert.equal((await none.liveUrlOf('https://app.test/page?id=1&token=OLDTOKEN1')).url, 'https://app.test/page?id=1');
   assert.deepEqual(JSON.parse(JSON.stringify(await none.liveUrlOf('https://app.test/page?id=1'))), { url: 'https://app.test/page?id=1' });
+});
+
+test('background: start_url 只认同一页面；只能去掉参数打开时先到来源页找指向它的链接', async () => {
+  const bg = loadBackground([]);
+  const page = 'https://app.test/page?id=1&ticket=OLDTICKET1';
+  const g = bg.givenStart('https://app.test/page?ticket=NEWTICKET9&id=1', page);
+  assert.deepEqual(JSON.parse(JSON.stringify(g)), { url: 'https://app.test/page?ticket=NEWTICKET9&id=1', adjusted: 'given', removed: ['ticket'] });
+  assert.equal(bg.givenStart('https://app.test/page?id=2&ticket=NEWTICKET9', page), null, '别的记录不行');
+  assert.equal(bg.givenStart('https://other.test/page?id=1', page), null);
+  assert.equal(bg.givenStart('javascript:alert(1)//https://app.test/page?id=1', page), null);
+  assert.equal(bg.givenStart(undefined, page), null);
+  assert.equal(bg.givenStart('https://u:p@app.test/page?id=1&ticket=NEWTICKET9', page), null, '带账号密码的地址不认');
+  assert.equal(bg.givenStart('https://app.test/page/?id=1&ticket=NEWTICKET9', page), null, '路径要一字不差（末尾多一个 / 也不行）');
+
+  let url = 'about:blank';
+  let links = [];
+  let adLinks = [];
+  const own = {
+    tabs: { get: async () => ({ status: 'complete', url }), update: async (id, o) => { url = o.url === 'https://app.test/moved' ? 'https://login.test/' : o.url; } },
+    scripting: { executeScript: async () => [{ result: { origin: new URL(url).origin, links } }, { result: { origin: 'https://ads.test', links: adLinks } }, { result: null }] },
+  };
+  const orig = bg.chrome;
+  bg.chrome = new Proxy({}, { get: (t, k) => own[k] || orig[k] });
+  bg.waitTabComplete = async () => {};
+  const stripped = { url: 'https://app.test/page?id=1', adjusted: 'stripped', removed: ['ticket'] };
+  const b = { recording: { startUrl: page, entry: { from: 'https://app.test/list' } } };
+  links = ['https://app.test/page?id=2&ticket=OTHER12345', 'https://app.test/page?id=1', 'https://app.test/page?id=1&ticket=FRESH12345'];
+  let r = await bg.viaSource(1, { id: 'r1' }, b, stripped, Date.now());
+  assert.equal(url, 'https://app.test/list', '先打开来源页');
+  assert.deepEqual(JSON.parse(JSON.stringify(r)), { url: 'https://app.test/page?id=1&ticket=FRESH12345', adjusted: 'source-link', removed: ['ticket'], from: 'https://app.test/list', left: true }, '优先带新令牌的那个链接，别的记录的链接不要');
+  assert.equal(await bg.viaSource(1, { id: 'r1' }, b, { url: page }, Date.now()).then((x) => x.adjusted), undefined, '不用去掉参数打开时不找');
+
+  links = ['https://app.test/page?id=2&ticket=OTHER12345', 'https://app.test/page?id=1', 'https://u:p@app.test/page?id=1&ticket=FRESH12345'];
+  adLinks = ['https://app.test/page?id=1&ticket=FROMANAD99'];
+  url = 'about:blank';
+  r = await bg.viaSource(1, { id: 'r2' }, b, stripped, Date.now() + 60000, 0);
+  assert.equal(r.adjusted, 'stripped', '只有不带令牌的链接（和去掉参数打开一样）、带账号密码的链接、别的源的框架里的链接，都不算找到');
+  assert.equal(r.source, 'https://app.test/list');
+  assert.equal(r.left, true, '标签页已经在来源页上，调用方要重新打开起始页面');
+  url = 'about:blank';
+  r = await bg.viaSource(1, { id: 'r2' }, b, stripped, Date.now());
+  assert.equal(url, 'about:blank', '刚找过没找到的，一段时间内不再找');
+  assert.equal(r.left, undefined);
+  url = 'about:blank';
+  r = await bg.viaSource(1, { id: 'r4' }, b, stripped, Date.now());
+  assert.equal(r.adjusted, 'stripped');
+  url = 'about:blank';
+  await bg.viaSource(1, { id: 'r4' }, b, stripped, Date.now());
+  assert.equal(url, 'https://app.test/list', '时间不够、没等满就没找到的不算，下次照样找');
+
+  links = ['https://app.test/page?id=1&ticket=FRESH12345'];
+  r = await bg.viaSource(1, { id: 'r5' }, { recording: { startUrl: page, entry: { from: 'https://app.test/moved' } } }, stripped, Date.now() + 60000, 0);
+  assert.equal(r.adjusted, 'stripped', '来源页被跳到别的源上（登录页）：那里的链接不认');
+
+  const cross = { recording: { startUrl: page, entry: { from: 'https://evil.test/list' } } };
+  assert.equal(bg.sourceOf({ id: 'r3' }, cross, stripped), '', '不认别的站点的来源页');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'https://www.app.test/list' } } }, stripped), 'https://www.app.test/list', '自己录的：同一站点的子域名可以');
+  assert.equal(bg.sourceOf({ id: 'r3', imported: true }, { recording: { startUrl: page, entry: { from: 'https://www.app.test/list' } } }, stripped), '', '导入的：只认同源');
+  assert.equal(bg.sourceOf({ id: 'r3', imported: true }, { recording: { startUrl: page, entry: { from: 'https://app.test/list' } } }, stripped), 'https://app.test/list');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'https://app.test/user/logout' } } }, stripped), '', '打开就会改数据的地址不去');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'https://app.test/act?op=delete' } } }, stripped), '', '查询参数里的也认');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'https://app.test/%6Cogout' } } }, stripped), '', '编码过的也认');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'https://app.test/#/user/logout' } } }, stripped), '', 'hash 路由里的也认');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'https://app.test/list?kw=%C5%AE%D7%B0' } } }, stripped), 'https://app.test/list?kw=%C5%AE%D7%B0', 'GBK 编码的参数解不出来也不误杀');
+  assert.equal(bg.sourceOf({ id: 'r3' }, { recording: { startUrl: page, entry: { from: 'javascript:x' } } }, stripped), '');
 });
 
 test('background: 只让页面自己发——重做发出接口的那一步，按调用参数改写；页面一打开就发的改不了参数', async () => {
@@ -414,4 +481,101 @@ test('“打开页面”步骤的地址：导出 JSON、脚本、AI 提示词、
   const s = bg.recordingSummary({ id: 'x', events, state: { startUrl: start, name: 'n' } });
   assert.ok(!JSON.stringify(s).includes(secret), 'list_recordings 给 AI 的概要不带原令牌');
   assert.match(s.startUrl, /^https:\/\/app\.test\/promo\?token=/);
+});
+
+// ======================= 全仓审查补充 =======================
+
+test('全仓审查：请求是哪个页面发的只认浏览器给的；接口名、脚本名包含它的不止一个时不乱挑', () => {
+  const bg = loadBackground([]);
+  const forged = { kind: 'request', id: 'x', ts: 1, url: 'https://bank.example/api/transfer', pageUrl: 'https://bank.example/home', frameUrl: 'https://bank.example/f', topUrl: 'https://bank.example/' };
+  const top = JSON.parse(JSON.stringify(bg.senderUrls(forged, { url: 'https://evil.test/p', frameId: 0, tab: { url: 'https://evil.test/p' } })));
+  assert.deepEqual([top.pageUrl, top.frameUrl, top.topUrl], ['https://evil.test/p', undefined, undefined], '页面自己报的 pageUrl、frameUrl、topUrl 都不认');
+  const inFrame = bg.senderUrls(forged, { url: 'https://evil.test/f', frameId: 3, tab: { url: 'https://evil.test/p' } });
+  assert.deepEqual([inFrame.pageUrl, inFrame.frameUrl, inFrame.topUrl], ['https://evil.test/f', 'https://evil.test/f', 'https://evil.test/p']);
+
+  const apis = [{ name: 'POST /api/order/cancel', fn: 'cancelOrder' }, { name: 'GET /api/order/list', fn: 'listOrder' }, { name: 'GET /api/user', fn: 'user' }];
+  const names = (x) => [x.name, x.fn];
+  assert.throws(() => bg.byName(apis, 'order', names, '接口'), /有 2 个接口的名字包含「order」/);
+  assert.equal(bg.byName(apis, 'listOrder', names, '接口').fn, 'listOrder', '完全同名的照常用');
+  assert.equal(bg.byName(apis, 'api/user', names, '接口').fn, 'user', '只有一个包含它的照常用');
+  assert.equal(bg.byName(apis, 'nothing', names, '接口'), null);
+  assert.equal(bg.byName(apis, 'list', names, '接口').fn, 'listOrder', '名字包含的只比完整名称，不比函数名（和导出脚本一致）');
+});
+
+test('全仓审查：路径参数不能是 . 或 ..；接口名包含它的不止一个时不调；导出脚本回放完撤掉请求改写', async () => {
+  const { win, fetchCalls } = runtimeEnv('https://app.test/page');
+  const apis = [
+    { name: 'GET /api/orders/{id}/detail', fn: 'detail', method: 'GET', url: 'https://app.test/api/orders/1/detail', pathTemplate: '/api/orders/{id}/detail', params: { path: { id: '1' } } },
+    { name: 'GET /api/order/cancel', fn: 'cancelOrder', method: 'GET', url: 'https://app.test/api/order/cancel', pathTemplate: '/api/order/cancel' },
+    { name: 'GET /api/order/list', fn: 'listOrder', method: 'GET', url: 'https://app.test/api/order/list', pathTemplate: '/api/order/list' },
+  ];
+  const rt = await win.__pageRecorderRuntime({ steps: [], apis }, {}, {}, cfg, { live: { headers: {}, fields: {} } });
+  const err = (p) => p.then((r) => r.error || '', (e) => e.message);
+  for (const id of ['..', '.']) assert.match(await err(rt.api.call('detail', { path: { id } })), /不能是/);
+  assert.ok(await err(rt.api.call('order', {})), '包含 order 的有两个，不挑一个调');
+  assert.equal(fetchCalls.length, 0);
+  const ok = await rt.api.call('detail', { path: { id: '2' } });
+  assert.equal(ok.ok, true, ok.error);
+  assert.equal(new URL(fetchCalls[0].url).pathname, '/api/orders/2/detail');
+
+  const exp = runtimeEnv('https://app.test/page');
+  await exp.win.__pageRecorderRuntime({ steps: [], apis }, {}, { 'GET /api/order/list': { query: { q: 'x' } } }, { autoRun: false, verbose: false, rewriteRequests: true, netLog: true, stepDelay: 0, waitRequests: false });
+  assert.equal(exp.win.__PR_NET__, undefined, '只是准备好、还没回放：不装网络钩子，不改写页面的请求');
+  await exp.win.__PR__.replay();
+  assert.equal(exp.win.__PR_NET__.rewrite, null, '回放完撤掉改写，之后页面自己的请求不被改成参数里的值');
+});
+
+test('全仓审查：一行一条的 WebSocket / SSE 文本、sig、app_key、常见密钥格式、OAuth 授权码都打码', () => {
+  const ws = { kind: 'request', id: 'w', ts: 1, via: 'websocket', method: 'WS', url: 'wss://app.test/ws', pageUrl: 'https://app.test/', requestHeaders: {},
+    requestBody: { type: 'text', value: '{"type":"auth","token":"SECRETTOKEN123"}\n42["login",{"password":"PW123456"}]\n', truncated: true } };
+  const out = E.scrubRequest(ws, [], true, true);
+  assert.ok(!JSON.stringify(out).includes('SECRETTOKEN123') && !JSON.stringify(out).includes('PW123456'), out.requestBody.value);
+  assert.match(out.requestBody.value, /^\{"type":"auth","token":"__PR_MASKED__"\}\n42\["login",\{"password":"__PR_MASKED__"\}\]\n$/);
+  const sse = 'event: hello\ndata: {"msg":"hi","access_token":"AT-SECRET-1"}\n\n';
+  assert.equal(E.maskDeep(sse, true), 'event: hello\ndata: {"msg":"hi","access_token":""}\n\n');
+
+  const gkey = 'AIza' + 'Bc1'.repeat(11) + 'xy';
+  const u = E.maskUrl(`https://app.test/cb?code=OAUTHCODE123&state=st8Rand0m&sig=SIGVALUE99&app_key=APPKEY12345&key=${gkey}&page=2`, true);
+  for (const secret of ['OAUTHCODE123', 'SIGVALUE99', 'APPKEY12345', gkey]) assert.ok(!u.includes(secret), `${secret} 没打码：${u}`);
+  assert.match(u, /page=2/);
+  assert.match(E.maskUrl('https://app.test/p?code=SKU12345', true), /code=SKU12345/, '单独的 code 多半是商品编码，不打码');
+  assert.match(E.maskUrl('https://app.test/api/orders?code=ORD0012345678&state=1', true), /code=ORD0012345678/, '订单号配订单状态不是授权码');
+  const order = E.scrubRequest(req('o', 1, 'GET', 'https://app.test/api/orders?code=ORD0012345678&state=paid'), [], true, true);
+  assert.match(order.url, /code=ORD0012345678/, '入库时也不打码，接口照样能直接调');
+  const form = E.scrubRequest({ kind: 'request', id: 'f', ts: 1, method: 'POST', url: 'https://app.test/oauth/token', pageUrl: 'https://app.test/', requestHeaders: {},
+    requestBody: { type: 'form', value: 'grant_type=authorization_code&code=ABCDEF1234&redirect_uri=https%3A%2F%2Fapp.test%2Fcb' } }, [], true, true);
+  assert.ok(!form.requestBody.value.includes('ABCDEF1234'));
+  assert.deepEqual(E.maskDeep({ list: ['sk-' + 'a1B2'.repeat(6), 'plain'] }, true), { list: ['', 'plain'] }, '名字看不出来、值一看就是密钥的也打码');
+  assert.deepEqual(E.maskDeep({ code: 'JSONCODE12', state: 'st8Rand0m' }, true), { code: '', state: 'st8Rand0m' }, 'JSON 里和 state 一起的授权码也打码');
+  assert.equal(E.maskDeep('42["auth",{"token":"ONELINE123"}]', true), '42["auth",{"token":""}]', '只有一行的 socket.io 帧也打码');
+
+  // 长期不变的 key 只打码，不当成会过期的参数去掉；判断同一页面时不比按值认出的密钥、OAuth 授权码
+  assert.deepEqual(JSON.parse(JSON.stringify(E.stripDynamic('https://app.test/p?appkey=APPKEY12345&apikey=APIKEY12345&sig=SIGVALUE99'))), { url: 'https://app.test/p?appkey=APPKEY12345&apikey=APIKEY12345', removed: ['sig'] });
+  assert.equal(E.pageKey(`https://app.test/embed?key=${gkey}&q=1`), E.pageKey('https://app.test/embed?key=__PR_MASKED__&q=1'));
+  assert.equal(E.pageKey('https://app.test/cb?code=REALCODE1234&state=st8Rand0m'), E.pageKey('https://app.test/cb?code=__PR_MASKED__&state=st8Rand0m'));
+  assert.notEqual(E.pageKey('https://app.test/p?sid=12&q=1'), E.pageKey('https://app.test/p?sid=13&q=1'), 'sid=12 和 sid=13 是两个页面，不能混');
+  assert.equal(E.exportRequest({ ...ws, requestBody: { type: 'text', value: '{"token":"LINE1SECRET"}\n{"a":1}\n' } }, { maskPasswords: true }).requestBody.value.includes('LINE1SECRET'), false, '导出时请求体里一行一条的 JSON 也打码');
+  assert.notEqual(E.pageKey('https://app.test/p?code=SKU1'), E.pageKey('https://app.test/p?code=SKU2'), '单独的 code 照样区分页面');
+});
+
+test('全仓审查：起后台桥接出错（状态目录写不了）时，MCP 进程退回自己监听，不崩', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { spawn } = await import('node:child_process');
+  const file = join(mkdtempSync(join(tmpdir(), 'pr-ro-')), 'f');
+  writeFileSync(file, 'x'); // 状态目录放在一个文件下面：哪个系统上都建不出来
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const p = spawn(process.execPath, [join(root, 'bridge', 'server.js'), '--stdio', '--port', String(port)], { env: { ...process.env, PR_BRIDGE_DIR: join(file, 'state'), PR_AUTO_UPDATE: '0' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '';
+  let err = '';
+  p.stdout.on('data', (d) => { out += d; });
+  p.stderr.on('data', (d) => { err += d; });
+  let exit = null;
+  p.on('exit', (c) => { exit = c; });
+  p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } }) + '\n');
+  for (let i = 0; i < 200 && !out.includes('"id":1') && exit === null; i++) await new Promise((r) => setTimeout(r, 50));
+  p.kill();
+  assert.equal(exit, null, '进程退出了：' + err);
+  assert.match(out, /"id":1/, err);
+  assert.match(err, /后台桥接起不来/);
 });

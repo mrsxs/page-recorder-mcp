@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const server = join(dirname(fileURLToPath(import.meta.url)), '..', 'bridge', 'server.js');
 process.env.PR_BRIDGE_DIR = mkdtempSync(join(tmpdir(), 'pr-state-'));
+writeFileSync(join(process.env.PR_BRIDGE_DIR, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef'] })); // 测试用的假扩展：桥接认得它
 
 const DOMAINS = [['order', '订单'], ['product', '商品'], ['refund', '退款'], ['coupon', '优惠券']];
 const VERBS = [['list', '列表'], ['detail', '详情'], ['export', '导出报表'], ['stats', '统计'], ['update', '修改']];
@@ -259,4 +260,23 @@ test('merge_recordings：各段原样交给扩展；两个浏览器连着时按�
     assert.ok(got.err);
     assert.match(got.text, /parts 至少给一段/);
   }, other);
+});
+
+test('起始地址带会过期参数的脚本：__run 多一个 start_url，单独交给扩展，不混进输入参数；run_recording 也能传', async () => {
+  const lib = library(2);
+  lib[0].dynamicStart = true;
+  await withBridge(lib, [], async ({ rpc, tool }) => {
+    const tools = (await rpc('tools/list', {})).tools;
+    const run0 = tools.find((t) => t.name === 'order_0__run');
+    const run1 = tools.find((t) => t.name === 'product_1__run');
+    assert.ok(run0.inputSchema.properties.start_url, '起始地址会过期的脚本给 start_url');
+    assert.equal(run1.inputSchema.properties.start_url, undefined, '别的脚本不给');
+    let got = JSON.parse((await tool('order_0__run', { 关键词: 'x', start_url: 'https://order0.example.test/admin?ticket=NEW123456' })).text);
+    assert.deepEqual(got.got.params, { 关键词: 'x' });
+    assert.equal(got.got.startUrl, 'https://order0.example.test/admin?ticket=NEW123456');
+    got = JSON.parse((await tool('product_1__run', { 关键词: 'x', start_url: 'https://x.test/' })).text);
+    assert.equal(got.got.params.start_url, 'https://x.test/', '没给 start_url 的脚本照旧当输入参数（扩展会报没有这个参数）');
+    got = JSON.parse((await tool('run_recording', { recording: 'rec0', start_url: 'https://order0.example.test/admin?ticket=NEW123456' })).text);
+    assert.equal(got.got.startUrl, 'https://order0.example.test/admin?ticket=NEW123456');
+  });
 });

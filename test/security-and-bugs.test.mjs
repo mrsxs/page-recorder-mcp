@@ -2,8 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -372,12 +372,14 @@ function wsFrame(text, masked = true) {
   return Buffer.concat([head, mask, Buffer.from(payload.map((b, i) => b ^ mask[i % 4]))]);
 }
 
-async function startBridge(extraArgs = []) {
+// trusted：桥接认得的假扩展（不在里面的要核对安装目录）
+async function startBridge(extraArgs = [], env = {}, trusted = ['extaaa', 'extbbb', 'extccc', 'extproto']) {
   const stateDir = mkdtempSync(join(tmpdir(), 'pr-sec-'));
+  writeFileSync(join(stateDir, 'trusted-extensions.json'), JSON.stringify({ ids: trusted }));
   const port = 22000 + Math.floor(Math.random() * 18000);
   const p = spawn(process.execPath, [server, '--port', String(port), ...extraArgs], {
     stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, PR_BRIDGE_DIR: stateDir },
+    env: { ...process.env, PR_BRIDGE_DIR: stateDir, ...env },
   });
   await new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('启动超时')), 10000);
@@ -391,6 +393,7 @@ async function startBridge(extraArgs = []) {
   return {
     port,
     proc: p,
+    stateDir,
     stop() {
       p.kill();
       rmSync(stateDir, { recursive: true, force: true });
@@ -779,4 +782,106 @@ test('runtime: 等的接口晚一点返回：照样等到并带上数据；reque
   assert.equal(r.warnings, undefined);
   const { ms } = await replayWaiting(() => [], { requestQuiet: 0, requestTimeout: 1500 });
   assert.ok(ms >= 1400, `只等了 ${ms}ms`);
+});
+
+// 握手、发 hello，收 0.4 秒里桥接发来的消息
+function extHandshake(port, origin, instanceId) {
+  return new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1');
+    let buf = Buffer.alloc(0);
+    let status = '';
+    let closed = false;
+    const messages = [];
+    s.on('close', () => { closed = true; });
+    s.on('error', () => { closed = true; });
+    s.write(`GET /ext HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: ${origin}\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+    s.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      if (!status) {
+        const i = buf.indexOf('\r\n\r\n');
+        if (i < 0) return;
+        status = buf.slice(0, i).toString().split('\r\n')[0];
+        buf = buf.slice(i + 4);
+        if (status.includes('101')) s.write(wsFrame(JSON.stringify({ type: 'hello', version: '1.8.0', instanceId, profile: instanceId })));
+      }
+      while (buf.length >= 2) {
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
+        if (buf.length < off + len) return;
+        if ((buf[0] & 0x0f) === 1) messages.push(JSON.parse(buf.slice(off, off + len).toString('utf8')));
+        buf = buf.slice(off + len);
+      }
+    });
+    setTimeout(() => resolve({ status, messages, closed, socket: s }), 400);
+  });
+}
+
+test('bridge: 没设 --extension-id 时，扩展要找得到安装目录、确实是 Page Recorder 才认（第一个也一样）；trust 子命令手动放行', async () => {
+  const { unpackedExtensionId } = createRequire(import.meta.url)('../bridge/updater.js');
+  const dir = mkdtempSync(join(tmpdir(), 'pr-trust-'));
+  // 浏览器资料里登记着两个已解压扩展：一个是 Page Recorder，一个不是
+  const good = join(dir, 'ext-good');
+  mkdirSync(join(good, 'lib'), { recursive: true });
+  writeFileSync(join(good, 'manifest.json'), JSON.stringify({ name: 'Page Recorder', version: '1.8.0' }));
+  writeFileSync(join(good, 'background.js'), '');
+  writeFileSync(join(good, 'lib', 'runtime.js'), '');
+  const fake = join(dir, 'ext-fake');
+  mkdirSync(fake);
+  writeFileSync(join(fake, 'manifest.json'), JSON.stringify({ name: 'Free VPN', version: '1.0.0' }));
+  const goodId = unpackedExtensionId(good);
+  const fakeId = unpackedExtensionId(fake);
+  mkdirSync(join(dir, 'browser', 'Default'), { recursive: true });
+  writeFileSync(join(dir, 'browser', 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: { [goodId]: { path: good }, [fakeId]: { path: fake } } } }));
+  // 指纹浏览器：每个环境一个 --user-data-dir（<根>/<环境>/Default/Preferences）；也可能直接填一个资料目录（<目录>/Preferences）
+  const copyGood = (name) => {
+    const d = join(dir, name);
+    mkdirSync(join(d, 'lib'), { recursive: true });
+    for (const f of ['manifest.json', 'background.js', join('lib', 'runtime.js')]) writeFileSync(join(d, f), readFileSync(join(good, f)));
+    return d;
+  };
+  const fp = copyGood('ext-fp');
+  const direct = copyGood('ext-direct');
+  mkdirSync(join(dir, 'fp', 'env7', 'Default'), { recursive: true });
+  writeFileSync(join(dir, 'fp', 'env7', 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: { [unpackedExtensionId(fp)]: { path: fp } } } }));
+  mkdirSync(join(dir, 'one'), { recursive: true });
+  writeFileSync(join(dir, 'one', 'Preferences'), JSON.stringify({ extensions: { settings: { [unpackedExtensionId(direct)]: { path: direct } } } }));
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const b = await startBridge([], { PR_BROWSER_DATA_DIRS: [join(dir, 'browser'), join(dir, 'fp'), join(dir, 'one')].join(sep) }, []);
+  const open = [];
+  try {
+    const other = await extHandshake(b.port, 'chrome-extension://extbbb', 'i2');
+    assert.equal(other.closed, true, '找不到安装目录：第一个连上来的也不认（升级时先连上来的不一定是原来那个）');
+    assert.match(other.messages.find((m) => m.type === 'rejected').reason, /trust extbbb/);
+    const st = await (await fetch(`http://127.0.0.1:${b.port}/api/status`)).json();
+    assert.equal(st.browsers.length, 0);
+    assert.deepEqual(st.rejectedExtensions.map((x) => x.id), ['extbbb']);
+    const status = (origin) => fetch(`http://127.0.0.1:${b.port}/api/status`, { headers: { origin } }).then((r) => r.status);
+    assert.equal(await status('chrome-extension://extbbb'), 403, '没认的扩展也不能走 HTTP');
+
+    const verified = await extHandshake(b.port, 'chrome-extension://' + goodId, 'i3');
+    open.push(verified.socket);
+    assert.equal(verified.closed, false, '浏览器资料里登记的目录装的是 Page Recorder：认');
+    const impostor = await extHandshake(b.port, 'chrome-extension://' + fakeId, 'i4');
+    assert.equal(impostor.closed, true, '目录里装的不是 Page Recorder：不认');
+    for (const [d, inst] of [[fp, 'i5'], [direct, 'i6']]) {
+      const c = await extHandshake(b.port, 'chrome-extension://' + unpackedExtensionId(d), inst);
+      open.push(c.socket);
+      assert.equal(c.closed, false, `${d}：环境目录下的 Default、直接给的资料目录也找得到`);
+    }
+
+    assert.equal(await status('chrome-extension://' + goodId), 200, '认过的扩展可以走 HTTP');
+    const r = spawnSync(process.execPath, [server, 'trust', 'extbbb'], { env: { ...process.env, PR_BRIDGE_DIR: b.stateDir }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(await status('chrome-extension://extbbb'), 200, '手动放行后 HTTP 马上认（重读信任文件）');
+    const again = await extHandshake(b.port, 'chrome-extension://extbbb', 'i2');
+    open.push(again.socket);
+    assert.equal(again.closed, false, '手动放行后认');
+    assert.equal((await (await fetch(`http://127.0.0.1:${b.port}/api/status`)).json()).browsers.length, 4);
+    assert.deepEqual(JSON.parse(readFileSync(join(b.stateDir, 'trusted-extensions.json'), 'utf8')).ids.sort(), [goodId, unpackedExtensionId(fp), unpackedExtensionId(direct), 'extbbb'].sort(), '桥接记的和 trust 写的都在（合并写，不互相覆盖）');
+  } finally {
+    open.forEach((s) => s.destroy());
+    b.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

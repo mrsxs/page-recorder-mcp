@@ -191,10 +191,29 @@ async function noteLibDeleted(id) {
     await chrome.storage.local.set({ libDeleted: next });
   });
 }
+// 请求是哪个页面发的（直接请求时在这个页面里调，带它的 Cookie）、iframe 里的还有嵌着它的主页面（iframe 地址里的令牌由主页面现发，
+// 直接请求时打开主页面再找这个 iframe）：只认浏览器给的 sender，页面自己报的 pageUrl、frameUrl、topUrl 可以随便填（比如填成别的站）
+function senderUrls(ev, sender) {
+  const out = Object.assign({}, ev);
+  delete out.pageUrl;
+  delete out.frameUrl;
+  delete out.topUrl;
+  if (typeof sender.url === 'string') out.pageUrl = sender.url;
+  if (sender.frameId) { out.frameUrl = sender.url; out.topUrl = sender.tab && sender.tab.url; }
+  return out;
+}
+// 按名字找：完全一样的优先；只是名字里包含的，只有一个时才用（传 "order" 不能随便落到 cancelOrder 上）
+function byName(list, ref, names, what) {
+  const exact = list.find((x) => names(x).some((n) => n === ref));
+  if (exact) return exact;
+  const part = list.filter((x) => typeof names(x)[0] === 'string' && names(x)[0].includes(ref)); // 只比完整名称，和导出脚本一致
+  if (part.length > 1) throw new Error(`有 ${part.length} 个${what}的名字包含「${ref}」：${part.slice(0, 10).map((x) => names(x)[0]).join('、')}。请写完整的名字`);
+  return part[0] || null;
+}
 async function getLibItem(c, ref) {
   const r = ref == null ? '' : String(ref).trim();
   if (!r) throw new Error('缺少 recording 参数（脚本 id 或名称）');
-  const e = c.libIndex.find((x) => x.id === r) || c.libIndex.find((x) => x.name === r) || c.libIndex.find((x) => x.name.includes(r));
+  const e = c.libIndex.find((x) => x.id === r) || byName(c.libIndex, r, (x) => [x.name], '脚本');
   if (!e) throw new Error(`脚本库中没有「${ref}」。可用：${c.libIndex.map((x) => x.name).join('、') || '（空）'}`);
   const d = await chrome.storage.local.get('lib:' + e.id);
   const item = d['lib:' + e.id];
@@ -1291,7 +1310,7 @@ async function runApiMode(item, b, apis, opts) {
     try {
       // newTab：用全新标签页（默认跑完关掉）；否则复用开着的页面。fresh 对直接请求没有意义（不依赖页面状态）
       const r = await callApi(item, a.name, {}, {
-        params: opts.params, apiParams: opts.apiParams, tabId: opts.tabId, active: opts.active, deadline,
+        params: opts.params, apiParams: opts.apiParams, tabId: opts.tabId, active: opts.active, deadline, startUrl: opts.startUrl,
         reuseTab: opts.newTab ? false : undefined, keepTab: opts.keepTab,
       });
       out.responses.push({ api: a.name, fn: a.fn, status: r.status, ok: r.ok, url: PR_EXPORTER.maskUrl(r.url, true), data: PR_EXPORTER.maskDeep(r.data, true), error: r.error });
@@ -1333,6 +1352,9 @@ async function runRecording(item, opts) {
     given[k] = a.map(String);
   }
   opts = Object.assign({}, opts, { params: given });
+  if (opts.startUrl != null && opts.startUrl !== '' && !givenStart(opts.startUrl, b.recording.startUrl)) {
+    throw new Error(`start_url 要是这条脚本的起始页面（令牌、签名、时间戳这类参数可以不同）：${PR_EXPORTER.maskUrl(PR_EXPORTER.stripDynamic(b.recording.startUrl).url, true)}`);
+  }
   const unknownNames = Object.keys(given).filter((k) => !Object.hasOwn(b.params, k));
   if (unknownNames.length) throw new Error(`这条录制没有这些输入参数：${unknownNames.join('、')}。可用的参数：${Object.keys(b.params).join('、') || '（无）'}`);
   const changed = changedParams(b, given);
@@ -1422,14 +1444,16 @@ async function runUi(item, b, opts, calibrateNames, required) {
   let locked = opts.tabId || null;
   const why = { reason: opts.newTab ? '调用时传了 new_tab' : '' };
   const capture = opts.capture !== false; // 回放期间抓下这个标签页里所有框架的接口返回，放在结果的 network 里
-  // 起始地址带会过期的参数：用开着的同一页面现在的地址，或者去掉这些参数再打开（见 liveUrlOf）
-  const start = await liveUrlOf(b.recording.startUrl);
+  // 起始地址带会过期的参数：用调用时传的 start_url，或者开着的同一页面现在的地址，或者去掉这些参数再打开（见 liveUrlOf）；
+  // 去掉参数打开前，先到录制时的来源页上找指向它的链接（见 viaSource）
+  let start = givenStart(opts.startUrl, b.recording.startUrl) || await liveUrlOf(b.recording.startUrl);
   // 去掉参数打开的起始页面本身返回了什么状态码（只在去参数打开时看，用来判断“令牌过期被拒”）
   const navSeen = [];
   const navWatch = (d) => { if (d.type === 'main_frame') navSeen.push({ url: d.url.split('#')[0], status: d.statusCode }); };
   const stopNavWatch = () => { try { chrome.webRequest?.onCompleted.removeListener(navWatch); } catch (e) {} };
   if (start.adjusted === 'stripped') { try { chrome.webRequest?.onCompleted.addListener(navWatch, { urls: ['http://*/*', 'https://*/*'], types: ['main_frame'] }); } catch (e) {} }
   let openedStart = false; // 真的用 start.url 打开或跳转过（没动标签页就不说“调整了地址”）
+  let navigated = false; // 复用的标签页确实跳过去了（看到它离开了旧页面）：之后被站点重定向，第一步也算完成，不再打开录制时的地址
   try {
     let old = reuse ? await reusedTab('run:' + item.id, b.recording.startUrl, why) : null;
     for (let k = 0; old && callingTabs.has(old.id) && k < 50; k++) await sleep(100);
@@ -1438,27 +1462,37 @@ async function runUi(item, b, opts, calibrateNames, required) {
     if (old) {
       runningTabs.add(old.id);
       locked = old.id;
-      if (capture) startCapture(old.id);
+      // 传了 start_url、或者用户开着带新参数的同一页面（比如按提示刚打开的）就一定打开它；
+      // 停在别的页面（同一路径下别的 hash 路由、别的记录也算）就重新打开起始页面
+      const reopen = opts.fresh || start.adjusted === 'given' || (start.adjusted === 'open-tab' && old.url !== start.url);
+      const away = PR_EXPORTER.pageKey(old.url) !== PR_EXPORTER.pageKey(b.recording.startUrl);
+      if (reopen || away) start = await viaSource(old.id, item, b, start, deadline);
+      if (capture) startCapture(old.id, start.left); // 还在来源页上：不让来源页的请求混进来，跳过去之后的页面照常抓
       // 默认不刷新（最快）；fresh: true 时回到起始页面重新加载（含 hash SPA 同文档时显式 reload），从干净的页面状态开始
-      if (opts.fresh) {
-        const sameDoc = sameSitePath(old.url, start.url) && (() => { try { return new URL(old.url).search === new URL(start.url).search; } catch (e) { return false; } })();
-        if (old.url !== start.url) await chrome.tabs.update(old.id, { url: start.url });
-        if (sameDoc) await chrome.tabs.reload(old.id);
+      if (start.left) { // 去来源页找过链接，标签页已经不在原来的页面上了
+        navigated = await navigateTab(old.id, start.url);
         openedStart = true;
-      } else if (!sameSitePath(old.url, b.recording.startUrl)) {
-        await chrome.tabs.update(old.id, { url: start.url });
+      } else if (reopen) {
+        const sameDoc = sameSitePath(old.url, start.url) && (() => { try { return new URL(old.url).search === new URL(start.url).search; } catch (e) { return false; } })();
+        if (old.url !== start.url) navigated = await navigateTab(old.id, start.url);
+        if (sameDoc) navigated = (await navigateTab(old.id, '')) || navigated;
+        openedStart = true;
+      } else if (away) {
+        navigated = await navigateTab(old.id, start.url);
         openedStart = true;
       }
       if (opts.active) await chrome.tabs.update(old.id, { active: true });
       picked = { tabId: old.id, created: false };
       await rememberTab('run:' + item.id, old.id, b.recording.startUrl);
     } else {
-      // 先开空白页、打开抓包，再跳到起始页面：页面一加载发的请求也能抓到
-      picked = await pickTab(capture && !opts.tabId ? 'about:blank' : start.url, { ...opts, reuseTab: false });
+      // 先开空白页、打开抓包，再跳到起始页面：页面一加载发的请求也能抓到（要先去来源页找链接时也先开空白页）
+      const blank = (capture || !!sourceOf(item, b, start)) && !opts.tabId;
+      picked = await pickTab(blank ? 'about:blank' : start.url, { ...opts, reuseTab: false });
       runningTabs.add(picked.tabId); // 新开的标签页立刻占上，免得导航期间被接口调用选走
       locked = picked.tabId;
-      if (capture) startCapture(picked.tabId);
-      if (capture && picked.created) await chrome.tabs.update(picked.tabId, { url: start.url });
+      if (blank && picked.created) start = await viaSource(picked.tabId, item, b, start, deadline);
+      if (capture) startCapture(picked.tabId, start.left);
+      if (blank && picked.created) navigated = await navigateTab(picked.tabId, start.url);
       openedStart = !!picked.created;
       if (reuse) await rememberTab('run:' + item.id, picked.tabId, b.recording.startUrl);
     }
@@ -1467,6 +1501,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
     if (locked) runningTabs.delete(locked);
     if (picked) stopCapture(picked.tabId);
     if (locked) stopCapture(locked);
+    if (picked && picked.created) chrome.tabs.remove(picked.tabId).catch(() => {}); // 没准备好的新标签页不留
     throw e;
   }
   const { tabId, created } = picked;
@@ -1475,7 +1510,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
   // 真实输入：连上调试接口后，页面里的点击、输入、按键都由浏览器真实产生；连不上就用合成事件
   // 上传参数里给的文件路径（| 分隔）是这次回放唯一允许设进文件框的文件
   const uploadFiles = b.recording.steps.filter((s) => s.type === 'upload' && s.param).flatMap((s) => String(Object.hasOwn(opts.params || {}, s.param) ? opts.params[s.param] || '' : '').split('|').map((x) => x.trim()).filter(Boolean));
-  const wantReal = (await load()).settings.realInput !== false && opts.realInput !== false;
+  const wantReal = (await load().catch(() => ({ settings: {} }))).settings.realInput !== false && opts.realInput !== false;
   let real = false;
   // 按所在框架把步骤切成几段：顶层页面的连续步骤一段，同一个 iframe 里的连续步骤一段，依次在对应框架里执行
   const segs = [];
@@ -1502,7 +1537,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
       activeRuns.add(key);
       let r;
       try {
-        r = await runSegment(tabId, key, b, params, apiParams, config, seg, si === 0 && created ? b.recording.startUrl : null, skip, deadline);
+        r = await runSegment(tabId, key, b, params, apiParams, config, seg, si === 0 && (created || navigated) ? b.recording.startUrl : null, skip, deadline);
       } catch (e) {
         // 超时、页面一直没准备好：把这一段已经做完的步骤（最新断点）带回去，AI 才知道提交类的步骤做没做
         const prog = replayProgress.get(key);
@@ -1546,26 +1581,37 @@ async function runUi(item, b, opts, calibrateNames, required) {
       }
       total.calibration = { params: total.ok ? verdicts : Object.fromEntries(calibrateNames.map((n) => [n, 'unknown'])), details: details.slice(0, 40) };
     }
-    if (start.adjusted === 'stripped' && openedStart) {
+    const l1 = total.log.find((l) => l && l.step === 1);
+    if (start.adjusted && start.adjusted !== 'open-tab' && openedStart) {
       // 日志第 1 步写的是录制时的地址，补上实际打开的地址，免得误导
-      const l1 = total.log.find((l) => l && l.step === 1);
-      const shown = PR_EXPORTER.maskUrl(start.url, true);
-      if (l1 && typeof l1.desc === 'string' && l1.desc.startsWith('打开页面')) l1.desc += `（实际打开：${shown}，已去掉 ${start.removed.join('、')}）`;
+      // 新地址里的令牌不给出来，只说带了哪些
+      const shown = PR_EXPORTER.maskUrl(PR_EXPORTER.stripDynamic(start.url).url, true);
+      const fresh = PR_EXPORTER.stripDynamic(start.url).removed.join('、');
+      const how = start.adjusted === 'source-link' ? `${shown}，带 ${PR_EXPORTER.maskUrl(start.from, true)} 上的链接里新的 ${fresh}`
+        : start.adjusted === 'given' ? `${shown}，带调用时传的 start_url 里的 ${fresh || '参数'}` : `${shown}，已去掉 ${start.removed.join('、')}`;
+      if (l1 && typeof l1.desc === 'string' && l1.desc.startsWith('打开页面')) l1.desc += `（实际打开：${how}）`;
+    }
+    if (start.adjusted === 'stripped' && openedStart) {
       // 去掉过期参数打开后，第 2 步及以后才失败：页面多半因令牌过期没给出正常内容，不是页面改版
       // 只有起始页面本身返回 401/403/404/410 才加提示；拿不到状态码就不加
       let k = navSeen.findIndex((x) => x.url === start.url.split('#')[0]);
       while (k >= 0 && k < navSeen.length - 1 && navSeen[k].status >= 300 && navSeen[k].status < 400) k++;
       const st = k >= 0 ? navSeen[k].status : 0;
       if (!total.ok && total.error && l1 && l1.ok && [401, 403, 404, 410].includes(st)) {
-        total.error += `。提示：起始地址里会过期的参数（${start.removed.join('、')}）已去掉再打开，但页面拒绝了请求；如果这个页面必须带有效令牌才能打开，请先在浏览器里打开带新令牌的同一页面，再回放（该页面返回了 HTTP ${st}）`;
+        total.error += `。提示：起始地址里会过期的参数（${start.removed.join('、')}）已去掉再打开，但页面拒绝了请求；如果这个页面必须带有效令牌才能打开，请先在浏览器里打开带新令牌的同一页面再回放，或者调用时用 start_url 传新地址（该页面返回了 HTTP ${st}）`;
       }
     }
-    if (start.adjusted && openedStart) total.startPage = { how: start.adjusted === 'open-tab' ? '用了开着的同一页面现在的地址' : '去掉了会过期的参数再打开', removed: start.removed };
-    const moved = start.removed && start.removed.length && total.log.find((l) => l && l.step === 1 && l.redirected);
+    if (start.adjusted && openedStart) {
+      total.startPage = { how: START_HOW[start.adjusted], removed: start.removed };
+      if (start.source && start.adjusted === 'stripped') total.startPage.source = `录制时的来源页 ${PR_EXPORTER.maskUrl(start.source, true)} 上没找到指向这个页面的链接`;
+    }
+    // 只是去掉参数打开的才提醒：用了站点新发的地址（来源页的链接、start_url、开着的页面）还被跳走，是站点正常的跳转
+    const moved = start.adjusted === 'stripped' && total.log.find((l) => l && l.step === 1 && l.redirected);
     if (moved) {
       const from = b.recording.entry && b.recording.entry.from;
-      total.warnings = (total.warnings || []).concat(`起始地址带会过期的参数（${start.removed.join('、')}），打开后跳到了 ${PR_EXPORTER.maskUrl(moved.redirected, true)}：可能参数过期或登录失效。${from ? `这个页面录制时是从 ${PR_EXPORTER.maskUrl(from, true)} 打开的，建议从那里开始重新录制（把点进来的那一步也录进去）` : '建议从站点首页开始重新录制，把点进这个页面的那一步也录进去'}`);
+      total.warnings = (total.warnings || []).concat(`起始地址带会过期的参数（${start.removed.join('、')}），打开后跳到了 ${PR_EXPORTER.maskUrl(moved.redirected, true)}：可能参数过期或登录失效。可以调用时用 start_url 传带新令牌的地址；${from ? `这个页面录制时是从 ${PR_EXPORTER.maskUrl(from, true)} 打开的，也可以从那里开始重新录制（把点进来的那一步也录进去）` : '也可以从站点首页开始重新录制，把点进这个页面的那一步也录进去'}`);
     }
+    for (const l of total.log) if (l && typeof l.redirected === 'string') l.redirected = PR_EXPORTER.maskUrl(l.redirected, true);
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     total.finalUrl = PR_EXPORTER.maskUrl(tab?.url || '', true);
     total.responses = total.responses.map((r) => ({ ...r, url: PR_EXPORTER.maskUrl(r.url, true), data: PR_EXPORTER.maskDeep(r.data, true) }));
@@ -1599,9 +1645,10 @@ async function runUi(item, b, opts, calibrateNames, required) {
 const captures = new Map(); // tabId → { list, bytes }
 const CAPTURE_MAX = 300;
 const CAPTURE_BYTES = 8 * 1024 * 1024;
-function startCapture(tabId) {
+// quiet：只记下要抓，不通知当前页面（马上要离开的页面）；之后打开的页面加载时自己会来问
+function startCapture(tabId, quiet) {
   if (!captures.has(tabId)) captures.set(tabId, { list: [], bytes: 0 });
-  chrome.tabs.sendMessage(tabId, { type: 'capture', on: true }).catch(() => {});
+  if (!quiet) chrome.tabs.sendMessage(tabId, { type: 'capture', on: true }).catch(() => {});
 }
 // 最后一步发出的请求可能还没返回：等到 1 秒内没有新请求进来（最多 5 秒）再收
 async function drainCapture(cap) {
@@ -1627,7 +1674,7 @@ function addCapture(cap, ev, sender) {
   else cap.bytes += size;
   cap.list.push({
     ts: ev.ts, method: ev.method, url: ev.url, status: ev.status, error: ev.error,
-    frame: sender.frameId ? sender.url : undefined, type: rb ? rb.type : null, truncated: !!(rb && rb.truncated), data,
+    frame: sender.frameId ? PR_EXPORTER.maskUrl(sender.url, true) : undefined, type: rb ? rb.type : null, truncated: !!(rb && rb.truncated), data,
   });
 }
 // 要打开的页面地址带会过期的参数（令牌、签名、票据、时间戳、录制时打了码的）：先找浏览器里开着的同一页面，
@@ -1637,11 +1684,117 @@ async function liveUrlOf(url) {
   if (!removed.length) return { url };
   const key = PR_EXPORTER.pageKey(url);
   const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }).catch(() => []);
-  // 扩展自己留着复用的标签页不算（上面可能还是录制时的旧参数）；只认用户自己开着的
+  // 扩展自己留着复用的标签页不算（上面可能还是录制时的旧参数）；只认用户自己开着、地址里带着这类参数的
+  // （不带的和去掉参数打开一样，还会挡掉后面去来源页找链接）
   const ours = new Set(Object.values(await ourTabs()).map((x) => x && x.tabId));
-  const open = tabs.find((t) => t.url && !t.incognito && !ours.has(t.id) && PR_EXPORTER.pageKey(t.url) === key);
+  const open = tabs.find((t) => t.url && !t.incognito && !ours.has(t.id) && PR_EXPORTER.hasDynamic(t.url) && PR_EXPORTER.pageKey(t.url) === key);
   if (open) return { url: open.url, adjusted: 'open-tab', removed };
   return { url: stripped, adjusted: 'stripped', removed };
+}
+const START_HOW = {
+  given: '用了调用时传的 start_url',
+  'open-tab': '用了开着的同一页面现在的地址',
+  'source-link': '从录制时的来源页上找到指向这个页面的链接，用它现在的地址打开',
+  stripped: '去掉了会过期的参数再打开',
+};
+// 调用时传的起始页面新地址（start_url）：只认 http(s)、和要打开的页面是同一页面的（去掉会过期的参数后一致），不能拿来打开别的页面
+function webUrl(url) {
+  try { const u = new URL(url); return /^https?:$/.test(u.protocol) && !u.username && !u.password; } catch (e) { return false; }
+}
+function givenStart(url, page) {
+  if (typeof url !== 'string' || !webUrl(url)) return null;
+  if (PR_EXPORTER.pageKey(url) !== PR_EXPORTER.pageKey(page)) return null;
+  // 同一页面的判断不管末尾的 /、hash 里第二个 ? 之后的部分；拿来放行调用方给的地址要严一些
+  try {
+    const x = new URL(url);
+    const y = new URL(page);
+    if (x.pathname !== y.pathname || x.hash.split('?')[0] !== y.hash.split('?')[0] || x.hash.split('?').length > 2) return null;
+  } catch (e) { return null; }
+  return { url, adjusted: 'given', removed: PR_EXPORTER.stripDynamic(page || '').removed };
+}
+// 只能去掉参数打开时，录制时记下的来源页（从哪个页面点进来的）。只认同一站点的：别的站点的页面可以放一个指向这里、
+// 却带着它自己令牌的链接（跨站时上一页一般也只记得到对方首页，本来就找不到）。最近找过没找到的，一小时内不再找（省掉多开一次页面）
+const sourceMiss = new Map(); // 录制 id + 页面 → 没找到的时间
+function sourceOf(item, b, start) {
+  const from = b.recording.entry && b.recording.entry.from;
+  if (start.adjusted !== 'stripped' || typeof from !== 'string' || !webUrl(from)) return '';
+  if (siteOf(from) !== siteOf(b.recording.startUrl)) return '';
+  // 导入的录制包里的来源页别人能随便填：只认和起始页面同源的；打开就会改数据的地址（退出登录、删除……）都不去
+  try {
+    if (item.imported && new URL(from).origin !== new URL(b.recording.startUrl).origin) return '';
+    // 路径、查询参数、hash 路由里有 logout、delete 这类词的不去（解码后看，%6C%6Fgout 也认得出；
+    // GBK 编码的参数解不出来就看原串）
+    const u = new URL(from);
+    const raw = (u.pathname + '/' + u.search + '/' + u.hash).replace(/[?#&=+]/g, '/');
+    let text = raw;
+    try { text = decodeURIComponent(raw); } catch (e) { /* 不是 UTF-8 编码 */ }
+    if (PR_EXPORTER.writeApi('GET', text) || PR_EXPORTER.writeApi('GET', raw)) return '';
+  } catch (e) { return ''; }
+  if (Date.now() - (sourceMiss.get(item.id + ' ' + PR_EXPORTER.pageKey(b.recording.startUrl)) || 0) < 3600000) return '';
+  return from;
+}
+// 让标签页打开 url（url 为空就是刷新），等它离开原来的页面（update 返回时可能还没开始加载，这时注入的脚本会落在旧页面上），
+// 最多 3 秒。返回是否看到它离开了
+async function navigateTab(tabId, url) {
+  // 页面从缓存里瞬间加载完时，轮询可能一次都看不到 loading：同时听标签页开始加载的事件
+  let started = false;
+  const seen = (id, info) => { if (id === tabId && (info.status === 'loading' || info.url)) started = true; };
+  chrome.tabs.onUpdated?.addListener(seen);
+  try {
+    const before = await chrome.tabs.get(tabId).catch(() => null);
+    if (url) await chrome.tabs.update(tabId, { url });
+    else await chrome.tabs.reload(tabId);
+    for (let k = 0; k < 15; k++) {
+      if (started) return true;
+      const t = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t || t.status !== 'complete' || !before || t.url !== before.url) return true;
+      await sleep(200);
+    }
+    return started;
+  } finally { chrome.tabs.onUpdated?.removeListener(seen); }
+}
+// 页面上所有链接的地址，和这个框架的源（注入页面执行，不能引用外部变量）
+function pageLinks() {
+  return { origin: location.origin, links: Array.from(document.querySelectorAll('a[href], area[href]'), (a) => a.href).filter((h) => typeof h === 'string').slice(0, 3000) };
+}
+// 先在这个标签页打开来源页，找指向起始页面、带着会过期参数的链接（去掉这些参数后一致），用它现在的地址：参数是站点刚发的。
+// 不带这些参数的链接和去掉参数打开一样，不算。找不到照旧去掉参数打开。left：标签页已经离开原来的页面（调用方要重新打开起始页面）
+async function viaSource(tabId, item, b, start, deadline, wait = 6000) {
+  const from = sourceOf(item, b, start);
+  if (!from) return start;
+  const want = PR_EXPORTER.pageKey(b.recording.startUrl);
+  let looked = false; // 来源页打开了、也等满了时间还没找到，才记下“没找到”（超时、标签页被关不算）
+  let scanned = false; // 成功取到过来源页（同源框架）的链接
+  const origin = new URL(from).origin;
+  try {
+    await navigateTab(tabId, from);
+    await waitTabComplete(tabId, Math.max(1000, Math.min(20000, deadline - Date.now())));
+    // 被跳到别的源上了（登录页、别的站）：那里的链接不认
+    const at = await chrome.tabs.get(tabId);
+    if (!webUrl(at.url) || new URL(at.url).origin !== origin) throw new Error('来源页被跳走了');
+    // 链接可能是页面加载完后才渲染出来的：最多再等 6 秒
+    const full = deadline - Date.now() >= wait; // 时间够等满
+    const end = Math.min(deadline, Date.now() + wait);
+    for (;;) {
+      // 只看和来源页同源的框架（广告之类别的源的 iframe 里的链接别人能随便放）
+      const r = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: pageLinks }).catch(() => []);
+      const mine = (r || []).filter((x) => x && x.result && x.result.origin === origin);
+      if (mine.length) scanned = true;
+      const href = mine.flatMap((x) => (Array.isArray(x.result.links) ? x.result.links : []))
+        .find((h) => webUrl(h) && PR_EXPORTER.hasDynamic(h) && PR_EXPORTER.pageKey(h) === want);
+      if (href) {
+        sourceMiss.delete(item.id + ' ' + want);
+        return { url: href, adjusted: 'source-link', removed: start.removed, from, left: true };
+      }
+      if (Date.now() >= end) break;
+      await sleep(500);
+    }
+    // 等满了、真的扫到过来源页、来源页也还好好开着（中途被关、注入不了脚本、被跳到同源的登录页，都不算没找到）
+    const now = await chrome.tabs.get(tabId).catch(() => null);
+    looked = full && scanned && !!now && now.status === 'complete' && webUrl(now.url) && PR_EXPORTER.pageKey(now.url) === PR_EXPORTER.pageKey(from);
+  } catch (e) { looked = false; /* 来源页打不开：照旧去掉参数打开 */ }
+  if (looked) sourceMiss.set(item.id + ' ' + want, Date.now());
+  return Object.assign({}, start, { source: from, left: true });
 }
 // 复用的标签页还在同一个站点同一个路径上，就不用重新打开
 function sameSitePath(a, b) {
@@ -1687,7 +1840,7 @@ async function runSegment(tabId, runId, b, params, apiParams, config, seg, opene
 async function callApi(item, api, args, opts) {
   opts = opts || {};
   const b = buildItem(item).bundle;
-  const a = b.recording.apis.find((x) => x.name === api || x.fn === api) || b.recording.apis.find((x) => x.name.includes(api));
+  const a = byName(b.recording.apis, String(api == null ? '' : api), (x) => [x.name, x.fn], '接口');
   if (!a) throw new Error(`「${b.name}」中没有接口 ${api}。可用：${b.recording.apis.map((x) => x.fn + ' (' + x.name + ')').join(', ')}`);
   // 带页面每次现算反爬串的接口：旧值发出去必被风控拒，也不拿页面上采来的值伪造，只让页面自己发
   if ((a.pageGenerated || []).length && !opts.noTrigger) return triggerApi(item, b, a, args, opts);
@@ -1702,7 +1855,7 @@ async function callApi(item, api, args, opts) {
   // 主页面地址来自录制数据（导入的录制包不可信）：只认 http(s)、和录制的起始页面或接口页面同一站点的
   const hostUrl = typeof a.hostUrl === 'string' && /^https?:\/\//i.test(a.hostUrl) && [siteOf(ctxUrl), siteOf(b.recording.startUrl)].includes(siteOf(a.hostUrl)) ? a.hostUrl : null;
   let opened = null;
-  const openUrl = async () => opened || (opened = await liveUrlOf(hostUrl || ctxUrl));
+  const openUrl = async () => opened || (opened = givenStart(opts.startUrl, hostUrl || ctxUrl) || await liveUrlOf(hostUrl || ctxUrl));
   const deadline = opts.deadline || Date.now() + (opts.timeout || 90000);
   // 默认复用：先找上次为这个页面源开的接口调用标签页，再找其他开着的页面（包括 iframe）；都没有才新开一个并留着。
   // reuseTab: false 时用全新标签页，默认用完关掉（keepTab: true 保留）
@@ -1787,7 +1940,7 @@ async function callApi(item, api, args, opts) {
     ]);
     if (target.how === 'kept' || target.how === 'kept-frame' || target.how === 'kept-navigated') await rememberTab('call:' + ctx, tabId, ctxUrl);
     const head = { api: a.name, fn: a.fn, tab: Object.assign({ id: tabId, how: target.how }, target.findFrame ? { via: '主页面里的 iframe' } : {}) };
-    if (opened && opened.adjusted && (target.how === 'new' || target.how === 'kept-navigated')) head.page = { how: opened.adjusted === 'open-tab' ? '用了开着的同一页面现在的地址' : '去掉了会过期的参数再打开', removed: opened.removed };
+    if (opened && opened.adjusted && (target.how === 'new' || target.how === 'kept-navigated')) head.page = { how: START_HOW[opened.adjusted], removed: opened.removed };
     if (!r || !r.result || typeof r.result !== 'object') return Object.assign(head, { ok: false, unknown: true, error: '页面里的调用没有返回结果（页面可能跳转或刷新了），请求可能已经发出' });
     const result = r.result;
     const secrets = Object.entries(b.paramInfo || {}).filter(([key, info]) => info.kind === 'secret' && typeof opts.params?.[key] === 'string')
@@ -1934,6 +2087,7 @@ async function triggerApi(item, b, a, args, opts) {
 // ======================= 本地 AI 桥接 =======================
 let ws = null;
 let wsKeep = null;
+let bridgeRejected = ''; // 桥接拒绝连接的原因（没认这个扩展时）
 function bridgeConnected() { return !!(ws && ws.readyState === 1); }
 function bridgeNotify(event) { if (bridgeConnected()) ws.send(JSON.stringify({ type: 'event', event })); }
 function recordingSummary(item) {
@@ -1945,6 +2099,8 @@ function recordingSummary(item) {
     slug: (item.aiDocs && item.aiDocs.slug) || '',
     description: A.description,
     startUrl: PR_EXPORTER.maskUrl(A.startUrl, true), // 给 AI 看的：地址里的令牌、签名打码（回放用库里的原地址）
+    dynamicStart: PR_EXPORTER.hasDynamic(A.startUrl) || undefined, // 起始地址带会过期的参数：运行时可以传 start_url
+    sourcePage: (item.state && item.state.entry && typeof item.state.entry.from === 'string') ? PR_EXPORTER.maskUrl(item.state.entry.from, true) : undefined, // 回放时会先去这里找新链接
     savedAt: item.savedAt,
     steps: A.steps.map((s, i) => `${i + 1}. ${s.desc}`),
     params: A.params,
@@ -2157,6 +2313,7 @@ async function bridgeHandle(method, p) {
 function bridgeConnect() {
   if (!cache || !cache.settings.bridgeEnabled || !cache.settings.bridgeUrl) return;
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  bridgeRejected = ''; // 这次还被拒的话，桥接马上会再发一次原因
   try { ws = new WebSocket(cache.settings.bridgeUrl); } catch (e) { ws = null; return; }
   const sock = ws;
   sock.onopen = async () => {
@@ -2173,7 +2330,10 @@ function bridgeConnect() {
   sock.onmessage = async (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
+    // 桥接没认这个扩展：记下原因给弹窗看（怎么放行），连接由桥接关掉
+    if (m && m.type === 'rejected') { bridgeRejected = String(m.reason || '桥接没认这个扩展').slice(0, 300); return; }
     if (!m || m.type !== 'request') return;
+    bridgeRejected = '';
     try {
       const data = await bridgeHandle(m.method, m.params || {});
       if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'response', id: m.id, ok: true, data }));
@@ -2267,7 +2427,7 @@ async function handle(msg, sender) {
       if (!c.state.recording || !sender.tab || sender.tab.id !== c.state.tabId) {
         // 录制中的标签页打开的新标签页（详情页、导出页）：只收请求，不记操作
         if (c.state.recording && sender.tab && (c.state.childTabs || []).includes(sender.tab.id)) {
-          if (ev.kind === 'request') await ingestRequest(c, Object.assign({}, ev, { otherTab: true }, sender.frameId ? { frameUrl: sender.url } : {}));
+          if (ev.kind === 'request') await ingestRequest(c, Object.assign(senderUrls(ev, sender), { otherTab: true }));
           return { counts: counts(c) };
         }
         // 不是录制中的标签页：回放抓包时收下请求
@@ -2281,14 +2441,9 @@ async function handle(msg, sender) {
         if (cap && ev.kind === 'request' && keepRequest(ev, c.settings)) addCapture(cap, ev, sender);
         return { ignored: true };
       }
-      // 来自 iframe：步骤记下所在框架（回放时按地址找到这个框架再执行），请求记下发出它的页面和嵌着它的主页面
-      // （iframe 地址里的令牌由主页面现发，直接请求时打开主页面再找这个 iframe）。这几个字段只认后台填的
-      if (ev.kind === 'request') { delete ev.frameUrl; delete ev.topUrl; }
-      if (sender.frameId) {
-        if (ev.kind === 'step') ev.frame = { url: sender.url || ev.url };
-        else { ev.frameUrl = sender.url; ev.topUrl = sender.tab.url; }
-      }
-      if (ev.kind === 'request') await ingestRequest(c, ev);
+      // 来自 iframe：步骤记下所在框架（回放时按地址找到这个框架再执行）；请求的页面地址见 senderUrls
+      if (ev.kind === 'step' && sender.frameId) ev.frame = { url: sender.url || ev.url };
+      if (ev.kind === 'request') await ingestRequest(c, senderUrls(ev, sender));
       else addEvent(c, ev);
       return { counts: counts(c) };
     }
@@ -2335,7 +2490,7 @@ async function handle(msg, sender) {
     }
     case 'stop': await stop(c); return { ok: true };
     case 'getData':
-      return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, libraryOffers, bridge: bridgeConnected() };
+      return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, libraryOffers, bridge: bridgeConnected(), bridgeRejected: bridgeConnected() ? '' : bridgeRejected };
     case 'clear':
       c.events = [];
       c.apiOverrides = {};
@@ -2544,7 +2699,7 @@ async function handle(msg, sender) {
       libraryOffers = libraryOffers.filter((x) => x.owner !== msg.owner);
       return { ok: true };
     case 'libRun': return { result: await trackOp(async () => runRecording(await getLibItem(c, msg.id), { active: true, keepTab: true, params: msg.params || undefined, fresh: !!msg.fresh, newTab: !!msg.newTab, mode: msg.mode || 'ui' })) };
-    case 'bridgeReconnect': if (ws) ws.close(); ws = null; bridgeConnect(); await sleep(600); return { bridge: bridgeConnected() };
+    case 'bridgeReconnect': if (ws) ws.close(); ws = null; bridgeConnect(); await sleep(600); return { bridge: bridgeConnected(), bridgeRejected: bridgeConnected() ? '' : bridgeRejected };
     default:
       return { error: 'unknown message' };
   }

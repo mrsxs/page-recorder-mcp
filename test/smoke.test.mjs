@@ -14,6 +14,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const server = join(root, 'bridge', 'server.js');
 // 桥接写的口令文件、后台桥接的日志放临时目录，不碰 ~/.page-recorder
 process.env.PR_BRIDGE_DIR = mkdtempSync(join(tmpdir(), 'pr-state-'));
+writeFileSync(join(process.env.PR_BRIDGE_DIR, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef'] })); // 测试用的假扩展：桥接认得它
 
 test('所有脚本语法正确', () => {
   for (const f of ['bridge/server.js', 'background.js', 'content/recorder.js', 'inject/hook.js', 'lib/runtime.js', 'lib/exporter.js', 'popup/popup.js']) {
