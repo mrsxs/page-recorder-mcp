@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const E = createRequire(import.meta.url)('../lib/exporter.js');
@@ -213,7 +214,7 @@ function loadBackground(tabs) {
     get(t, k) { if (k === 'then') return undefined; if (k === 'addListener') return () => {}; return stub(); },
     apply() { return Promise.resolve({}); },
   });
-  const ctx = { console: { log() {}, warn() {}, error() {} }, URL, URLSearchParams, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, TextEncoder, TextDecoder, Headers, crypto: globalThis.crypto };
+  const ctx = { console: { log() {}, warn() {}, error() {} }, URL, URLSearchParams, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, TextEncoder, TextDecoder, Headers, crypto: webcrypto };
   ctx.self = ctx;
   ctx.chrome = stub();
   ctx.chrome = new Proxy(ctx.chrome, { get: (t, k) => (k === 'tabs' ? new Proxy(stub(), { get: (x, m) => (m === 'query' ? async () => tabs || [] : stub()) }) : t[k]) });
