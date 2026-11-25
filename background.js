@@ -432,6 +432,7 @@ async function ingestRequest(c, ev, scrubbed) {
     // 发放接口按脱敏前的原值对（入库后令牌都打了码就对不上了）；页面传来的同名字段不认
     ev = Object.assign({}, ev);
     delete ev.sources;
+    delete ev.generated; // 页面现算字段的标记只在打码时记
     const sources = PR_EXPORTER.findSources(ev, recentResponses);
     if (c.state.recording) rememberResponse(ev);
     // 追到发放接口的值是令牌一类（名字看不出来的也是）：入库前按位置打码，直接请求时先调发放接口拿新的
@@ -2134,13 +2135,22 @@ function packageOf(item) {
     item: { name: item.name, description: item.description || '', state, events, apiOverrides: PR_EXPORTER.maskDeep(item.apiOverrides || {}, s.maskPasswords !== false), aiDocs: item.aiDocs || {} },
   };
 }
+// 别人给的 JSON 里的 __proto__ 键：复制对象时（Object.assign）会被当成原型，读到没经过地址校验的字段
+const noProto = (k, v) => (k === '__proto__' ? undefined : v);
+function untrusted(x) {
+  if (typeof x === 'string') return JSON.parse(x, noProto);
+  return x && typeof x === 'object' ? JSON.parse(JSON.stringify(x), noProto) : x;
+}
 async function importPackage(c, pkg) {
-  if (typeof pkg === 'string') { try { pkg = JSON.parse(pkg); } catch (e) { throw new Error('录制包不是有效的 JSON'); } }
-  if (!pkg || pkg.format !== 'page-recorder-package' || !pkg.item || !Array.isArray(pkg.item.events)) throw new Error('不是 Page Recorder 导出的录制包');
+  try { pkg = untrusted(pkg); } catch (e) { throw new Error('录制包不是有效的 JSON'); }
+  // 「导出 JSON」的文件也认：按里面的步骤、请求和接口说明还原
+  const fromExport = PR_EXPORTER.exportedJson(pkg);
+  if (fromExport) pkg = PR_EXPORTER.packageFromExport(pkg);
+  if (!pkg || pkg.format !== 'page-recorder-package' || !pkg.item || !Array.isArray(pkg.item.events)) throw new Error('不是 Page Recorder 导出的录制包（.prpkg.json）或导出 JSON');
   if (pkg.version > 1) throw new Error(`录制包版本 ${pkg.version} 比扩展新，请先升级扩展`);
   const src = pkg.item;
   const events = src.events.filter((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && Number.isFinite(e.ts))
-    .map((e) => e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e);
+    .map((e) => (e.kind !== 'step' ? e : PR_EXPORTER.bareStep(e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e)));
   if (!events.length) throw new Error('录制包里没有步骤');
   const id = uid();
   const state = Object.assign({}, src.state || {}, { id, recording: false });
@@ -2155,19 +2165,12 @@ async function importPackage(c, pkg) {
   const name = String(src.name || pkg.name || '导入的录制').slice(0, 100);
   if (!state.name) state.name = name;
   const item = { id, name, imported: true, description: String(src.description || ''), savedAt: Date.now(), state, events, apiOverrides: src.apiOverrides || {}, aiDocs: src.aiDocs || {}, settings: c.settings };
-  const cnt = counts({ events });
-  let params = {};
-  let direct = false;
-  try {
-    const A = PR_EXPORTER.analyze(events, c.settings, state, item.apiOverrides, item.aiDocs);
-    params = A.params;
-    direct = A.apis.some((a) => !a.ignore && /\{\{[^{}]+\}\}/.test(JSON.stringify(a.editParams || {})));
-  } catch (e) { /* ignore */ }
-  const entry = { id, name, description: item.description, startUrl: state.startUrl, savedAt: item.savedAt, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(item.aiDocs && item.aiDocs.title), params, direct };
-  c.libIndex = [entry, ...c.libIndex];
+  // 分析不了的进了脚本库也运行不了
+  try { PR_EXPORTER.analyze(events, c.settings, state, item.apiOverrides, item.aiDocs); } catch (e) { throw new Error('录制包内容不对，分析不了：' + e.message); }
+  c.libIndex = [libEntryOf(item), ...c.libIndex];
   await chrome.storage.local.set({ ['lib:' + id]: item, libIndex: c.libIndex });
   bridgeNotify('libraryChanged');
-  return { ok: true, id, name };
+  return { ok: true, id, name, fromExport: fromExport || undefined };
 }
 // ---------- 合并：几条脚本按 AI 排好的顺序接成一条新脚本，原来的不动 ----------
 async function mergeRecordings(c, p) {
@@ -2226,6 +2229,7 @@ function libraryChunk(id, item, offset, limit) {
   return { chunk, done };
 }
 async function restoreLibItem(c, raw, sourceExtension) {
+  raw = untrusted(raw);
   if (!validLibItem(raw)) throw new Error('本机保存的脚本格式不对');
   const deletedAt = ((await chrome.storage.local.get('libDeleted')).libDeleted || {})[raw.id] || 0;
   const cur = c.libIndex.find((x) => x.id === raw.id);

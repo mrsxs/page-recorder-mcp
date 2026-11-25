@@ -213,7 +213,7 @@ function loadBackground(tabs) {
     get(t, k) { if (k === 'then') return undefined; if (k === 'addListener') return () => {}; return stub(); },
     apply() { return Promise.resolve({}); },
   });
-  const ctx = { console: { log() {}, warn() {}, error() {} }, URL, URLSearchParams, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, TextEncoder, TextDecoder, Headers };
+  const ctx = { console: { log() {}, warn() {}, error() {} }, URL, URLSearchParams, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, TextEncoder, TextDecoder, Headers, crypto: globalThis.crypto };
   ctx.self = ctx;
   ctx.chrome = stub();
   ctx.chrome = new Proxy(ctx.chrome, { get: (t, k) => (k === 'tabs' ? new Proxy(stub(), { get: (x, m) => (m === 'query' ? async () => tabs || [] : stub()) }) : t[k]) });
@@ -481,6 +481,118 @@ test('“打开页面”步骤的地址：导出 JSON、脚本、AI 提示词、
   const s = bg.recordingSummary({ id: 'x', events, state: { startUrl: start, name: 'n' } });
   assert.ok(!JSON.stringify(s).includes(secret), 'list_recordings 给 AI 的概要不带原令牌');
   assert.match(s.startUrl, /^https:\/\/app\.test\/promo\?token=/);
+});
+
+test('导出 JSON 能用「导入录制包」导回：步骤、参数、AI 写的接口说明、改过的接口参数和原来一样', async () => {
+  const secret = 'MEMBERTOKEN' + token(24);
+  const q = { selectors: ['#q'], tag: 'input', label: '关键词' };
+  const events = [
+    nav,
+    { kind: 'step', id: 'f1', ts: 3, type: 'fill', target: q, value: 'abc', url: 'https://app.test/page' },
+    { kind: 'step', id: 'f2', ts: 5, type: 'fill', target: q, value: 'abd', url: 'https://app.test/page' },
+    { kind: 'step', id: 'g1', ts: 7, type: 'fill', pick: 'date', target: { selectors: ['#d'], tag: 'input', label: '日期' }, value: '2026-11-01', members: ['m1', 'm2'], url: 'https://app.test/page' },
+    { kind: 'step', id: 'm1', ts: 7, type: 'click', groupedIn: 'g1', target: { selectors: ['#d'] }, url: `https://app.test/page?token=${secret}` },
+    { kind: 'step', id: 'm2', ts: 8, type: 'click', groupedIn: 'g1', target: { selectors: ['.day'] }, url: 'https://app.test/page' },
+    req('r1', 10, 'GET', 'https://app.test/api/list?kw=abd&date=2026-11-01&page=1&size=20'),
+  ];
+  const A0 = E.analyze(events, {}, { startUrl: nav.url });
+  const api = A0.apis[0].name;
+  const aiDocs = { title: '查列表', description: '按关键词查', apis: { [api]: { fn: 'listItems', title: '列表', description: '查列表', params: { 'query.kw': '关键词' }, returns: 'data[]' } } };
+  const overrides = { [api]: { query: { page: '2', size: { __deleted: true } } } };
+  const state = { startUrl: nav.url };
+  const before = E.build(events, {}, state, overrides, aiDocs);
+  const file = JSON.parse(JSON.stringify(before.raw));
+  assert.equal(E.exportedJson(file), true);
+  assert.ok(!JSON.stringify(file).includes(secret), '导出 JSON 里语义步骤带着的原始操作地址也打码');
+
+  const pkg = E.packageFromExport(file);
+  const it = pkg.item;
+  assert.deepEqual(it.events.filter((e) => e.kind === 'step').map((e) => e.id), ['s0', 'f1', 'f2', 'g1', 'm1', 'm2'], '语义步骤下的原始操作还原成单独的事件');
+  assert.ok(it.events.every((e) => e.desc === undefined && e.param === undefined && e.waitFor === undefined), '分析时加的字段去掉');
+  const after = E.build(it.events, {}, it.state, it.apiOverrides, it.aiDocs);
+  const again = JSON.parse(JSON.stringify(after.raw));
+  for (const k of ['name', 'description', 'steps', 'tools', 'apis', 'requests', 'params', 'paramInfo']) assert.deepEqual(again[k], file[k], k);
+  assert.deepEqual(after.analysis.steps.map((s) => s.param).filter(Boolean), before.analysis.steps.map((s) => s.param).filter(Boolean));
+  assert.equal(after.analysis.apis[0].fn, 'listItems');
+  assert.equal(after.analysis.apis[0].editParams.query.size, undefined, '删掉的参数还是删掉');
+
+  const bg = loadBackground([]);
+  const c = { settings: {}, libIndex: [] };
+  const r = await bg.importPackage(c, file);
+  assert.equal(r.ok, true);
+  assert.equal(r.fromExport, true);
+  assert.equal(c.libIndex[0].hasDocs, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.libIndex[0].params)), file.params);
+  await assert.rejects(bg.importPackage(c, { generator: 'Page Recorder' }), /不是 Page Recorder 导出的录制包（\.prpkg\.json）或导出 JSON/);
+});
+
+test('导出再导回（录制包、导出 JSON）：按值认出的页面现算串还是页面现算；改过的令牌参数打码；只改了函数名的带回来', async () => {
+  const sigReq = (id, ts, sig, extra) => req(id, ts, 'POST', 'https://app.test/api/list', { requestBody: json({ page: 1, sig2: sig }), ...extra });
+  const events = [nav, sigReq('r1', 10, token(80)), { kind: 'step', id: 's1', ts: 20, type: 'click', target: { selectors: ['#b'] }, url: nav.url }, sigReq('r2', 30, token(81))];
+  const state = { startUrl: nav.url };
+  const A0 = E.analyze(events, {}, state);
+  const api = A0.apis[0].name;
+  assert.deepEqual(A0.apis[0].pageGenerated, ['body.sig2']);
+  const again = E.analyze(E.maskGenerated(events, A0), {}, state);
+  assert.deepEqual(again.apis[0].pageGenerated, ['body.sig2'], '值打了码，靠标记认');
+  assert.equal(again.apis[0].masked, undefined, '不当成用页面最新值补的脱敏字段');
+
+  const secret = 'OVERRIDE' + token(30);
+  const file = JSON.parse(JSON.stringify(E.build(events, {}, state, { [api]: { body: { token: secret } } }, { apis: { [api]: { fn: 'myList' } } }).raw));
+  assert.ok(!JSON.stringify(file).includes(secret), '改过的令牌参数不出现在导出 JSON 里');
+  const it = E.packageFromExport(file).item;
+  const A1 = E.analyze(it.events, {}, it.state, it.apiOverrides, it.aiDocs);
+  assert.deepEqual(A1.apis[0].pageGenerated, ['body.sig2']);
+  assert.equal(A1.apis[0].fn, 'myList', '只改了函数名也带回来');
+  assert.equal(it.aiDocs.title, undefined, '没有 AI 写的说明，不算 AI 已解读');
+  assert.equal(E.packageFromExport(JSON.parse(JSON.stringify(E.build(events, {}, state).raw))).item.aiDocs.apis, undefined, '自动起的函数名不用带');
+
+  // 同一接口还有带原值的调用（合并进来的别的录制）：标记不作数，照原值判断
+  const marked = E.maskGenerated(events, A0).filter((e) => e.kind === 'request');
+  const mixed = [nav, marked[0], { kind: 'step', id: 's2', ts: 40, type: 'click', target: { selectors: ['#c'] }, url: nav.url }, sigReq('r3', 50, 'plain-value')];
+  assert.equal(E.analyze(mixed, {}, state).apis[0].pageGenerated, undefined);
+
+  // 密码字段跟随密码参数（{{密码}}）：导出不打掉模板；导回后只记真正改过的参数，绑定还在
+  const pw = [nav, { kind: 'step', id: 'p1', ts: 3, type: 'fill', sensitive: true, secretId: 'p1', target: { selectors: ['#pw'], tag: 'input', type: 'password', label: '密码' }, value: '', url: nav.url },
+    req('r9', 10, 'POST', 'https://app.test/api/login?page=1', { requestBody: json({ user: 'u', password: '__PR_SECRET_p1__' }) })];
+  const P0 = E.analyze(pw, {}, state);
+  const pwApi = P0.apis[0].name;
+  assert.equal(P0.apis[0].editParams.body.password, '{{密码}}');
+  const pwFile = JSON.parse(JSON.stringify(E.build(pw, {}, state, { [pwApi]: { query: { page: '2' } } }).raw));
+  assert.equal(pwFile.apis[0].editParams.body.password, '{{密码}}');
+  const pwIt = E.packageFromExport(pwFile).item;
+  assert.equal(pwIt.apiOverrides[pwApi].body.user, undefined, '和录制值一样的不记');
+  const P1 = E.analyze(pwIt.events, {}, pwIt.state, pwIt.apiOverrides, pwIt.aiDocs);
+  assert.deepEqual([P1.apis[0].editParams.body.password, P1.apis[0].editParams.query.page], ['{{密码}}', '2']);
+
+  // 自己起的名字正好是“自动名 + 数字”：没有别的接口占着自动名，就是自己起的
+  const one = JSON.parse(JSON.stringify(E.build(events, {}, state, {}, { apis: { [api]: { fn: `${A0.apis[0].fn}2` } } }).raw));
+  assert.equal(E.packageFromExport(one).item.aiDocs.apis[api].fn, `${A0.apis[0].fn}2`);
+});
+
+test('导入：文件里的 __proto__ 键去掉（复制步骤时会被当成原型、绕过地址校验）；分析不了的不进脚本库', async () => {
+  const bg = loadBackground([]);
+  const text = JSON.stringify({ format: 'page-recorder-package', version: 1, name: 'x', item: { state: { startUrl: nav.url }, events: [nav] } })
+    .replace('"events":[{', '"events":[{"kind":"step","id":"p1","ts":2,"type":"navigate","__proto__":{"url":"https://evil.test/"}},{');
+  const parsed = bg.untrusted(text);
+  const ev = parsed.item.events[0];
+  assert.equal(Object.prototype.hasOwnProperty.call(ev, '__proto__'), false);
+  assert.equal(E.analyze(parsed.item.events, {}, parsed.item.state).steps.some((s) => s.url === 'https://evil.test/'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(JSON.parse(text).item.events[0], '__proto__'), true, '没处理时 JSON.parse 会留着这个键');
+  const c = { settings: {}, libIndex: [] };
+  assert.equal((await bg.importPackage(c, text)).ok, true);
+  const broken = { format: 'page-recorder-package', version: 1, item: { state: { startUrl: nav.url }, events: [nav, { kind: 'step', id: 'b1', ts: 3, type: 'fill', target: { selectors: 'abc' }, value: 'x' }] } };
+  await assert.rejects(bg.importPackage(c, broken), /录制包内容不对，分析不了/);
+  assert.equal(c.libIndex.length, 1, '分析不了的没进脚本库');
+
+  // 预设的参数名（同一输入框较早那次不重新起名）、塞在 requests 里的步骤都不认
+  const q = { selectors: ['#q'], tag: 'input', label: '关键词' };
+  const fills = [{ kind: 'step', id: 'f1', ts: 3, type: 'fill', target: q, value: 'a', param: '__proto__' }, { kind: 'step', id: 'f2', ts: 5, type: 'fill', target: q, value: 'b' }];
+  assert.deepEqual(fills.map(E.bareStep).map((s) => s.param), [undefined, undefined]);
+  const r = await bg.importPackage(c, { format: 'page-recorder-package', version: 1, item: { state: { startUrl: nav.url }, events: [nav, ...fills] } });
+  assert.deepEqual(Object.keys(c.libIndex[0].params).sort(), ['关键词', '关键词_第1次'], r.error);
+  const it = E.packageFromExport({ generator: 'Page Recorder', startUrl: nav.url, steps: [nav, { ...fills[1], kind: 'request' }], requests: [fills[0]] }).item;
+  assert.deepEqual(it.events.map((e) => e.id), ['s0'], 'steps 里只认步骤、requests 里只认请求');
 });
 
 // ======================= 全仓审查补充 =======================
