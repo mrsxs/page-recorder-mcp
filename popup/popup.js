@@ -89,7 +89,8 @@ function renderHeader() {
   const b = $('#bridge');
   b.classList.toggle('on', !!data.bridge);
   b.textContent = data.bridge ? '桥接 ●' : '桥接 ○';
-  if ($('#bridgeState')) $('#bridgeState').textContent = data.bridge ? '已连接' : '未连接（请先运行 node bridge/server.js）';
+  if ($('#bridgeState')) $('#bridgeState').textContent = data.bridge ? '已连接' : (data.bridgeRejected || '未连接（请先运行 node bridge/server.js）');
+  b.title = !data.bridge && data.bridgeRejected ? data.bridgeRejected : '';
   const nm = $('#recName');
   if (document.activeElement !== nm) nm.value = st.name || '';
   nm.placeholder = data.aiDocs && data.aiDocs.title ? `AI 建议：${data.aiDocs.title}` : '给录制起个名字（停止后自动存入脚本库）';
@@ -781,7 +782,7 @@ $('#importInTab').onclick = (e) => {
 
 $('#btnReconnect').onclick = async () => {
   const r = await send({ type: 'bridgeReconnect' });
-  toast(r.bridge ? '桥接已连接' : '连接失败：请先运行 node bridge/server.js');
+  toast(r.bridge ? '桥接已连接' : (r.bridgeRejected || '连接失败：请先运行 node bridge/server.js'));
   refresh(true);
 };
 

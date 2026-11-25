@@ -7,12 +7,13 @@ import net from 'node:net';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const server = join(dirname(fileURLToPath(import.meta.url)), '..', 'bridge', 'server.js');
 process.env.PR_BRIDGE_DIR = mkdtempSync(join(tmpdir(), 'pr-state-')); // 桥接写的口令文件不放进 ~/.page-recorder
+writeFileSync(join(process.env.PR_BRIDGE_DIR, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef'] })); // 测试用的假扩展：桥接认得它
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 一页“商品”：网关式接口的返回，数据整个套在 data.result 这个 JSON 字符串里，每项带一大堆用不上的配置

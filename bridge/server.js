@@ -37,6 +37,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 用法：
   page-recorder-mcp                 启动桥接服务（HTTP / REST / MCP Streamable HTTP）
   page-recorder-mcp --stdio         以 MCP stdio 方式运行（给 Claude Code、Accio、Cursor 等用）
+  page-recorder-mcp trust <扩展ID>    放行桥接没认的扩展（找不到安装目录时，比如装在指纹浏览器里的）
   page-recorder-mcp extension [目录] 生成浏览器扩展（默认 ~/page-recorder-extension），
                                     在 Chrome 的 chrome://extensions 里「加载已解压的扩展程序」选这个目录
 
@@ -79,6 +80,32 @@ if (argv[0] === 'extension') {
 在 Chrome 打开 chrome://extensions → 打开「开发者模式」→「加载已解压的扩展程序」→ 选这个文件夹（已经加载过的话点「重新加载」）。
 以后有新版时，AI 工具启动桥接就会自动更新这个目录并重新加载扩展。请一直用这个目录：换目录会变成另一个扩展。
 `);
+  process.exit(0);
+}
+
+// 认得的扩展（见 trustExtension）记在这里
+const TRUST_FILE = path.join(STATE_DIR, 'trusted-extensions.json');
+function readTrusted() {
+  try { const j = JSON.parse(fs.readFileSync(TRUST_FILE, 'utf8')); return Array.isArray(j.ids) ? j.ids.filter((x) => typeof x === 'string' && /^[a-z0-9]{1,64}$/.test(x)) : []; } catch (e) { return []; }
+}
+// 加进去（和文件里现有的合并，别的进程刚写的不丢），先写临时文件再改名，写到一半退出不会留下坏文件。返回合并后的全部
+function writeTrusted(ids) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  const all = [...new Set([...readTrusted(), ...ids])];
+  const tmp = `${TRUST_FILE}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ ids: all }, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, TRUST_FILE);
+  return all;
+}
+if (argv[0] === 'trust') {
+  // 桥接没认的扩展（比如指纹浏览器里装的，桥接找不到它的安装目录）：用户确认是自己装的 Page Recorder 后手动放行
+  const id = String(argv[1] || '').trim().toLowerCase();
+  if (!/^[a-z0-9]{1,64}$/.test(id)) {
+    process.stderr.write('用法：page-recorder-mcp trust <扩展 ID>（扩展 ID 在扩展弹窗的桥接状态里，或 chrome://extensions 里这个扩展的“ID”）\n');
+    process.exit(1);
+  }
+  writeTrusted([id]);
+  process.stdout.write(`已放行扩展 ${id}，扩展 30 秒内会自动连上桥接\n`);
   process.exit(0);
 }
 
@@ -620,7 +647,7 @@ function registerOwner() {
 // 断了就重连（桥接没了就重新起一个），重连上以后重新登记、通知一次
 function watchBridge(reconnected) {
   let retried = false;
-  const retry = () => setTimeout(async () => { if (await ensureBridge()) watchBridge(true); else retry(); }, 2000);
+  const retry = () => setTimeout(async () => { if (await ensureBridge().catch(() => false)) watchBridge(true); else retry(); }, 2000);
   const again = () => { // end 和 error 可能都来：只重连一次
     if (retried) return;
     retried = true;
@@ -695,6 +722,42 @@ async function runLibraryRestore(conn, ownerId) {
 const AUTO_UPDATE = !argv.includes('--no-auto-update') && process.env.PR_AUTO_UPDATE !== '0'
   && (process.env.PR_AUTO_UPDATE === '1' || !fs.existsSync(path.join(ROOT, '.git')));
 const updater = createUpdater({ root: ROOT, version: VERSION, stateDir: STATE_DIR, home: os.homedir(), log });
+// 连上来的扩展认不认：本机任何扩展都能连 ws://127.0.0.1:17321，连上就能收到 AI 发来的参数（包括密码）、读写脚本库备份。
+// --extension-id 指定了就只认那些；设了 token 的连接本身要带口令，不再另外核对。都没设时：
+// 要找得到它的安装目录、里面装的确实是 Page Recorder 才认（updater.extensionDir），认过的记下来；
+// 找不到就拒绝，用户确认是自己装的可以用 `page-recorder-mcp trust <ID>` 手动放行。
+// 第一个连上来的也一样要核对：升级时先连上来的不一定是原来那个
+// （本机程序能伪造 Origin，那是本机进程能读你文件的情形，这里不防）
+let trustedIds = new Set(readTrusted());
+const rejectedIds = new Map(); // 扩展 ID → 最近一次被拒的时间，给 /api/status 看
+const rejectCount = new Map(); // 扩展 ID → 连续被拒几次
+let trustQueue = Promise.resolve();
+const trustOpen = () => !EXT_ID_ALLOW.size && !TOKEN;
+function trustExtension(id) {
+  if (!trustOpen()) return Promise.resolve(!EXT_ID_ALLOW.size || EXT_ID_ALLOW.has(id));
+  const run = trustQueue.then(async () => {
+    trustedIds = new Set([...trustedIds, ...readTrusted()]); // 别的实例、trust 子命令可能刚记过
+    if (trustedIds.has(id)) return true;
+    // 刚拒过的先不再翻浏览器资料（扩展每 30 秒重连一次）：前 3 次只隔 3 秒（刚加载的扩展，浏览器可能还没把资料写盘），
+    // 之后隔一分钟；trust 子命令放行后上面就认了
+    if (Date.now() - (rejectedIds.get(id) || 0) < ((rejectCount.get(id) || 0) <= 3 ? 3000 : 60000)) return false;
+    const dir = await updater.extensionDir(id).catch(() => '');
+    if (!dir) {
+      if (!rejectedIds.has(id)) log(`没认扩展 ${id}：找不到它的安装目录，确认不了是 Page Recorder。是你自己装的就运行 page-recorder-mcp trust ${id} 放行（装在指纹浏览器等自定义资料目录里的，也可以把资料目录写进 PR_BROWSER_DATA_DIRS）`);
+      rejectedIds.set(id, Date.now());
+      rejectCount.set(id, (rejectCount.get(id) || 0) + 1);
+      return false;
+    }
+    trustedIds.add(id);
+    rejectedIds.delete(id);
+    rejectCount.delete(id);
+    try { trustedIds = new Set(writeTrusted([id])); } catch (e) { log('记下认得的扩展失败：' + e.message); }
+    log(`认下扩展 ${id}（安装目录 ${dir}）`);
+    return true;
+  });
+  trustQueue = run.catch(() => false);
+  return run;
+}
 const browserStatus = (c) => Object.assign(browserInfo(c), { version: c.version, extensionId: extensionOriginId(c.origin), capabilities: c.capabilities || [] });
 // 这个进程可能只是转发的 stdio 实例：连着哪些浏览器要问监听端口的那个
 function connectedBrowsers() {
@@ -765,6 +828,7 @@ const BROWSER_PARAM = { type: 'string', description: '可选。多个浏览器�
 const RESULT_CHARS = Math.max(2000, Number(process.env.PR_RESULT_CHARS) || 24000);
 const RESULT_KEEP = 30;
 // 运行、调用接口的工具都可以带的参数：只要结果的一部分
+const START_URL_PARAM = { type: 'string', description: '一般不用传。起始页面的地址带会过期的令牌、签名，站点又必须带有效的才能打开时（结果的 warnings 会提示），传用户这次拿到的新地址。必须是同一个页面（只有令牌、时间戳这类参数可以不同）。回放页面操作时一定用它打开；直接请求接口时只在要打开页面时用（已经开着同源页面就直接在那里发）' };
 const RESULT_PROPS = {
   result_path: { type: 'string', description: '可选。只要结果里的这一部分，如 responses[0].data.list（接口返回的结构见 get_recording）。套在 JSON 字符串里的数据已经展开，路径直接往里写' },
   result_fields: { type: 'array', items: { type: 'string' }, description: '可选。result_path 指到数组时每一项只留这些字段（相对路径，如 id、price.amount）；指到对象时只留它的这些字段' },
@@ -808,7 +872,7 @@ const STATIC_TOOLS = [
   },
   {
     name: 'run_recording',
-    description: '在用户的浏览器中（带登录态）运行录制脚本。默认：录制里有接口关联了输入参数时，不操作页面，直接在已开着的页面里请求这些接口（快，第二次起复用页面；带页面最新的登录/签名请求头；业务返回码不对时自动改为回放页面操作、由页面自己发请求；写接口只有 401/403 或没发出去时才自动回放，其他失败返回 writeRejected，先确认有没有生效）；否则回放页面操作（真实鼠标键盘输入）。接口带页面每次现算的反爬串时自动回放页面操作。起始地址带会过期的参数（令牌、签名、时间戳）时，用开着的同一页面现在的地址或去掉这些参数再打开（结果里 startPage，跳到别的页面时 warnings 会说明）。返回接口数据(responses)、提取数据(extracted)、执行记录(log)、用的标签页(tab)。可修改输入参数（输入框、日期、下拉、上传文件路径）和接口请求参数。',
+    description: '在用户的浏览器中（带登录态）运行录制脚本。默认：录制里有接口关联了输入参数时，不操作页面，直接在已开着的页面里请求这些接口（快，第二次起复用页面；带页面最新的登录/签名请求头；业务返回码不对时自动改为回放页面操作、由页面自己发请求；写接口只有 401/403 或没发出去时才自动回放，其他失败返回 writeRejected，先确认有没有生效）；否则回放页面操作（真实鼠标键盘输入）。接口带页面每次现算的反爬串时自动回放页面操作。起始地址带会过期的参数（令牌、签名、时间戳）时，依次用：调用时传的 start_url、开着的同一页面现在的地址、录制时的来源页上指向它的链接、去掉这些参数再打开（结果里 startPage；跳到别的页面时 warnings 会说明）。返回接口数据(responses)、提取数据(extracted)、执行记录(log)、用的标签页(tab)。可修改输入参数（输入框、日期、下拉、上传文件路径）和接口请求参数。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -819,6 +883,7 @@ const STATIC_TOOLS = [
         new_tab: { type: 'boolean', description: '一般不要传。用全新的标签页执行，跑完关掉。默认复用扩展在这个站点开过的标签页（第一次会新开并留着），省掉打开页面的时间' },
         keep_tab: { type: 'boolean', description: '配合 new_tab：执行后保留新开的标签页' },
         fresh: { type: 'boolean', description: '复用标签页时先刷新回起始页面，从干净的页面状态开始（默认不刷新，更快）' },
+        start_url: START_URL_PARAM,
         visible: { type: 'boolean', description: '在前台标签页中执行，便于观察（默认后台）' },
         timeout_ms: { type: 'number', description: '超时时间，默认 180000' },
         browser: BROWSER_PARAM,
@@ -1075,10 +1140,12 @@ async function dynamicTools(quick) {
       props[k] = { type: 'string', description: paramHelp(info, undefined) };
       if (info && (info.required || info.kind === 'secret')) required.push(k);
     }
+    // 起始地址带会过期的参数：多给一个 start_url（和输入参数重名时不给）
+    const startArg = !!r.dynamicStart && !props.start_url;
     add(`${base}__run`, {
       description: `[录制脚本「${r.name}」${where}] ${r.description || (r.steps || []).slice(0, 6).join('；')}。传入参数后运行：有关联接口时直接在页面里请求接口（不操作界面），否则回放页面操作。返回接口数据与提取数据。`,
-      inputSchema: Object.assign({ type: 'object', properties: Object.assign(Object.create(null), RESULT_PROPS, props), additionalProperties: true }, required.length ? { required } : {}),
-    }, { kind: 'run', recording: r.id, browser, own: Object.keys(props) });
+      inputSchema: Object.assign({ type: 'object', properties: Object.assign(Object.create(null), RESULT_PROPS, startArg ? { start_url: START_URL_PARAM } : {}, props), additionalProperties: true }, required.length ? { required } : {}),
+    }, { kind: 'run', recording: r.id, browser, own: Object.keys(props), startArg });
     for (const t of r.tools || []) {
       add(`${base}__${t.name}`, {
         description: `[录制脚本「${r.name}」${where} ${t.api}] ${t.description}`,
@@ -1647,7 +1714,7 @@ async function callTool(name, args, ctx) {
     }
     case 'run_recording': {
       const timeout = Number(args.timeout_ms) || 180000;
-      return aiResult(await extCall('run', { recording: args.recording, params: args.params, apiParams: args.api_params, mode: args.mode, keepTab: args.keep_tab, newTab: !!args.new_tab, fresh: !!args.fresh, active: !!args.visible, timeout }, timeout + 30000, browser), args);
+      return aiResult(await extCall('run', { recording: args.recording, params: args.params, apiParams: args.api_params, mode: args.mode, keepTab: args.keep_tab, newTab: !!args.new_tab, fresh: !!args.fresh, active: !!args.visible, startUrl: args.start_url, timeout }, timeout + 30000, browser), args);
     }
     case 'call_api': return callResult(await extCall('call', { recording: args.recording, api: args.api, args: args.args || {} }, 90000, browser), args);
     case 'read_result': {
@@ -1695,7 +1762,12 @@ async function callTool(name, args, ctx) {
       if (!dynamicMap.has(name)) await dynamicTools();
       const info = dynamicMap.get(name);
       if (!info) throw new Error('未知工具：' + name);
-      if (info.kind === 'run') return aiResult(await extCall('run', { recording: info.recording, params: withoutResultArgs(args, info.own), timeout: 180000 }, 210000, info.browser), args, info.own);
+      if (info.kind === 'run') {
+        const params = withoutResultArgs(args, info.own);
+        let startUrl;
+        if (info.startArg) { startUrl = params.start_url; delete params.start_url; }
+        return aiResult(await extCall('run', { recording: info.recording, params, startUrl, timeout: 180000 }, 210000, info.browser), args, info.own);
+      }
       return callResult(await extCall('call', { recording: info.recording, api: info.api, args: withoutResultArgs(args, info.own) }, 90000, info.browser), args, info.own);
     }
   }
@@ -1800,6 +1872,10 @@ function allowed(req, u) {
   const extId = extensionOriginId(o);
   const isExt = !!extId;
   if (isExt && EXT_ID_ALLOW.size && !EXT_ID_ALLOW.has(extId)) return false;
+  if (isExt && trustOpen() && !trustedIds.has(extId)) { // 没认的扩展不能借 HTTP 调用工具（trust 子命令刚放行的重读一次文件就有）
+    trustedIds = new Set([...trustedIds, ...readTrusted()]);
+    if (!trustedIds.has(extId)) return false;
+  }
   if (o && !isExt && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(o)) return false;
   const sfs = String(req.headers['sec-fetch-site'] || '').toLowerCase();
   if (sfs === 'cross-site' && !isExt) return false;
@@ -1858,12 +1934,13 @@ async function route(req, res) {
         ok: true, name: 'page-recorder-bridge', version: VERSION, pid: process.pid, extensionConnected: instances.size > 0,
         ...(DAEMON ? { background: true, owners: [...owners] } : {}),
         browsers: [...instances.values()].map(browserStatus),
+        ...(rejectedIds.size ? { rejectedExtensions: [...rejectedIds.keys()].slice(-10).map((id) => ({ id, how: `page-recorder-mcp trust ${id}` })) } : {}),
         endpoints: {
           'GET  /api/recordings': '脚本列表（含每个接口拆出的工具；多个浏览器时汇总，每条带 browser）',
           'GET  /api/recordings/:id': '脚本详情（步骤、接口、参数、参数说明 paramInfo、响应结构）',
           'GET  /api/recordings/:id/script': '导出的 JS 脚本源码',
           'GET  /api/recordings/:id/package': '导出录制包（已脱敏的 JSON，可存成 .prpkg.json）',
-          'POST /api/recordings/:id/run': '运行 body: { params?, apiParams?, mode?: auto|api|ui, newTab?, fresh?, keepTab?, active?, timeout? }（api=直接请求接口；默认复用已开的页面）',
+          'POST /api/recordings/:id/run': '运行 body: { params?, apiParams?, mode?: auto|api|ui, newTab?, fresh?, keepTab?, active?, startUrl?, timeout? }（api=直接请求接口；默认复用已开的页面）',
           'POST /api/recordings/:id/call': '调用单个接口 body: { api, args? }',
           'POST /api/recordings/:id/docs': '保存 AI 对接口的说明 body: docs',
           'POST /api/packages': '导入录制包 body: 录制包 JSON，或 { pkg, browser? }（必须设置 token 并带上）',
@@ -1935,9 +2012,10 @@ async function route(req, res) {
         if (action === 'run') {
           const timeout = Math.max(1000, Math.min(900000, Number(b.timeout) || 180000));
           const params = { recording, timeout };
-          for (const key of ['params', 'apiParams', 'mode', 'newTab', 'fresh', 'keepTab', 'active', 'capture', 'realInput']) {
+          for (const key of ['params', 'apiParams', 'mode', 'newTab', 'fresh', 'keepTab', 'active', 'capture', 'realInput', 'startUrl']) {
             if (Object.hasOwn(b, key)) params[key] = b[key];
           }
+          if (Object.hasOwn(b, 'start_url') && !Object.hasOwn(b, 'startUrl')) params.startUrl = b.start_url; // 和 MCP 工具一样的写法也认
           return sendJson(res, 200, { ok: true, data: await extCall('run', params, timeout + 30000, browser) });
         }
         if (action === 'call') return sendJson(res, 200, { ok: true, data: await extCall('call', { recording, api: b.api, args: b.args || {}, params: b.params, apiParams: b.apiParams }, 90000, browser) });
@@ -1978,16 +2056,27 @@ server.on('upgrade', (req, socket, head) => {
   if (wsSockets.size >= 32) { socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n'); return; }
   wsSockets.add(socket);
   socket.once('close', () => wsSockets.delete(socket));
-  socket.write([
-    'HTTP/1.1 101 Switching Protocols',
-    'Upgrade: websocket',
-    'Connection: Upgrade',
-    'Sec-WebSocket-Accept: ' + wsAccept(req.headers['sec-websocket-key']),
-    '', '',
-  ].join('\r\n'));
-  socket.setNoDelay(true);
-  socket.setKeepAlive(true, 15000);
-  attachWs(socket, origin, head);
+  socket.on('error', () => {});
+  trustExtension(extId).then((ok) => {
+    if (socket.destroyed) return;
+    socket.write([
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      'Sec-WebSocket-Accept: ' + wsAccept(req.headers['sec-websocket-key']),
+      '', '',
+    ].join('\r\n'));
+    if (!ok) {
+      // 握手后告诉扩展为什么不认（直接 403 的话扩展只知道连不上），然后关掉；什么请求都不转给它
+      // 关闭帧带 1008（违反策略）；对方不回关闭也 2 秒后断开，不占连接名额
+      socket.end(Buffer.concat([wsFrame(JSON.stringify({ type: 'rejected', extensionId: extId, reason: `桥接没认这个扩展（ID ${extId}）：找不到它的安装目录，确认不了是 Page Recorder。是你自己装的，就在终端运行 npx page-recorder-mcp trust ${extId}` }), 1), wsFrame(Buffer.from([0x03, 0xf0]), 8)]));
+      setTimeout(() => socket.destroy(), 2000).unref();
+      return;
+    }
+    socket.setNoDelay(true);
+    socket.setKeepAlive(true, 15000);
+    attachWs(socket, origin, head);
+  }, () => socket.destroy());
 });
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
@@ -2017,7 +2106,8 @@ process.on('exit', () => {
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
 if (STDIO && !NO_DAEMON) {
   // 复用或在后台起一个桥接；起不来就退回自己监听端口
-  ensureBridge().then((up) => {
+  // 起后台桥接时出错（比如家目录只读、写不了日志）也退回自己监听，不能让未处理的异常把 MCP 进程带走
+  ensureBridge().catch((e) => { log('后台桥接起不来：' + ((e && e.message) || e)); return false; }).then((up) => {
     if (!up) return listen();
     markReady();
     log('转发给后台桥接');
