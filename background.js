@@ -1424,6 +1424,11 @@ async function runUi(item, b, opts, calibrateNames, required) {
   const capture = opts.capture !== false; // 回放期间抓下这个标签页里所有框架的接口返回，放在结果的 network 里
   // 起始地址带会过期的参数：用开着的同一页面现在的地址，或者去掉这些参数再打开（见 liveUrlOf）
   const start = await liveUrlOf(b.recording.startUrl);
+  // 去掉参数打开的起始页面本身返回了什么状态码（只在去参数打开时看，用来判断“令牌过期被拒”）
+  const navSeen = [];
+  const navWatch = (d) => { if (d.type === 'main_frame') navSeen.push({ url: d.url.split('#')[0], status: d.statusCode }); };
+  const stopNavWatch = () => { try { chrome.webRequest?.onCompleted.removeListener(navWatch); } catch (e) {} };
+  if (start.adjusted === 'stripped') { try { chrome.webRequest?.onCompleted.addListener(navWatch, { urls: ['http://*/*', 'https://*/*'], types: ['main_frame'] }); } catch (e) {} }
   let openedStart = false; // 真的用 start.url 打开或跳转过（没动标签页就不说“调整了地址”）
   try {
     let old = reuse ? await reusedTab('run:' + item.id, b.recording.startUrl, why) : null;
@@ -1458,6 +1463,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
       if (reuse) await rememberTab('run:' + item.id, picked.tabId, b.recording.startUrl);
     }
   } catch (e) {
+    stopNavWatch();
     if (locked) runningTabs.delete(locked);
     if (picked) stopCapture(picked.tabId);
     if (locked) stopCapture(locked);
@@ -1540,6 +1546,20 @@ async function runUi(item, b, opts, calibrateNames, required) {
       }
       total.calibration = { params: total.ok ? verdicts : Object.fromEntries(calibrateNames.map((n) => [n, 'unknown'])), details: details.slice(0, 40) };
     }
+    if (start.adjusted === 'stripped' && openedStart) {
+      // 日志第 1 步写的是录制时的地址，补上实际打开的地址，免得误导
+      const l1 = total.log.find((l) => l && l.step === 1);
+      const shown = PR_EXPORTER.maskUrl(start.url, true);
+      if (l1 && typeof l1.desc === 'string' && l1.desc.startsWith('打开页面')) l1.desc += `（实际打开：${shown}，已去掉 ${start.removed.join('、')}）`;
+      // 去掉过期参数打开后，第 2 步及以后才失败：页面多半因令牌过期没给出正常内容，不是页面改版
+      // 只有起始页面本身返回 401/403/404/410 才加提示；拿不到状态码就不加
+      let k = navSeen.findIndex((x) => x.url === start.url.split('#')[0]);
+      while (k >= 0 && k < navSeen.length - 1 && navSeen[k].status >= 300 && navSeen[k].status < 400) k++;
+      const st = k >= 0 ? navSeen[k].status : 0;
+      if (!total.ok && total.error && l1 && l1.ok && [401, 403, 404, 410].includes(st)) {
+        total.error += `。提示：起始地址里会过期的参数（${start.removed.join('、')}）已去掉再打开，但页面拒绝了请求；如果这个页面必须带有效令牌才能打开，请先在浏览器里打开带新令牌的同一页面，再回放（该页面返回了 HTTP ${st}）`;
+      }
+    }
     if (start.adjusted && openedStart) total.startPage = { how: start.adjusted === 'open-tab' ? '用了开着的同一页面现在的地址' : '去掉了会过期的参数再打开', removed: start.removed };
     const moved = start.removed && start.removed.length && total.log.find((l) => l && l.step === 1 && l.redirected);
     if (moved) {
@@ -1562,6 +1582,7 @@ async function runUi(item, b, opts, calibrateNames, required) {
     }
     return total;
   } finally {
+    stopNavWatch();
     if (realTabs.has(tabId) && realTabs.get(tabId).runId === runId) {
       const st = await detachReal(tabId);
       if (st && st.dialogs.length) total.dialogs = (total.dialogs || []).concat(st.dialogs);
