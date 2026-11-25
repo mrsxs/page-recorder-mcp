@@ -367,18 +367,34 @@ function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
       return { retry: false };
     });
   }
-  // 连上来的扩展是不是 Page Recorder：在记下的扩展目录、默认目录、程序自己的目录和浏览器资料里登记的已解压扩展目录里，
-  // 找按路径算出来的 ID 就是它、里面装的确实是 Page Recorder 的目录（开发用的源码目录也算）。找到返回目录，找不到返回空
+  // 连上来的扩展是不是 Page Recorder：按路径算出来的 ID 就是它的目录里，
+  // · 扩展文件和这个程序带的逐个一样（内容比对，别人照抄名字改了代码的过不了）；
+  // · 或者是 `extension` 子命令生成、更新器记下的目录、默认目录（旧版本的文件，等连上后自动更新），manifest 名字对得上。
+  // 浏览器资料里登记的其他目录只认第一种。找到返回目录，找不到返回空
+  let packageHashes = null;
+  const hashesOf = (dir) => {
+    const out = new Map();
+    for (const f of EXTENSION_FILES) {
+      const p = path.join(dir, f);
+      const files = fs.statSync(p).isDirectory() ? filesUnder(p).filter((x) => !path.basename(x).startsWith('.')).map((x) => path.join(f, x)) : [f]; // .DS_Store 这类不算
+      for (const x of files) out.set(x.split(path.sep).join('/'), sha(fs.readFileSync(path.join(dir, x))));
+    }
+    return out;
+  };
+  const samePackage = (dir) => {
+    try {
+      packageHashes = packageHashes || hashesOf(root);
+      for (const [f, h] of packageHashes) if (sha(fs.readFileSync(path.join(dir, f))) !== h) return false;
+      return true;
+    } catch (e) { return false; }
+  };
+  const namedOurs = (dir) => {
+    try { return String(JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).name || '').startsWith('Page Recorder'); } catch (e) { return false; }
+  };
   async function extensionDir(id) {
-    const ours = (dir) => {
-      try {
-        return String(JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).name || '').startsWith('Page Recorder')
-          && fs.existsSync(path.join(dir, 'background.js')) && fs.existsSync(path.join(dir, 'lib', 'runtime.js'));
-      } catch (e) { return false; }
-    };
     const known = [...readState().extensionDirs, path.join(home, 'page-recorder-extension'), root];
-    for (const d of known) if (extensionIdsOf(d).has(id) && ours(d)) return d;
-    for (const d of await unpackedDirsOf(browserRoots || browserDataRoots(home), [id])) if (extensionIdsOf(d).has(id) && ours(d)) return d;
+    for (const d of known) if (extensionIdsOf(d).has(id) && namedOurs(d)) return d;
+    for (const d of await unpackedDirsOf(browserRoots || browserDataRoots(home), [id])) if (extensionIdsOf(d).has(id) && samePackage(d)) return d;
     return '';
   }
   return { rememberExtensionDir, updateExtensions, updateSkills, extensionDir };

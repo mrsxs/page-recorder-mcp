@@ -818,30 +818,28 @@ function extHandshake(port, origin, instanceId) {
 }
 
 test('bridge: 没设 --extension-id 时，扩展要找得到安装目录、确实是 Page Recorder 才认（第一个也一样）；trust 子命令手动放行', async () => {
-  const { unpackedExtensionId } = createRequire(import.meta.url)('../bridge/updater.js');
+  const { unpackedExtensionId, copyTree, EXTENSION_FILES } = createRequire(import.meta.url)('../bridge/updater.js');
   const dir = mkdtempSync(join(tmpdir(), 'pr-trust-'));
-  // 浏览器资料里登记着两个已解压扩展：一个是 Page Recorder，一个不是
-  const good = join(dir, 'ext-good');
-  mkdirSync(join(good, 'lib'), { recursive: true });
-  writeFileSync(join(good, 'manifest.json'), JSON.stringify({ name: 'Page Recorder', version: '1.8.0' }));
-  writeFileSync(join(good, 'background.js'), '');
-  writeFileSync(join(good, 'lib', 'runtime.js'), '');
+  // 浏览器资料里登记着几个已解压扩展：一个是原样的 Page Recorder；一个照抄了名字和文件、改了代码的；一个别的扩展
+  const copyPkg = (name) => {
+    const d = join(dir, name);
+    for (const f of EXTENSION_FILES) copyTree(join(root, f), join(d, f));
+    return d;
+  };
+  const good = copyPkg('ext-good');
+  const copycat = copyPkg('ext-copycat');
+  writeFileSync(join(copycat, 'background.js'), readFileSync(join(copycat, 'background.js'), 'utf8') + '\n// 偷偷加的代码\n');
   const fake = join(dir, 'ext-fake');
   mkdirSync(fake);
   writeFileSync(join(fake, 'manifest.json'), JSON.stringify({ name: 'Free VPN', version: '1.0.0' }));
   const goodId = unpackedExtensionId(good);
   const fakeId = unpackedExtensionId(fake);
   mkdirSync(join(dir, 'browser', 'Default'), { recursive: true });
-  writeFileSync(join(dir, 'browser', 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: { [goodId]: { path: good }, [fakeId]: { path: fake } } } }));
+  const copycatId = unpackedExtensionId(copycat);
+  writeFileSync(join(dir, 'browser', 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: { [goodId]: { path: good }, [fakeId]: { path: fake }, [copycatId]: { path: copycat } } } }));
   // 指纹浏览器：每个环境一个 --user-data-dir（<根>/<环境>/Default/Preferences）；也可能直接填一个资料目录（<目录>/Preferences）
-  const copyGood = (name) => {
-    const d = join(dir, name);
-    mkdirSync(join(d, 'lib'), { recursive: true });
-    for (const f of ['manifest.json', 'background.js', join('lib', 'runtime.js')]) writeFileSync(join(d, f), readFileSync(join(good, f)));
-    return d;
-  };
-  const fp = copyGood('ext-fp');
-  const direct = copyGood('ext-direct');
+  const fp = copyPkg('ext-fp');
+  const direct = copyPkg('ext-direct');
   mkdirSync(join(dir, 'fp', 'env7', 'Default'), { recursive: true });
   writeFileSync(join(dir, 'fp', 'env7', 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: { [unpackedExtensionId(fp)]: { path: fp } } } }));
   mkdirSync(join(dir, 'one'), { recursive: true });
@@ -864,6 +862,8 @@ test('bridge: 没设 --extension-id 时，扩展要找得到安装目录、确�
     assert.equal(verified.closed, false, '浏览器资料里登记的目录装的是 Page Recorder：认');
     const impostor = await extHandshake(b.port, 'chrome-extension://' + fakeId, 'i4');
     assert.equal(impostor.closed, true, '目录里装的不是 Page Recorder：不认');
+    const cat = await extHandshake(b.port, 'chrome-extension://' + copycatId, 'i7');
+    assert.equal(cat.closed, true, '照抄名字和文件、改了代码的：内容对不上，不认');
     for (const [d, inst] of [[fp, 'i5'], [direct, 'i6']]) {
       const c = await extHandshake(b.port, 'chrome-extension://' + unpackedExtensionId(d), inst);
       open.push(c.socket);

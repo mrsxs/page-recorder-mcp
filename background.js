@@ -202,12 +202,14 @@ function senderUrls(ev, sender) {
   if (sender.frameId) { out.frameUrl = sender.url; out.topUrl = sender.tab && sender.tab.url; }
   return out;
 }
-// 按名字找：完全一样的优先；只是名字里包含的，只有一个时才用（传 "order" 不能随便落到 cancelOrder 上）
-function byName(list, ref, names, what) {
+// 按名字找：完全一样的优先；只是名字里包含的，只有一个、并且 partialOk 说可以时才用
+// （接口：会改数据的要写完整名字，传 "order" 不能落到唯一的 cancelOrder 上）
+function byName(list, ref, names, what, partialOk) {
   const exact = list.find((x) => names(x).some((n) => n === ref));
   if (exact) return exact;
   const part = list.filter((x) => typeof names(x)[0] === 'string' && names(x)[0].includes(ref)); // 只比完整名称，和导出脚本一致
   if (part.length > 1) throw new Error(`有 ${part.length} 个${what}的名字包含「${ref}」：${part.slice(0, 10).map((x) => names(x)[0]).join('、')}。请写完整的名字`);
+  if (part.length && partialOk && !partialOk(part[0])) throw new Error(`名字包含「${ref}」的${what} ${names(part[0]).filter(Boolean).join(' / ')} 会改数据，要写完整的名字才调用`);
   return part[0] || null;
 }
 async function getLibItem(c, ref) {
@@ -1840,13 +1842,17 @@ async function runSegment(tabId, runId, b, params, apiParams, config, seg, opene
 async function callApi(item, api, args, opts) {
   opts = opts || {};
   const b = buildItem(item).bundle;
-  const a = byName(b.recording.apis, String(api == null ? '' : api), (x) => [x.name, x.fn], '接口');
+  const a = byName(b.recording.apis, String(api == null ? '' : api), (x) => [x.name, x.fn], '接口', (x) => !PR_EXPORTER.sideEffectApi(x.name));
   if (!a) throw new Error(`「${b.name}」中没有接口 ${api}。可用：${b.recording.apis.map((x) => x.fn + ' (' + x.name + ')').join(', ')}`);
   // 带页面每次现算反爬串的接口：旧值发出去必被风控拒，也不拿页面上采来的值伪造，只让页面自己发
   if ((a.pageGenerated || []).length && !opts.noTrigger) return triggerApi(item, b, a, args, opts);
   // 在“发出这个接口的页面”里调用：iframe 里的接口在那个 iframe 的页面里调；跨域接口也照页面当初的方式发
   // （带着浏览器的 Cookie、登录态，不额外跨域）
   const ctxUrl = a.pageUrl || b.recording.startUrl;
+  if (item.imported && !pageVisited(b, ctxUrl)) {
+    return { ok: false, rejected: true, notSent: true, api: a.name,
+      error: `这是导入的录制，接口 ${a.name} 记的页面 ${PR_EXPORTER.maskUrl(ctxUrl, true)} 不在这条录制打开过的网站里，不直接请求（可能是被改过的录制包）。要用就 run_recording mode="ui" 回放页面操作，由页面自己发` };
+  }
   let ctx = '';
   let siteOrigin = '';
   try { ctx = new URL(ctxUrl).origin; siteOrigin = new URL(b.recording.startUrl).origin; } catch (e) { /* ignore */ }
@@ -2194,6 +2200,13 @@ const validLibUrl = (value, inFrame) => {
   } catch (e) { return false; }
 };
 // 本机目录里的文件也当外部输入：格式不对、地址不对的不进脚本库
+// 别人给的录制（导入的录制包、别的扩展存的备份）：接口记的“在哪个页面发的”可以随便填。直接请求时就在那个页面里发、
+// 带那个站的登录态，所以只认录制里确实打开过的网站（起始页、跳转步骤、步骤所在的 iframe，同一站点）
+function pageVisited(b, url) {
+  const site = siteOf(url);
+  if (!site || !/^https?:/i.test(String(url))) return false;
+  return [b.recording.startUrl, ...b.recording.steps.flatMap((s) => [s.url, s.frame && s.frame.url])].some((u) => u && siteOf(u) === site);
+}
 function validLibItem(x) {
   return !!(x && typeof x === 'object' && /^[A-Za-z0-9_-]{1,128}$/.test(x.id || '') && Number.isFinite(x.savedAt) && x.state && typeof x.state === 'object' && Array.isArray(x.events)
     && validLibUrl(x.state.startUrl) && x.events.every((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && Number.isFinite(e.ts)

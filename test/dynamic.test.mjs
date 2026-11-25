@@ -500,6 +500,17 @@ test('全仓审查：请求是哪个页面发的只认浏览器给的；接口�
   assert.equal(bg.byName(apis, 'api/user', names, '接口').fn, 'user', '只有一个包含它的照常用');
   assert.equal(bg.byName(apis, 'nothing', names, '接口'), null);
   assert.equal(bg.byName(apis, 'list', names, '接口').fn, 'listOrder', '名字包含的只比完整名称，不比函数名（和导出脚本一致）');
+  const readOnly = (x) => !E.sideEffectApi(x.name);
+  assert.throws(() => bg.byName([apis[0], apis[2]], 'order', names, '接口', readOnly), /会改数据，要写完整的名字/, '只有一个包含 order 的、但它是取消订单：不自动调');
+  assert.equal(bg.byName([apis[0], apis[2]], 'POST /api/order/cancel', names, '接口', readOnly).fn, 'cancelOrder', '写完整名字照常调');
+  assert.equal(bg.byName(apis, 'api/user', names, '接口', readOnly).fn, 'user', '查询类接口包含的照常用');
+
+  // 导入的录制：接口记的页面要是录制打开过的网站，不然不直接请求（别人的录制包能填成任意网站）
+  const b = { recording: { startUrl: 'https://shop.test/a', steps: [{ type: 'navigate', url: 'https://www.shop.test/b' }, { type: 'click', frame: { url: 'https://erp.vendor.test/f' } }] } };
+  assert.equal(bg.pageVisited(b, 'https://api.shop.test/x'), true, '同一站点');
+  assert.equal(bg.pageVisited(b, 'https://erp.vendor.test/f?id=1'), true, '步骤所在的 iframe');
+  assert.equal(bg.pageVisited(b, 'https://bank.example/home'), false);
+  assert.equal(bg.pageVisited(b, 'javascript:alert(1)'), false);
 });
 
 test('全仓审查：路径参数不能是 . 或 ..；接口名包含它的不止一个时不调；导出脚本回放完撤掉请求改写', async () => {
@@ -513,6 +524,11 @@ test('全仓审查：路径参数不能是 . 或 ..；接口名包含它的不�
   const err = (p) => p.then((r) => r.error || '', (e) => e.message);
   for (const id of ['..', '.']) assert.match(await err(rt.api.call('detail', { path: { id } })), /不能是/);
   assert.ok(await err(rt.api.call('order', {})), '包含 order 的有两个，不挑一个调');
+  const only = runtimeEnv('https://app.test/page');
+  const rt2 = await only.win.__pageRecorderRuntime({ steps: [], apis: [apis[0], apis[1]] }, {}, {}, cfg, { live: { headers: {}, fields: {} } });
+  assert.match(await err(rt2.api.call('order/', {})), /会改数据/, '只有一个包含 order/ 的、但它是取消订单：不自动调');
+  assert.equal(only.fetchCalls.length, 0);
+  assert.equal((await rt2.api.call('orders/{id}', { path: { id: '3' } })).ok, true, '查询类接口包含的照常调');
   assert.equal(fetchCalls.length, 0);
   const ok = await rt.api.call('detail', { path: { id: '2' } });
   assert.equal(ok.ok, true, ok.error);
@@ -548,6 +564,9 @@ test('全仓审查：一行一条的 WebSocket / SSE 文本、sig、app_key、�
   assert.deepEqual(E.maskDeep({ list: ['sk-' + 'a1B2'.repeat(6), 'plain'] }, true), { list: ['', 'plain'] }, '名字看不出来、值一看就是密钥的也打码');
   assert.deepEqual(E.maskDeep({ code: 'JSONCODE12', state: 'st8Rand0m' }, true), { code: '', state: 'st8Rand0m' }, 'JSON 里和 state 一起的授权码也打码');
   assert.equal(E.maskDeep('42["auth",{"token":"ONELINE123"}]', true), '42["auth",{"token":""}]', '只有一行的 socket.io 帧也打码');
+  const cut = E.scrubRequest({ ...ws, requestBody: { type: 'text', value: '{"a":1}\n{"type":"auth","pin":123456,"token":"HALFSECRET12', truncated: true } }, [], true, true);
+  assert.ok(!cut.requestBody.value.includes('HALFSECRET12') && !cut.requestBody.value.includes('123456'), '截断在半行的也打码：' + cut.requestBody.value);
+  assert.match(cut.requestBody.value, /"type":"auth"/);
 
   // 长期不变的 key 只打码，不当成会过期的参数去掉；判断同一页面时不比按值认出的密钥、OAuth 授权码
   assert.deepEqual(JSON.parse(JSON.stringify(E.stripDynamic('https://app.test/p?appkey=APPKEY12345&apikey=APIKEY12345&sig=SIGVALUE99'))), { url: 'https://app.test/p?appkey=APPKEY12345&apikey=APIKEY12345', removed: ['sig'] });
