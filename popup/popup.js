@@ -769,7 +769,7 @@ $('#pkgFile').addEventListener('change', async (e) => {
   }
   const r = await send({ type: 'importPackage', pkg });
   if (!r || r.error) { showNotice('导入录制包失败：' + esc((r && r.error) || '后台没有响应'), 'error'); return; }
-  toast(`已导入「${r.name || f.name}」到脚本库`);
+  toast(`已导入「${r.name || f.name}」到脚本库${r.fromExport ? '（从导出 JSON 还原，不带来源页；换电脑优先用「导出录制包」）' : ''}`);
   await refresh(true);
   renderLibrary();
 });

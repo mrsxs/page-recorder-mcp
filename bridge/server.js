@@ -992,7 +992,7 @@ const STATIC_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        pkg: { type: 'object', description: '录制包 JSON：{ "format": "page-recorder-package", "version": 1, "name": …, "item": {…} }', additionalProperties: true },
+        pkg: { type: 'object', description: '录制包 JSON：{ "format": "page-recorder-package", "version": 1, "name": …, "item": {…} }；扩展「导出 JSON」的内容也行', additionalProperties: true },
         file: { type: 'string', description: '录制包文件的路径（.json 结尾，如 export_package 返回的 file）' },
         browser: Object.assign({}, BROWSER_PARAM, { description: '可选。多个浏览器资料都装了扩展时，指定导入到哪个浏览器：填 instanceId 或资料名。只连着一个浏览器时不用传' }),
       },
