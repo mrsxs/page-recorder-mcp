@@ -157,6 +157,18 @@ h4:first-child { margin-top: 0; }
 .lib-meta { color: #a1a1aa; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lib-actions { display: flex; gap: 4px; margin-top: 6px; }
 .lib-actions button { padding: 2px 9px; font-size: 11px; }
+.lanbox { margin: 0 14px 10px; padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 6px; }
+.lanbox summary { cursor: pointer; font-weight: 600; }
+.lanbox .row { margin: 6px 0; }
+.laninfo { margin: 4px 0 8px; padding: 6px 8px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; color: #166534; word-break: break-all; }
+.laninfo code { font-size: 13px; font-weight: 600; }
+.lanpeer { display: flex; gap: 6px; margin: 4px 0; }
+.lanpeer input { flex: 1; min-width: 0; }
+.lanitem { margin: 3px 0; }
+.lanitem button { margin-left: 6px; }
+.notice.shared { background: #f0f9ff; border-color: #bae6fd; color: #075985; }
+.notice.shared .row-item { margin: 2px 0; }
+.tag.share { background: #e0f2fe; color: #0369a1; }
 .tag { font-size: 10px; padding: 0 5px; border-radius: 3px; background: #ede9fe; color: #6d28d9; margin-left: 4px; font-weight: 400; }
 .result { max-height: 200px; overflow: auto; background: #fafafa; padding: 6px; border-radius: 4px; font-size: 10.5px; margin: 6px 0 0; }
 

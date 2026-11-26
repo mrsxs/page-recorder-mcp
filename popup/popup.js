@@ -32,7 +32,8 @@ async function refresh(force) {
   renderAiStatus();
   // 语义步骤的成员是录完之后才归组的（事件数不变），所以归组数/脚本库/末尾事件变更也要重画
   const tail = data.events[data.events.length - 1];
-  const libSig = (data.libIndex || []).map((x) => `${x.id}:${x.savedAt}`).join(',');
+  const sh = data.sharedInfo || {};
+  const libSig = (data.libIndex || []).map((x) => `${x.id}:${x.savedAt}`).join(',') + `|${data.bridge}|${JSON.stringify([sh.ready, sh.shared, (sh.offers || []).map((x) => [x.id, x.savedAt, x.name]), sh.notices, data.lanInfo, data.libraryOffers])}`;
   const sig = `${data.events.length}:${data.events.reduce((n, e) => n + (e.groupedIn ? 1 : 0), 0)}:${tail ? `${tail.id}:${tail.value ?? ''}:${tail.commitTs ?? ''}` : ''}:${libSig}`;
   if (force || sig !== lastEventSig) {
     lastEventSig = sig;
@@ -676,9 +677,123 @@ $('#libOffers').addEventListener('click', async (e) => {
   await refresh(true);
   renderLibrary();
 });
+// 同一台电脑上别的环境共享的脚本：点接收才进这个环境的脚本库（设置里可以改成自动接收）；共享、删除时的提示也放这里
+function renderShared() {
+  const sh = data.sharedInfo || {};
+  const offers = data.bridge ? sh.offers || [] : [];
+  const notices = sh.notices || [];
+  const box = $('#sharedBox');
+  box.hidden = !offers.length && !notices.length;
+  box.innerHTML = (notices.length ? `${notices.map((n) => `<div class="row-item">${esc(n)}</div>`).join('')}<button class="x" data-shared-dismiss title="知道了">×</button>` : '')
+    + (offers.length ? `<div class="row-item">其他环境共享了 ${offers.length} 条脚本${offers.length > 1 ? '<button data-receive-all>全部接收</button>' : ''}</div>`
+      + offers.map((x) => `<div class="row-item">「${esc(x.name)}」（${esc(x.from)} · ${new Date(x.savedAt).toLocaleString()}）<button data-receive="${esc(x.id)}">接收</button></div>`).join('') : '');
+}
+$('#sharedBox').addEventListener('click', async (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.matches('[data-shared-dismiss]')) {
+    await send({ type: 'sharedDismiss' });
+  } else {
+    const ids = b.matches('[data-receive-all]') ? ((data.sharedInfo || {}).offers || []).map((x) => x.id) : [b.dataset.receive];
+    b.disabled = true;
+    const r = await send({ type: 'sharedReceive', ids });
+    toast(r && r.error ? '接收失败：' + r.error : '正在接收，稍后出现在脚本库里，之后会跟着共享的环境更新');
+  }
+  await refresh(true);
+  renderLibrary();
+});
+// ---------------- 局域网 ----------------
+// 开关：桥接开一个局域网端口，显示地址和口令给另一台电脑填；只在这次浏览器会话里有效
+// 桥接支持局域网（新版桥接）：连上后会发来共享状态
+const lanReady = () => !!(data.bridge && (data.sharedInfo || {}).ready);
+function renderLan() {
+  const info = data.lanInfo || { on: false };
+  $('#lanOn').checked = !!info.on;
+  $('#lanOn').disabled = !lanReady();
+  $('#lanFetch').disabled = !lanReady();
+  const box = $('#lanInfo');
+  box.hidden = !info.on && lanReady();
+  if (!data.bridge) {
+    box.textContent = '桥接没有连接：要先让 AI 工具（或终端里的 npx page-recorder-mcp）运行起来';
+  } else if (!lanReady()) {
+    box.textContent = '正在等桥接回应；一直这样的话，桥接版本太旧，请升级（重启 AI 工具）';
+  } else if (info.on) {
+    const addrs = (info.addresses || []).map((a) => `<code>${esc(a.address)}:${esc(info.port)}</code>${a.name ? `（${esc(a.name)}）` : ''}`);
+    box.innerHTML = `在另一台电脑的弹窗里填：<br>地址 ${addrs.join(' 或 ') || '（没找到局域网地址，确认连着网络）'}<br>口令 <code>${esc(info.code)}</code> <button id="lanCopy" class="ghost sm">复制</button>`
+      + `<div class="hint">现在有 ${Number(info.count) || 0} 条共享的脚本${(info.owners || []).length ? `；由 ${esc(info.owners.join('、'))} 打开，关掉它（们）的浏览器就自动关闭` : ''}。有几个地址时填和对方同一网络的那个（Wi-Fi、网线）。第一次开时系统可能问是否允许 node 接收连接，选允许（专用网络）。</div>`;
+  }
+  const peer = data.lanPeer || {};
+  if (!$('#lanAddr').value && peer.addr) $('#lanAddr').value = peer.addr;
+  if (!$('#lanCode').value && peer.code) $('#lanCode').value = peer.code;
+}
+$('#lanOn').addEventListener('change', async (e) => {
+  const on = e.target.checked;
+  e.target.disabled = true;
+  const r = await send({ type: 'lanToggle', on });
+  e.target.disabled = false;
+  if (!r || r.error) toast((on ? '开启' : '关闭') + '失败：' + ((r && r.error) || '后台没有响应'));
+  else data.lanInfo = r.lanInfo;
+  renderLan();
+});
+$('#lanInfo').addEventListener('click', async (e) => {
+  if (e.target.id !== 'lanCopy') return;
+  const info = data.lanInfo || {};
+  const text = `Page Recorder 局域网同步\n地址：${(info.addresses || []).map((a) => `${a.address}:${info.port}`).join(' 或 ')}\n口令：${info.code}`;
+  try { await navigator.clipboard.writeText(text); toast('已复制，发给另一台电脑'); } catch (err) { toast('复制失败，请手动抄下来'); }
+});
+let lanRemote = null; // { addr, code, device, scripts }
+function renderLanList() {
+  const box = $('#lanList');
+  if (!lanRemote) { box.innerHTML = ''; return; }
+  const have = new Set((data.libIndex || []).map((x) => x.id));
+  const list = lanRemote.scripts || [];
+  box.innerHTML = !list.length ? `<div class="hint">${esc(lanRemote.device)} 上还没有共享的脚本：在那边脚本库里点脚本上的「共享」</div>`
+    : `<div class="lanitem">${esc(lanRemote.device)} 共享了 ${list.length} 条${list.length > 1 ? '<button data-lan-all class="ghost sm">全部接收</button>' : ''}</div>`
+      + list.map((x) => `<div class="lanitem">「${esc(x.name)}」${x.from ? `（${esc(x.from)}）` : ''}${have.has(x.id) ? '<span class="tag">这里已有</span>' : ''}<button data-lan-get="${esc(x.id)}" class="ghost sm">${have.has(x.id) ? '再接收（覆盖）' : '接收'}</button></div>`).join('');
+}
+$('#lanFetch').onclick = async () => {
+  const addr = $('#lanAddr').value.trim();
+  const code = $('#lanCode').value.trim();
+  if (!addr || !code) return toast('地址和口令都要填');
+  $('#lanFetch').disabled = true;
+  const r = await send({ type: 'lanList', addr, code });
+  $('#lanFetch').disabled = false;
+  if (!r || r.error) { lanRemote = null; renderLanList(); return toast('读取失败：' + ((r && r.error) || '后台没有响应')); }
+  lanRemote = { addr, code, device: r.list.device || '对方', scripts: r.list.scripts || [] };
+  renderLanList();
+};
+$('#lanList').addEventListener('click', async (e) => {
+  const b = e.target.closest('button');
+  if (!b || !lanRemote) return;
+  const ids = b.matches('[data-lan-all]') ? lanRemote.scripts.map((x) => x.id) : [b.dataset.lanGet];
+  const local = new Map((data.libIndex || []).map((x) => [x.id, x]));
+  const over = ids.filter((id) => local.has(id));
+  if (over.length) {
+    const sharedHere = over.filter((id) => sharedOf(id));
+    const names = over.slice(0, 5).map((id) => `「${local.get(id).name}」`).join('、') + (over.length > 5 ? ` 等 ${over.length} 条` : '');
+    const note = sharedHere.length ? `\n其中 ${sharedHere.length} 条在这台电脑上和别的环境共享，覆盖后它们也会更新成对方的版本。` : '';
+    if (!confirm(`这个浏览器里已经有 ${names}，再接收会用对方的版本覆盖这里的。${note}\n\n确定？`)) return;
+  }
+  // 确认时这里每条的版本：桥接写入前核对，期间这里又变过的不覆盖
+  const expect = Object.fromEntries(ids.map((id) => [id, local.has(id) ? local.get(id).savedAt : 0]));
+  b.disabled = true;
+  const r = await send({ type: 'lanReceive', addr: lanRemote.addr, code: lanRemote.code, ids, expect });
+  b.disabled = false;
+  if (!r || r.error) return toast('接收失败：' + ((r && r.error) || '后台没有响应'));
+  const failed = r.failed || [];
+  toast(`已接收 ${(r.received || []).length} 条${failed.length ? `，${failed.length} 条失败：${[...new Set(failed.map((x) => x.error))].join('；')}` : ''}。之后两边各管各的，要更新就再接收一次（按导入的录制包对待）`);
+  await refresh(true);
+  renderLibrary();
+  renderLanList();
+});
+const sharedOf = (id) => ((data.sharedInfo || {}).shared || []).find((x) => x.id === id);
 function renderLibrary() {
   renderLibOffers();
+  renderShared();
+  renderLan();
+  renderLanList();
   const list = data.libIndex || [];
+  const canShare = !!(data.bridge && (data.sharedInfo || {}).ready);
   $('#libEmpty').hidden = list.length > 0;
   if ($('#libList').contains(document.activeElement) && document.activeElement.matches('input')) return; // 正在填参数，别刷掉
   // 有输入参数的脚本，运行前可以直接在卡片上改（只影响这次运行）
@@ -689,12 +804,16 @@ function renderLibrary() {
     return `<div class="lib-params">${ps.map(([k, v]) => `<label><span>${esc(k)}</span><input data-lp="${esc(k)}"${Array.isArray(v) ? ' data-lp-json="1" title="多选：选项组成的 JSON 数组"' : ''} value="${esc(Array.isArray(v) ? JSON.stringify(v) : v)}" /></label>`).join('')}</div>`;
   };
   $('#libList').innerHTML = list.map((x) => `<div class="lib ${x.id === data.state.id ? 'current' : ''}" data-id="${esc(x.id)}">
-    <div class="lib-name">${esc(x.name)}${x.hasDocs ? '<span class="tag">AI 已解读</span>' : ''}${x.id === data.state.id ? '<span class="tag">当前</span>' : ''}</div>
+    <div class="lib-name">${esc(x.name)}${x.hasDocs ? '<span class="tag">AI 已解读</span>' : ''}${x.id === data.state.id ? '<span class="tag">当前</span>' : ''}${shareTag(sharedOf(x.id))}</div>
     ${x.description ? `<div class="lib-desc">${esc(x.description)}</div>` : ''}
     <div class="lib-meta">${x.steps} 步 · ${x.requests} 个请求 · ${new Date(x.savedAt).toLocaleString()} · ${esc(x.startUrl || '')}</div>
     ${paramRows(x)}
-    <div class="lib-actions">${x.direct ? '<button data-act="query" class="primary" title="不操作页面，把参数填进接口，直接在开着的页面里请求（快）">⚡ 直接请求</button>' : ''}<button data-act="run" title="在页面上重放录制的操作">▶ 回放操作</button><button data-act="open">打开编辑</button><button data-act="export">导出 .js</button><button data-act="pkg" title="带版本号、已脱敏的录制包，可在别的电脑或浏览器资料里导入">导出录制包</button><button data-act="del">删除</button></div>
+    <div class="lib-actions">${x.direct ? '<button data-act="query" class="primary" title="不操作页面，把参数填进接口，直接在开着的页面里请求（快）">⚡ 直接请求</button>' : ''}<button data-act="run" title="在页面上重放录制的操作">▶ 回放操作</button><button data-act="open">打开编辑</button><button data-act="export">导出 .js</button><button data-act="pkg" title="带版本号、已脱敏的录制包，可在别的电脑或浏览器资料里导入">导出录制包</button>${!canShare ? '' : sharedOf(x.id) ? '<button data-act="unshare" title="这个环境不再跟着同步，脚本留在这里；别的环境照旧">停止共享</button>' : '<button data-act="share" title="这台电脑上连着桥接的其他环境（浏览器资料、指纹浏览器）可以接收，之后哪边改了都会同步">共享</button>'}<button data-act="del">删除</button></div>
     <div class="lib-out"></div></div>`).join('');
+}
+function shareTag(sh) {
+  if (!sh) return '';
+  return `<span class="tag share" title="${esc(sh.others.length ? '一起用的环境：' + sh.others.join('、') : '还没有其他环境接收')}">共享${sh.others.length ? ' · ' + sh.others.length : ''}</span>`;
 }
 $('#libList').addEventListener('click', async (e) => {
   const b = e.target.closest('button[data-act]');
@@ -703,8 +822,16 @@ $('#libList').addEventListener('click', async (e) => {
   const id = card.dataset.id;
   const act = b.dataset.act;
   if (act === 'del') {
-    if (!confirm('确定删除这个脚本？')) return;
+    const sh = sharedOf(id);
+    if (!confirm(sh && sh.others.length ? `这条脚本和 ${sh.others.join('、')} 共享，删除后那边没改过的也会一起删掉。只想从这个环境去掉，请先点「停止共享」再删除。\n\n确定删除？` : '确定删除这个脚本？')) return;
     await send({ type: 'libDelete', id });
+  } else if (act === 'share' || act === 'unshare') {
+    b.disabled = true;
+    // 等桥接改完才回：「停止共享」提示完成后马上删除，不会让别的环境跟着删
+    const r = await send({ type: 'libShare', id, on: act === 'share' });
+    b.disabled = false;
+    if (!r || r.error) return toast((act === 'share' ? '共享' : '停止共享') + '失败：' + ((r && r.error) || '后台没有响应'));
+    toast((r.notices || []).join('；') || (act === 'share' ? '已共享：这台电脑上的其他环境可以在脚本库里接收' : '已停止共享：脚本留在这里，不再跟着其他环境更新'));
   } else if (act === 'open') {
     const r = await send({ type: 'libOpen', id });
     if (r.error) return toast(r.error);

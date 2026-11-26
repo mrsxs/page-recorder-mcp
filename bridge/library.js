@@ -121,25 +121,35 @@ function createLibrary(dir) {
   };
 }
 
+const MAX_ITEM_CHARS = 512 * 1024 * 1024; // 一条脚本最多这么大，超过就不收（防止一直不结束的分段把内存占满）
+// tx：这次读取的编号，扩展按它留快照，同一条脚本被两处同时读也各读各的
 async function fetchItem(call, id) {
+  const tx = crypto.randomBytes(8).toString('hex');
   let text = '';
   for (;;) {
-    const r = await call('libraryGet', { id, offset: text.length, limit: CHUNK_CHARS }, 60000);
+    const r = await call('libraryGet', { id, offset: text.length, limit: CHUNK_CHARS, tx }, 60000);
     if (!r || typeof r.chunk !== 'string') return null;
     text += r.chunk;
     if (r.done) return JSON.parse(text);
     if (!r.chunk) throw new Error('读取脚本时没有拿到内容');
+    if (text.length > MAX_ITEM_CHARS) throw new Error('脚本太大');
   }
+}
+// 分段发给扩展，返回最后一段的应答。tx：这次传输的编号，扩展按它拼，同一条脚本同时传两次也不串
+async function sendItem(call, method, id, item, extra) {
+  const text = JSON.stringify(item);
+  const tx = crypto.randomBytes(8).toString('hex');
+  let last = null;
+  for (let i = 0; i < text.length; i += CHUNK_CHARS) {
+    last = await call(method, { ...extra, id, tx, chunk: text.slice(i, i + CHUNK_CHARS), start: i === 0, done: i + CHUNK_CHARS >= text.length }, 60000);
+  }
+  return last;
 }
 // 扩展判断要跳过（已删除、已有更新的）时不算恢复成功
 async function pushItem(lib, call, e) {
   const item = lib.read(e.owner.instanceId, e.id);
   if (!item) return false;
-  const text = JSON.stringify(item);
-  let last = null;
-  for (let i = 0; i < text.length; i += CHUNK_CHARS) {
-    last = await call('libraryRestore', { id: e.id, chunk: text.slice(i, i + CHUNK_CHARS), start: i === 0, done: i + CHUNK_CHARS >= text.length, sourceExtension: e.owner.extensionId || '' }, 60000);
-  }
+  const last = await sendItem(call, 'libraryRestore', e.id, item, { sourceExtension: e.owner.extensionId || '' });
   return !!(last && last.ok && !last.skipped);
 }
 // 一条恢复不了不影响后面的
@@ -213,4 +223,4 @@ async function restoreOwner(lib, conn, call, ownerId, { extensionId, offered, co
   return restored;
 }
 
-module.exports = { createLibrary, syncBrowser, restoreOwner, CHUNK_CHARS };
+module.exports = { createLibrary, syncBrowser, restoreOwner, fetchItem, sendItem, writeAtomic, CHUNK_CHARS };

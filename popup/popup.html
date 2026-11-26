@@ -75,7 +75,16 @@
         <input type="file" id="pkgFile" accept=".json,application/json" hidden />
         <a href="#" id="importInTab" class="hint" title="有的系统上弹出选文件对话框时这个弹窗会被关掉，可以改在标签页里导入">选文件时弹窗被关掉？在标签页中打开</a>
       </div>
+      <details id="lanBox" class="lanbox">
+        <summary>局域网：和另一台电脑传脚本</summary>
+        <label class="row"><input type="checkbox" id="lanOn" /> 让局域网里的另一台电脑读取这台电脑上点了「共享」的脚本（关掉浏览器就自动关闭，下次要重新打开）</label>
+        <div id="lanInfo" class="laninfo" hidden></div>
+        <div class="hint">从另一台电脑读取：填对方弹窗里显示的地址和口令</div>
+        <div class="lanpeer"><input id="lanAddr" placeholder="192.168.1.20:17322" /><input id="lanCode" placeholder="口令" /><button id="lanFetch" class="ghost sm">读取</button></div>
+        <div id="lanList"></div>
+      </details>
       <div id="libOffers" class="notice" hidden></div>
+      <div id="sharedBox" class="notice shared" hidden></div>
       <div id="libList"></div>
       <div id="libEmpty" class="empty" hidden>脚本库为空。录制并停止后会自动保存。</div>
     </div>
@@ -102,6 +111,7 @@
       <h4>本地 AI 桥接服务</h4>
       <label class="row"><input type="checkbox" data-k="bridgeEnabled" /> 连接本地桥接服务（运行 bridge/server.js 后自动连接）</label>
       <label class="row"><input type="checkbox" data-k="autoUpdate" /> 有新版时自动更新扩展（录制、回放中不会更新）</label>
+      <label class="row"><input type="checkbox" data-k="autoReceiveShared" /> 自动接收这台电脑上其他环境共享的脚本（不用在脚本库里逐条点「接收」）</label>
       <label class="row col">地址<input type="text" data-k="bridgeUrl" placeholder="ws://127.0.0.1:17321/ext" /></label>
       <label class="row col">这个浏览器的名称（几个浏览器资料都装了扩展时用来区分：显示在弹窗标题和扩展图标上，AI 用它指定在哪个浏览器执行）<input type="text" data-k="profileLabel" maxlength="40" placeholder="如 主 Chrome / 店铺B" /></label>
       <div class="row"><button id="btnReconnect" class="ghost">重新连接</button><span id="bridgeState" class="hint"></span></div>
