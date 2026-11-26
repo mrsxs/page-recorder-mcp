@@ -84,13 +84,15 @@ function createShared(dir) {
     const now = load().get(item.id) || null;
     const sig = (m) => (m ? `${m.rev}:${!!m.deleted}` : '');
     if (sig(now) !== sig(expected)) throw new Error('共享区刚被另一个桥接进程改过，下一轮再同步');
+    // 成员、记号用刚读到的（版本对得上，但另一个桥接进程可能刚改过成员，比如有环境停止共享）；prev 为 null 是有意当全新的一条
+    const base = prev ? now : null;
     const rev = revOf(item);
     fs.mkdirSync(itemsDir, { recursive: true, mode: 0o700 });
     writeAtomic(itemFile(item.id, rev), JSON.stringify({ format: FORMAT, version: 1, id: item.id, rev, item }));
-    const members = { ...(prev ? prev.members : {}), [env.instanceId]: { rev, at: item.savedAt, profile: env.profile || '' } };
+    const members = { ...(base ? base.members : {}), [env.instanceId]: { rev, at: item.savedAt, profile: env.profile || '' } };
     const others = (x) => Object.fromEntries(Object.entries(x || {}).filter(([k]) => k !== env.instanceId));
-    const keep = others(prev && prev.keep);
-    const left = others(prev && prev.left); // 停止共享过的环境仍旧算停止过，内容碰巧一样也不自动加回去
+    const keep = others(base && base.keep);
+    const left = others(base && base.left); // 停止共享过的环境仍旧算停止过，内容碰巧一样也不自动加回去
     return set({ id: item.id, rev, name: String(item.name || ''), savedAt: item.savedAt, from: { instanceId: env.instanceId, profile: env.profile || '' }, members,
       ...(Object.keys(keep).length ? { keep } : {}), ...(Object.keys(left).length ? { left } : {}) });
   }
@@ -105,7 +107,17 @@ function createShared(dir) {
 const memberOf = (meta, instanceId) => (hasOwn(meta.members, instanceId) ? meta.members[instanceId] : null);
 const withMember = (meta, env, rev, at) => ({ ...meta, members: { ...meta.members, [env.instanceId]: { rev, at, profile: env.profile || '' } } });
 // 发给环境之前先记下「正要写这一版」：写进去了但应答丢了（断线），下一轮按它认出来，不当成这个环境自己改的
-const withPending = (meta, env, rev, at) => ({ ...meta, members: { ...meta.members, [env.instanceId]: { ...memberOf(meta, env.instanceId), pending: { rev, at } } } });
+const withPending = (meta, env, rev, at, keep) => ({ ...meta, members: { ...meta.members, [env.instanceId]: { ...memberOf(meta, env.instanceId), pending: { rev, at, ...(keep ? { keep: true } : {}) } } } });
+// 扩展明确回了没写（正忙、刚改过）：记号作废，不然下一轮可能把这个环境自己的保存误认成那次写入
+function clearPending(store, id, env) {
+  const meta = store.get(id);
+  const member = meta && memberOf(meta, env.instanceId);
+  if (!member || !member.pending) return;
+  const { pending, ...rest } = member;
+  store.set({ ...meta, members: { ...meta.members, [env.instanceId]: rest } });
+}
+// 环境明确要了这一条（接收、重新共享）：停止共享过的记号作废
+const joined = (meta, env, rev, at) => withoutLeft(withMember(meta, env, rev, at), env.instanceId);
 // keep：被别的环境较新的改动盖掉的那个环境，下次同步时先把它自己那份另存一份（值是盖掉它的环境名）
 const keepOf = (meta, instanceId) => (meta.keep && hasOwn(meta.keep, instanceId) ? meta.keep[instanceId] : null);
 function withoutKeep(meta, instanceId) {
@@ -134,6 +146,9 @@ function apply(call, item, opts) {
 // 两个环境都改过：较新的成为共享版本，被盖掉的那份另存在改它的那个环境里，哪边改的都不丢。
 // 返回 'published'（这里的成为共享版本）、'applied'（换成了共享版本）、'failed'（这一轮没办成）
 async function resolveConflict(store, env, call, meta, mine, notices, flags = {}) {
+  // 另一个桥接进程刚换了共享版本：这一轮不处理，下一轮按新的重新比
+  const cur = store.get(meta.id);
+  if (!cur || cur.deleted || cur.rev !== meta.rev) return 'failed';
   const head = store.read(meta.id);
   if (!head) return 'failed';
   const other = labelOf(meta.from);
@@ -146,12 +161,17 @@ async function resolveConflict(store, env, call, meta, mine, notices, flags = {}
     return 'published';
   }
   const copyName = `${mine.name || '脚本'}（本环境的版本）`;
-  const c = await apply(call, mine, { copyName, copyId: copyIdOf(meta.id, revOf(mine), mine.savedAt) });
+  // busyFor：原脚本正在录、正在改就先不另存（不然另存了、换不了，白多一份）
+  const c = await apply(call, mine, { copyName, copyId: copyIdOf(meta.id, revOf(mine), mine.savedAt), busyFor: meta.id });
   if (!c || !c.ok) { flags.busy = flags.busy || !!(c && c.busy); return 'failed'; }
   if (memberOf(store.get(meta.id), env.instanceId)) store.set(withPending(store.get(meta.id), env, meta.rev, head.savedAt));
   const r = await apply(call, head, { expectAt: mine.savedAt });
-  if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return 'failed'; } // 刚又改了、或正在录：副本 id 固定，下一轮不会再存一份
-  store.set(withMember(store.get(meta.id), env, meta.rev, r.savedAt));
+  if (!r || !r.ok) { // 刚又改了、或正在录：副本 id 固定，下一轮不会再存一份
+    if (r) clearPending(store, meta.id, env);
+    flags.busy = flags.busy || !!(r && r.busy);
+    return 'failed';
+  }
+  store.set(joined(store.get(meta.id), env, meta.rev, r.savedAt));
   notices.push(`「${head.name}」在 ${other} 改得更晚：已换成那边的版本，这里改的另存为「${copyName}」`);
   return 'applied';
 }
@@ -162,12 +182,13 @@ async function followDelete(store, env, call, meta, local, notices, flags = {}) 
   const by = meta.deleted.by || '其他环境';
   if (local !== undefined && local === member.at) {
     const r = await call('sharedRemove', { id: meta.id, expectAt: local }, 30000);
-    if (r && r.busy) { flags.busy = true; return; } // 正在录这条，过一会儿再删
+    if (r && r.busy) { flags.busy = true; return false; } // 正在录这条，过一会儿再删（共享区没变）
     notices.push(r && r.ok ? `「${meta.name}」已在 ${by} 删除，这里也删了` : `「${meta.name}」已在 ${by} 删除，这里刚改过，留作本环境的脚本`);
   } else if (local !== undefined) {
     notices.push(`「${meta.name}」已在 ${by} 删除，这里改过，留作本环境的脚本`);
   }
   keepOrPurge(store, withoutMember(meta, env.instanceId));
+  return true;
 }
 
 const hasLeft = (meta, instanceId) => !!(meta.left && hasOwn(meta.left, instanceId));
@@ -178,14 +199,13 @@ const compared = new Set();
 async function syncOne(store, env, call, meta, { local, del, receive, notices, flags = {} }) {
   let member = memberOf(meta, env.instanceId);
   // 上一轮发过去的那一版其实写进去了（保存时间对得上），只是应答没回来：补记上
+  // 当时是先另存了自己那份再换的（keep），那件事也算办完了
   if (member && member.pending && local === member.pending.at) {
-    meta = store.set(withMember(meta, env, member.pending.rev, local));
+    const done = withMember(meta, env, member.pending.rev, local);
+    meta = store.set(member.pending.keep ? withoutKeep(done, env.instanceId) : done);
     member = memberOf(meta, env.instanceId);
   }
-  if (meta.deleted) {
-    if (member) await followDelete(store, env, call, meta, local, notices, flags);
-    return !!member;
-  }
+  if (meta.deleted) return member ? followDelete(store, env, call, meta, local, notices, flags) : false;
   if (!member) {
     if (local !== undefined) return rejoin(store, env, call, meta, local);
     // 删过的不收
@@ -193,7 +213,7 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices, f
     const item = store.read(meta.id);
     const r = item && await apply(call, item, { expectAt: 0 });
     if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return false; }
-    store.set(withMember(store.get(meta.id), env, meta.rev, r.savedAt));
+    store.set(joined(store.get(meta.id), env, meta.rev, r.savedAt));
     return true;
   }
   if (local === undefined) {
@@ -222,9 +242,13 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices, f
       const c = await apply(call, mine, { copyName, copyId: copyIdOf(meta.id, revOf(mine), mine.savedAt) });
       if (!c || !c.ok) { flags.busy = flags.busy || !!(c && c.busy); return false; }
     }
-    store.set(withPending(store.get(meta.id), env, meta.rev, item.savedAt));
+    store.set(withPending(store.get(meta.id), env, meta.rev, item.savedAt, !!by));
     const r = await apply(call, item, { expectAt: local });
-    if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return false; }
+    if (!r || !r.ok) {
+      if (r) clearPending(store, meta.id, env);
+      flags.busy = flags.busy || !!(r && r.busy);
+      return false;
+    }
     store.set(withoutKeep(withMember(store.get(meta.id), env, meta.rev, r.savedAt), env.instanceId));
     if (by) notices.push(`「${item.name}」在 ${by} 改得更晚：已换成那边的版本，这里改的另存为「${copyName}」`);
     return false;
@@ -234,7 +258,12 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices, f
   const mine = await fetchItem(call, meta.id);
   if (!mine || mine.id !== meta.id || mine.savedAt !== local) return false; // 取的时候又改了，下一轮再对
   const rev = revOf(mine);
-  if (rev === meta.rev) { store.set(withMember(meta, env, rev, local)); return false; }
+  // 内容和共享版本一样（只是重新存了一下）：按刚读到的那条记，期间共享版本被另一个桥接进程换了就留到下一轮
+  if (rev === meta.rev) {
+    const cur = store.get(meta.id);
+    if (cur && !cur.deleted && cur.rev === rev) store.set(withMember(cur, env, rev, local));
+    return false;
+  }
   if (member.rev === meta.rev) { store.publish(mine, env, meta); return true; }
   return (await resolveConflict(store, env, call, meta, mine, notices, flags)) === 'published';
 }
@@ -306,12 +335,12 @@ async function shareOn(store, env, call, id, { notices = [] } = {}) {
   if (!isId(id)) throw new Error('脚本 id 不对');
   const mine = await fetchItem(call, id);
   if (!mine || mine.id !== id || !Number.isFinite(mine.savedAt)) throw new Error('这个环境里没有这条脚本');
-  const found = store.get(id);
-  const meta = found && found.left ? store.set(withoutLeft(found, env.instanceId)) : found;
+  const meta = store.get(id);
   // 删过的重新共享：当成全新的一条，删除流程里还没处理完的环境不跟过来（它们手上那份留作自己的脚本）
   if (!meta || meta.deleted) { store.publish(mine, env, null, meta); return true; }
   if (memberOf(meta, env.instanceId)) return false;
-  if (revOf(mine) === meta.rev) { store.set(withMember(meta, env, meta.rev, mine.savedAt)); return true; }
+  if (revOf(mine) === meta.rev) { store.set(joined(meta, env, meta.rev, mine.savedAt)); return true; }
+  // 停止共享过的记号等真共享上了才去掉：换成共享版本时 joined 去掉，这里的较新、发布出去时 publish 去掉
   const r = await resolveConflict(store, env, call, meta, mine, notices);
   if (r === 'failed') throw new Error('这条脚本正在录制或刚改过，等一会儿再点「共享」');
   return true;

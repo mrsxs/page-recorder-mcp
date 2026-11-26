@@ -160,3 +160,19 @@ test('对方一点点慢慢发：整个请求有总时限，不会一直拖着',
     assert.ok(Date.now() - started < 5000);
   } finally { srv.close(); srv.closeAllConnections?.(); }
 });
+
+test('连得上但对方一直不回：提示连不上（查防火墙），不说成「传得太慢」；取消时马上停', async () => {
+  const net = await import('node:net');
+  const silent = net.createServer(() => {}); // 收下连接，什么也不回
+  const p = await port('127.0.0.1');
+  await new Promise((r) => silent.listen(p, '127.0.0.1', r));
+  try {
+    await assert.rejects(lanRequest(`127.0.0.1:${p}`, newCode(), 'list', {}, 1200), /连不上对方/);
+    const ctrl = new AbortController();
+    const pending = lanRequest(`127.0.0.1:${p}`, newCode(), 'list', {}, 10000, ctrl.signal);
+    setTimeout(() => ctrl.abort(), 100);
+    const started = Date.now();
+    await assert.rejects(pending, /已取消/);
+    assert.ok(Date.now() - started < 3000);
+  } finally { silent.close(); }
+});

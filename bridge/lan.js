@@ -221,19 +221,23 @@ function parseAddr(addr) {
   if (!m || !port || port > 65535) throw new Error('地址要写成 IP:端口，比如 192.168.1.20:17322');
   return { host: m[1], port };
 }
-// 名字先解析成地址再查是不是局域网的，然后就连这个地址（不让它两次解析到不同地方）
-async function lanTarget(addr) {
+// 名字先解析成地址再查是不是局域网的，然后就连这个地址（不让它两次解析到不同地方）。解析也算在请求的时限里
+async function lanTarget(addr, ms) {
   const { host, port } = parseAddr(addr);
-  const ip = isLanIp(host) ? host : (await dns.promises.lookup(host, { family: 4 }).catch(() => ({}))).address;
+  const lookup = dns.promises.lookup(host, { family: 4 }).catch(() => ({}));
+  const slow = new Promise((resolve) => { const t = setTimeout(() => resolve({}), ms); t.unref(); });
+  const ip = isLanIp(host) ? host : (await Promise.race([lookup, slow])).address;
   if (!ip) throw new Error(`找不到 ${host} 的地址`);
   if (!isLanIp(ip)) throw new Error(`${host} 不是局域网地址（只能连 192.168.x.x、10.x.x.x、172.16–31.x.x 这类）`);
   return { host: ip, port };
 }
-// timeoutMs 是整个请求的时限（不只是空闲时长）：对方一点点慢慢发也拖不过它
-async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000) {
+// timeoutMs 是整个请求（解析地址、连接、收完）的时限，不只是空闲时长：对方一点点慢慢发也拖不过它。
+// signal：批量接收被取消时用它断掉正在进行的请求
+async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000, signal) {
   if (!validCode(code)) throw new Error('口令是 16 位字母数字（可以带横线），请照对方弹窗里显示的填');
-  timeoutMs = Math.max(1000, Number(timeoutMs) || 15000);
-  const target = await lanTarget(addr);
+  const end = Date.now() + Math.max(1000, Number(timeoutMs) || 15000);
+  const target = await lanTarget(addr, end - Date.now());
+  const left = Math.max(1, end - Date.now());
   const reqKey = keyOf(code, 'req');
   const resKey = keyOf(code, 'res');
   const limit = MAX_RESPONSE[op] || MAX_RESPONSE.list;
@@ -241,7 +245,9 @@ async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000) {
   const body = JSON.stringify(seal(reqKey, { ...params, op, nonce }));
   return new Promise((resolve, reject) => {
     // agent: false 每次新连一条：对方关掉端口后不会拿到池里断掉的旧连接
-    const req = http.request({ host: target.host, port: target.port, path: PATH, method: 'POST', agent: false, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: timeoutMs }, (res) => {
+    let answered = false; // 收到回应头没有：超时时分清是连不上，还是对方发得太慢
+    const req = http.request({ host: target.host, port: target.port, path: PATH, method: 'POST', agent: false, signal, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: left }, (res) => {
+      answered = true;
       const tooBig = () => req.destroy(new Error('对方发来的内容太大'));
       if (Number(res.headers['content-length']) > limit) return tooBig();
       const chunks = [];
@@ -265,11 +271,13 @@ async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000) {
       });
       res.on('error', reject);
     });
-    const overall = setTimeout(() => req.destroy(new Error('对方太久没传完，超时了')), timeoutMs);
+    const unreachable = () => new Error('连不上对方：超时。确认对方开着局域网同步、两台电脑在同一个网络、防火墙允许 node 接收连接');
+    const overall = setTimeout(() => req.destroy(answered ? new Error('对方太久没传完，超时了') : unreachable()), left);
     req.on('close', () => clearTimeout(overall));
-    req.on('timeout', () => req.destroy(new Error('连不上对方：超时。确认对方开着局域网同步、两台电脑在同一个网络、防火墙允许 node 接收连接')));
+    req.on('timeout', () => req.destroy(answered ? new Error('对方太久没传完，超时了') : unreachable()));
     req.on('error', (e) => reject(e.code === 'ECONNREFUSED' ? new Error('对方没有开局域网同步（连接被拒绝）')
-      : e.code === 'ECONNRESET' ? new Error('连接被对方断开了（对方可能刚关了局域网同步）') : e));
+      : e.code === 'ECONNRESET' ? new Error('连接被对方断开了（对方可能刚关了局域网同步）')
+        : e.name === 'AbortError' || e.code === 'ABORT_ERR' ? new Error('已取消') : e));
     req.end(body);
   });
 }

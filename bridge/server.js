@@ -356,7 +356,10 @@ function onExtMessage(conn, text) {
     else runShareSet(conn, m.id, m.on === true).catch((e) => callConn(conn, 'sharedState', { notices: [`${m.on === true ? '共享' : '停止共享'}失败：${e.message}`] }, 10000).catch(() => {}));
   } else if (m.type === 'event' && m.event === 'cancel') {
     // 扩展不等某个请求了（超时）：还在跑的批量接收看到就停
-    if (typeof m.req === 'string' && m.req.length <= 64) conn.lanCancel = new Set([...(conn.lanCancel || []), m.req].slice(-20));
+    if (typeof m.req === 'string' && m.req.length <= 64) {
+      conn.lanCancel = new Set([...(conn.lanCancel || []), m.req].slice(-20));
+      if (conn.lanAbort && conn.lanAbort.req === m.req) conn.lanAbort.ctrl.abort(); // 正在下载的那一条也断掉
+    }
   } else if (m.type === 'event' && typeof m.event === 'string' && Object.hasOwn(LAN_EVENTS, m.event)) {
     replyTo(conn, m.req, () => LAN_EVENTS[m.event](conn, m));
   } else if (m.type === 'event' && m.event === 'sharedReceive') {
@@ -387,11 +390,12 @@ function waitExt(ms) {
 function browserInfo(conn) { return { instanceId: conn.instanceId, profile: conn.profile || '' }; }
 // 给 AI 选浏览器用的值：资料名在所有浏览器里唯一就用资料名，没起名或重名的用 instanceId（按资料名找重名时会报错）
 function browserChoices(list, all) {
-  const low = (x) => String(x || '').toLowerCase();
+  const name = (b) => String(b.profile || '').trim();
+  const low = (x) => String(x || '').trim().toLowerCase();
   const ids = new Set(all.map((b) => low(b.instanceId)));
   const count = (p) => all.filter((b) => low(b.profile) === low(p)).length;
-  // 资料名不分大小写也唯一、又不和任何 instanceId 撞的才用资料名；还撞就全用 instanceId
-  const picks = list.map((b) => (b.profile && count(b.profile) === 1 && !ids.has(low(b.profile)) ? b.profile : b.instanceId));
+  // 资料名（去掉首尾空白）不分大小写也唯一、又不和任何 instanceId 撞的才用资料名；还撞就全用 instanceId
+  const picks = list.map((b) => (name(b) && count(name(b)) === 1 && !ids.has(low(name(b))) ? name(b) : b.instanceId));
   return new Set(picks.map(low)).size === picks.length ? picks : list.map((b) => b.instanceId);
 }
 function browserLabel(conn) { return `${conn.profile ? '「' + conn.profile + '」' : '（未命名资料）'} instanceId=${conn.instanceId || '待定'}`; }
@@ -399,8 +403,9 @@ function browserList(conns) {
   return conns.map((c) => '  · ' + browserLabel(c)).join('\n') + '\n调用时传 browser 参数指定（填 instanceId 或资料名）。';
 }
 // 按 browser 参数（instanceId 或资料名）找连接；找不到返回空数组，资料名重名时返回多个
-// 「id:<instanceId>」只按 instanceId 找，不退回按资料名找：几个浏览器都有的脚本按选项精确发，目标断线时不会落到同名的别的浏览器
-const EXACT_ID = 'id:';
+// 开头是这个记号的只按 instanceId 找，不退回按资料名找：脚本拆出的工具按 id 精确发，目标断线时不会落到同名的别的浏览器。
+// 用 \u0000 开头，资料名（设置里填的）不会是这个样子，不占用正常的名字
+const EXACT_ID = '\u0000id:';
 function findBrowser(ref) {
   const r = String(ref).trim();
   const all = [...instances.values()];
@@ -783,11 +788,14 @@ async function runSharedSync(conn) {
     throw e;
   }
   if (r.changed) sharedChanged(conn);
-  // 编辑区正忙（录制、编辑中）没做成的：忙完不一定有新改动来触发，过 30 秒自己再来一轮
-  if (r.busy) {
-    clearTimeout(conn.sharedRetry);
-    conn.sharedRetry = setTimeout(() => scheduleSharedSync(conn), SHARED_RETRY_MS);
-  }
+  if (r.busy) retryShared(conn, receive);
+}
+// 编辑区正忙（录制、编辑中）没做成的：忙完不一定有新改动来触发，过 30 秒自己再来一轮。
+// 用户点过的接收也留着（已经收到的成了在用的，下一轮自然跳过）
+function retryShared(conn, receive) {
+  if (receive && receive.size) conn.sharedReceive = new Set([...receive, ...(conn.sharedReceive || [])]);
+  clearTimeout(conn.sharedRetry);
+  conn.sharedRetry = setTimeout(() => scheduleSharedSync(conn), SHARED_RETRY_MS);
 }
 const SHARED_RETRY_MS = Number(process.env.PR_SHARED_RETRY_MS) || 30000;
 // 共享 / 停止共享：改完、再和这个环境对一次才回（弹窗等它回了才算完成：「停止共享」后马上删除不能被当成在共享时删的）
@@ -798,6 +806,7 @@ async function runShareSet(conn, id, on) {
   if (changed) sharedChanged(conn);
   const r = await sharedTask(() => syncEnv(shared, envOf(conn), connCall(conn), { log }));
   if (r.changed) sharedChanged(conn);
+  if (r.busy) retryShared(conn);
   if (notices.length) callConn(conn, 'sharedState', { notices }, 10000).catch(() => {});
   return { notices, state: r.state };
 }
@@ -901,27 +910,31 @@ const LAN_EVENTS = {
     // 开始时报一次、每做完一条报一次：扩展按「多久没进展」算超时，批量大也不会误报桥接没回应
     const progress = () => callConn(conn, 'bridgeProgress', { req: m.req, done: out.received.length + out.failed.length - skipped, total: batch.length, received: out.received.length }, 10000).catch(() => {});
     const cancelled = () => !!(conn.lanCancel && conn.lanCancel.has(m.req));
+    const ctrl = new AbortController();
+    // 往扩展分段写的时候每段之前也看一眼：取消了、整批超时了就不写了
+    const stop = () => (conn.dead ? '浏览器连接断开了' : cancelled() ? '已取消（弹窗不等了）' : Date.now() > deadline ? '这一批太久了，剩下的没接收' : '');
     progress();
     conn.lanReceiving = true;
+    conn.lanAbort = { req: m.req, ctrl };
     try {
       for (const [i, id] of batch.entries()) {
         const left = deadline - Date.now();
         // 断开了、扩展不等了、整批超时：剩下的一起记失败，不再一条条报进度
-        const stop = conn.dead ? '浏览器连接断开了' : cancelled() ? '已取消（弹窗不等了）' : left < 1000 ? '这一批太久了，剩下的没接收' : '';
-        if (stop) { out.failed.push(...batch.slice(i).map((x) => ({ id: x, error: stop }))); break; }
+        const why = left < 1000 ? '这一批太久了，剩下的没接收' : stop();
+        if (why) { out.failed.push(...batch.slice(i).map((x) => ({ id: x, error: why }))); break; }
         try {
           const want = Object.hasOwn(expect, id) && Number.isFinite(expect[id]) ? expect[id] : 0;
-          const { item } = await lanRequest(addr, code, 'get', { id }, Math.min(120000, left));
+          const { item } = await lanRequest(addr, code, 'get', { id }, Math.min(120000, left), ctrl.signal);
           if (!item || typeof item !== 'object' || item.id !== id) throw new Error('对方发来的不是这条脚本');
-          if (conn.dead || cancelled()) throw new Error(conn.dead ? '浏览器连接断开了' : '已取消（弹窗不等了）');
-          const r = await sendItem(call, 'sharedApply', id, item, { expectAt: want, fromLan: true });
+          const r = await sendItem(call, 'sharedApply', id, item, { expectAt: want, fromLan: true }, stop);
           if (!r || !r.ok) throw new Error(r && r.busy ? '这个浏览器正在录制或编辑这条脚本' : '这个浏览器里的这条在你确认后变过，没有覆盖；刷新后重新接收');
           out.received.push({ id });
-        } catch (e) { out.failed.push({ id, error: e.message }); }
-        if (!conn.dead) progress();
+        } catch (e) { out.failed.push({ id, error: cancelled() ? '已取消（弹窗不等了）' : e.message }); }
+        if (!conn.dead && !cancelled()) progress();
       }
     } finally {
       conn.lanReceiving = false;
+      conn.lanAbort = null;
       if (conn.lanCancel) conn.lanCancel.delete(m.req);
     }
     return out;
@@ -1346,7 +1359,7 @@ async function dynamicTools(quick) {
     const pick = pickFrom.length > 1 ? browserChoices(pickFrom, allBrowsers) : null;
     const base = slug(r.slug || r.name, 'rec_' + String(r.id).slice(0, 6));
     const where = pick ? ` · 浏览器 ${pick.join('、')}` : multi && r.browser ? ` · 浏览器 ${r.browser.profile || r.browser.instanceId}` : '';
-    const browser = !pick && r.browser ? r.browser.instanceId : '';
+    const browser = !pick && r.browser ? EXACT_ID + r.browser.instanceId : '';
     // 加上选浏览器的参数（和脚本自己的参数重名时换个名字）
     const withPick = (schema, info) => {
       if (!pick) return { schema, info };

@@ -135,12 +135,15 @@ async function fetchItem(call, id) {
     if (text.length > MAX_ITEM_CHARS) throw new Error('脚本太大');
   }
 }
-// 分段发给扩展，返回最后一段的应答。tx：这次传输的编号，扩展按它拼，同一条脚本同时传两次也不串
-async function sendItem(call, method, id, item, extra) {
+// 分段发给扩展，返回最后一段的应答。tx：这次传输的编号，扩展按它拼，同一条脚本同时传两次也不串。
+// stop：每段发之前问一下，返回原因（取消、超时）就不发了，扩展那边的半截过一会儿自己清掉
+async function sendItem(call, method, id, item, extra, stop) {
   const text = JSON.stringify(item);
   const tx = crypto.randomBytes(8).toString('hex');
   let last = null;
   for (let i = 0; i < text.length; i += CHUNK_CHARS) {
+    const why = stop && stop();
+    if (why) throw new Error(why);
     last = await call(method, { ...extra, id, tx, chunk: text.slice(i, i + CHUNK_CHARS), start: i === 0, done: i + CHUNK_CHARS >= text.length }, 60000);
   }
   return last;
