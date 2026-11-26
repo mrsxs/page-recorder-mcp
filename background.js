@@ -2263,15 +2263,16 @@ function validLibItem(x) {
 }
 function libraryChunk(id, item, offset, limit, tx) {
   const key = typeof tx === 'string' && tx ? tx.slice(0, 64) : id; // 旧版桥接不带 tx
+  const start = Math.max(0, Number(offset) || 0);
   let snap = libExports.get(key);
-  if (offset && snap && snap.id !== id) snap = null;
-  if (offset && !snap && tx) throw new Error('分段读取中断了，请重新读取');
-  if (!snap || !offset) {
+  if (start && snap && snap.id !== id) snap = null;
+  // 读到一半快照没了（过期清掉、扩展后台重启过）：说中断，不拿现在的内容切后半截拼成坏的
+  if (start && !snap) throw new Error('分段读取中断了，请重新读取');
+  if (!snap || !start) {
     // 和录制包同样脱敏，并清掉密码框的值，不看这条录制自己的开关：这个目录会长期留在磁盘上
     const { item: clean } = packageOf({ ...PR_EXPORTER.scrubBackup(item), settings: DEFAULT_SETTINGS });
     snap = { id, at: Date.now(), text: JSON.stringify({ ...clean, id: item.id, savedAt: item.savedAt, imported: !!item.imported }) };
   }
-  const start = Math.max(0, Number(offset) || 0);
   const end = start + Math.min(8e6, Math.max(1, Number(limit) || 4e6));
   const done = end >= snap.text.length;
   const chunk = snap.text.slice(start, end);
@@ -2333,6 +2334,8 @@ function applySharedItem(c, raw, p) {
     const cur = c.libIndex.find((x) => x.id === id);
     // 副本已经存过（同一次冲突重试）、或用户删掉了：不再存
     if (copyName && (cur || deleted)) return { ok: true, id, existed: true };
+    // 另存是为了接着把原脚本换掉：原脚本正在录、正在改就先都不做，免得另存了、换不了
+    if (copyName && typeof p.busyFor === 'string' && editorBusy(c, p.busyFor)) return { ok: false, busy: true };
     if (!copyName && (cur ? cur.savedAt : 0) !== (Number(p.expectAt) || 0)) return { ok: false, changed: true };
     if (editorBusy(c, id)) return { ok: false, busy: true };
     const open = c.state.id === id;
@@ -2343,8 +2346,9 @@ function applySharedItem(c, raw, p) {
       const step = e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e;
       return fromLan && step.kind === 'step' ? PR_EXPORTER.bareStep(step) : step;
     });
-    const apiOverrides = raw.apiOverrides && typeof raw.apiOverrides === 'object' ? raw.apiOverrides : {};
-    const aiDocs = raw.aiDocs && typeof raw.aiDocs === 'object' ? raw.aiDocs : {};
+    const plainObj = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {});
+    const apiOverrides = plainObj(raw.apiOverrides);
+    const aiDocs = plainObj(raw.aiDocs);
     if (fromLan) {
       try { PR_EXPORTER.analyze(events, c.settings, raw.state, apiOverrides, aiDocs); } catch (e) { throw new Error('另一台电脑发来的脚本内容不对，分析不了：' + e.message); }
     }

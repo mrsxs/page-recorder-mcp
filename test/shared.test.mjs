@@ -51,6 +51,7 @@ function fakeEnv(instanceId, items = [], { auto = false, profile } = {}) {
       if (p.copyName) {
         const id = p.copyId;
         if (lib.has(id) || deleted.has(id)) return { ok: true, id, existed: true };
+        if (p.busyFor && e.recording === p.busyFor) return { ok: false, busy: true };
         const savedAt = tick();
         lib.set(id, { ...raw, id, name: p.copyName, savedAt });
         return { ok: true, id, savedAt };
@@ -882,5 +883,140 @@ test('另一个桥接进程刚改过：这边拿着旧的那条不发布，下�
     await sync(one, a);
     assert.throws(() => two.publish({ ...a.lib.get('x'), name: '二号拿旧的发' }, a.env, stale), /另一个桥接进程/);
     assert.equal(createShared(dir).get('x').name, '一号改的');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('扩展明确回了没写（正忙）：待写入的记号清掉；应答丢了补记时，另存的事也算办完，之后不再多存', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b');
+    await share(store, a, 'x');
+    await sync(store, b, ['x']);
+    a.edit('x', { name: 'A 改' });
+    await sync(store, a);
+    b.recording = 'x';
+    await sync(store, b);
+    assert.equal(store.get('x').members.b.pending, undefined, '正忙没写进去：不留记号');
+    b.recording = null;
+
+    // B 改得更晚盖掉 A：A 下次先另存自己那份再换，换的那次应答丢了
+    await sync(store, b);
+    a.edit('x', { name: 'A 先改' });
+    b.edit('x', { name: 'B 后改' });
+    await sync(store, a); // A 先发布
+    await sync(store, b); // B 改得更晚：B 的成为共享版本，记下 A 下次要先另存
+    assert.equal(store.get('x').keep.a, '环境b');
+    const call = a.call;
+    a.call = async (m, p) => { const r = await call(m, p); if (m === 'sharedApply' && p.done && !p.copyName) throw new Error('浏览器扩展连接已断开'); return r; };
+    await sync(store, a).catch(() => {});
+    a.call = call;
+    await sync(store, a);
+    assert.equal(store.get('x').keep, undefined, '补记时把「要另存」的记号也清掉');
+    const copies = () => names(a).filter((n) => /本环境的版本/.test(n)).length;
+    assert.equal(copies(), 1);
+    b.edit('x', { name: 'B 再改' });
+    await sync(store, b);
+    a.notices.length = 0;
+    await sync(store, a);
+    assert.equal(a.lib.get('x').name, 'B 再改');
+    assert.equal(copies(), 1, '普通的更新不再多存一份');
+    assert.deepEqual(a.notices, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('停止共享过的环境点「共享」时原脚本正忙：不另存、不清掉停止共享的记号；跟着删除时正忙不算共享区变了', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b');
+    await share(store, a, 'x');
+    await sync(store, b, ['x']);
+    shareOff(store, b.env, 'x');
+    b.edit('x', { name: 'B 先改' });
+    a.edit('x', { name: 'A 后改' });
+    await sync(store, a);
+    b.recording = 'x';
+    await assert.rejects(share(store, b, 'x'), /正在录制或刚改过/);
+    assert.deepEqual(names(b), ['B 先改'], '没有多出副本');
+    assert.ok(store.get('x').left.b, '停止共享的记号还在');
+    b.recording = null;
+    await share(store, b, 'x');
+    assert.equal(store.get('x').left, undefined);
+
+    const c = fakeEnv('c');
+    await sync(store, c, ['x']);
+    a.remove('x');
+    await sync(store, a);
+    c.recording = 'x';
+    const r = await sync(store, c);
+    assert.equal(r.busy, true);
+    assert.equal(r.changed, false, '没删成：共享区没变，不用让别的环境空跑');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('另一个桥接进程刚改了成员（停止共享）：这边发布时用最新的成员，不把它改回去', async () => {
+  const dir = tmp();
+  try {
+    const one = createShared(dir);
+    const two = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b');
+    await share(one, a, 'x');
+    await sync(one, b, ['x']);
+    const stale = two.get('x');
+    shareOff(one, b.env, 'x');
+    a.edit('x', { name: 'A 改' });
+    two.publish(a.lib.get('x'), a.env, stale);
+    const now = createShared(dir).get('x');
+    assert.equal(now.members.b, undefined, 'B 停止共享没被撤销');
+    assert.ok(now.left.b);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('分段发给扩展：每段前问一下，取消了就不再发', async () => {
+  const { sendItem, CHUNK_CHARS } = require('../bridge/library.js');
+  const big = item('x', 1, { description: 'z'.repeat(CHUNK_CHARS * 2) });
+  let calls = 0;
+  let stopped = '';
+  await assert.rejects(sendItem(async () => { calls++; stopped = '已取消'; return { ok: true }; }, 'sharedApply', 'x', big, {}, () => stopped), /已取消/);
+  assert.equal(calls, 1, '第一段发出后取消，后面的不发');
+});
+
+test('被盖掉要另存的环境同步时原脚本正忙：先不另存；重新共享时应答丢了，下一轮补记成在用', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b');
+    await share(store, a, 'x');
+    await sync(store, b, ['x']);
+    a.edit('x', { name: 'A 先改' });
+    b.edit('x', { name: 'B 后改' });
+    await sync(store, a);
+    await sync(store, b);
+    assert.equal(store.get('x').keep.a, '环境b');
+    a.recording = 'x';
+    assert.equal((await sync(store, a)).busy, true);
+    assert.deepEqual(names(a), ['A 先改'], '原脚本正忙：不先另存一份');
+    a.recording = null;
+    await sync(store, a);
+    assert.deepEqual(names(a), ['A 先改（本环境的版本）', 'B 后改']);
+
+    // B 停止共享、改了更早的一版；A 后改。B 再点共享：换成 A 的那次写进去了但应答丢了
+    shareOff(store, b.env, 'x');
+    b.edit('x', { name: 'B 又改' });
+    a.edit('x', { name: 'A 最后改' });
+    await sync(store, a);
+    const call = b.call;
+    b.call = async (m, p) => { const r = await call(m, p); if (m === 'sharedApply' && p.done && !p.copyName) throw new Error('浏览器扩展连接已断开'); return r; };
+    await assert.rejects(share(store, b, 'x'));
+    b.call = call;
+    assert.equal(b.lib.get('x').name, 'A 最后改', '其实已经换了');
+    await sync(store, b);
+    assert.deepEqual(b.state.shared.map((x) => x.id), ['x'], '下一轮认出来，算在用');
+    assert.equal(store.get('x').left, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

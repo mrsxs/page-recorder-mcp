@@ -1,6 +1,6 @@
 {
   "name": "page-recorder-mcp",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "description": "Record clicks and the fetch/XHR APIs behind them in your logged-in Chrome (including cross-origin iframes), then let AI tools replay them or call the APIs directly through MCP / HTTP. Zero dependencies. 录制页面操作和接口（含跨域 iframe），让 Claude Code、Accio 等 AI 工具通过 MCP / HTTP 在你已登录的浏览器里回放，或直接调用接口。",
   "keywords": [
     "mcp",
