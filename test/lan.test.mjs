@@ -176,3 +176,11 @@ test('连得上但对方一直不回：提示连不上（查防火墙），不�
     assert.ok(Date.now() - started < 3000);
   } finally { silent.close(); }
 });
+
+test('填主机名时取消也马上停（不等解析）', async () => {
+  const ctrl = new AbortController();
+  ctrl.abort();
+  const started = Date.now();
+  await assert.rejects(lanRequest('some-host.invalid:17322', newCode(), 'list', {}, 10000, ctrl.signal), /已取消/);
+  assert.ok(Date.now() - started < 1000);
+});

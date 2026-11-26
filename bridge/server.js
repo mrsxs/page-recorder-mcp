@@ -301,7 +301,7 @@ function register(conn, instanceId, info) {
   // 等 hello 超时先按匿名登记了，后来才收到 hello：从匿名位置挪走
   if (conn.instanceId && instances.get(conn.instanceId) === conn) instances.delete(conn.instanceId);
   conn.instanceId = instanceId;
-  conn.profile = String(info.profile || '');
+  conn.profile = String(info.profile || '').trim(); // 首尾空白去掉：工具选项、按名字找浏览器、断线等重连都用同一个名字
   conn.version = String(info.version || '');
   conn.capabilities = capabilitiesOf(info);
   const old = instances.get(instanceId);
@@ -403,13 +403,9 @@ function browserList(conns) {
   return conns.map((c) => '  · ' + browserLabel(c)).join('\n') + '\n调用时传 browser 参数指定（填 instanceId 或资料名）。';
 }
 // 按 browser 参数（instanceId 或资料名）找连接；找不到返回空数组，资料名重名时返回多个
-// 开头是这个记号的只按 instanceId 找，不退回按资料名找：脚本拆出的工具按 id 精确发，目标断线时不会落到同名的别的浏览器。
-// 用 \u0000 开头，资料名（设置里填的）不会是这个样子，不占用正常的名字
-const EXACT_ID = '\u0000id:';
 function findBrowser(ref) {
   const r = String(ref).trim();
   const all = [...instances.values()];
-  if (r.startsWith(EXACT_ID)) return all.filter((c) => c.instanceId === r.slice(EXACT_ID.length));
   let hit = all.filter((c) => c.instanceId === r);
   if (!hit.length) hit = all.filter((c) => c.profile && c.profile === r);
   if (!hit.length) hit = all.filter((c) => c.profile && c.profile.toLowerCase() === r.toLowerCase());
@@ -418,13 +414,12 @@ function findBrowser(ref) {
 // 指定的浏览器可能正在重连（service worker 最多 30 秒唤醒一次）：最近连过的才等，填错的直接报错
 const recentlySeen = new Map(); // instanceId -> { profile, at }
 function seenRecently(ref) {
-  const exact = String(ref).trim().startsWith(EXACT_ID);
-  const r = String(ref).trim().toLowerCase().slice(exact ? EXACT_ID.length : 0);
+  const r = String(ref).trim().toLowerCase();
   const now = Date.now();
   let hit = false;
   for (const [id, x] of recentlySeen) {
     if (now - x.at >= 10 * 60000) { recentlySeen.delete(id); continue; }
-    if (!hit && (id.toLowerCase() === r || (!exact && x.profile && x.profile.toLowerCase() === r))) hit = true;
+    if (!hit && (id.toLowerCase() === r || (x.profile && x.profile.toLowerCase() === r))) hit = true;
   }
   return hit;
 }
@@ -1359,7 +1354,7 @@ async function dynamicTools(quick) {
     const pick = pickFrom.length > 1 ? browserChoices(pickFrom, allBrowsers) : null;
     const base = slug(r.slug || r.name, 'rec_' + String(r.id).slice(0, 6));
     const where = pick ? ` · 浏览器 ${pick.join('、')}` : multi && r.browser ? ` · 浏览器 ${r.browser.profile || r.browser.instanceId}` : '';
-    const browser = !pick && r.browser ? EXACT_ID + r.browser.instanceId : '';
+    const browser = !pick && r.browser ? r.browser.instanceId : '';
     // 加上选浏览器的参数（和脚本自己的参数重名时换个名字）
     const withPick = (schema, info) => {
       if (!pick) return { schema, info };
@@ -2027,7 +2022,9 @@ async function callTool(name, args, ctx) {
         const ids = Object.values(info.browserTarget);
         const id = Object.hasOwn(info.browserTarget, v) ? info.browserTarget[v] : ids.includes(v) ? v : '';
         if (!id) throw new Error(`脚本「${info.name}」在 ${info.browsers.length} 个浏览器里都有，请用 ${info.browserArg} 参数指定在哪个执行（只能是这几个）：${info.browsers.join('、')}`);
-        target = EXACT_ID + id;
+        // 直接传 instanceId（不加别的记号）：新版 AI 工具进程转给还在跑的旧版后台桥接时也认得。
+        // 按 id 查找排在按资料名前面；选项又保证不和任何 instanceId 撞名，发不错
+        target = id;
         rest = Object.fromEntries(Object.entries(args).filter(([k]) => k !== info.browserArg));
       }
       if (info.kind === 'run') {

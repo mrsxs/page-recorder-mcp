@@ -221,12 +221,23 @@ function parseAddr(addr) {
   if (!m || !port || port > 65535) throw new Error('地址要写成 IP:端口，比如 192.168.1.20:17322');
   return { host: m[1], port };
 }
-// 名字先解析成地址再查是不是局域网的，然后就连这个地址（不让它两次解析到不同地方）。解析也算在请求的时限里
-async function lanTarget(addr, ms) {
+// 名字先解析成地址再查是不是局域网的，然后就连这个地址（不让它两次解析到不同地方）。
+// 填的就是 IP 不用解析；解析算在请求的时限里，取消了马上停
+async function lanTarget(addr, ms, signal) {
   const { host, port } = parseAddr(addr);
-  const lookup = dns.promises.lookup(host, { family: 4 }).catch(() => ({}));
-  const slow = new Promise((resolve) => { const t = setTimeout(() => resolve({}), ms); t.unref(); });
-  const ip = isLanIp(host) ? host : (await Promise.race([lookup, slow])).address;
+  if (isLanIp(host)) return { host, port };
+  let timer = null;
+  let onAbort = null;
+  const ip = await new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new Error('已取消'));
+    timer = setTimeout(() => reject(new Error(`解析 ${host} 超时，换成对方的 IP 地址试试`)), Math.max(1, ms));
+    onAbort = () => reject(new Error('已取消'));
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    dns.promises.lookup(host, { family: 4 }).then((x) => resolve(x.address), () => resolve(''));
+  }).finally(() => {
+    clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+  });
   if (!ip) throw new Error(`找不到 ${host} 的地址`);
   if (!isLanIp(ip)) throw new Error(`${host} 不是局域网地址（只能连 192.168.x.x、10.x.x.x、172.16–31.x.x 这类）`);
   return { host: ip, port };
@@ -236,7 +247,7 @@ async function lanTarget(addr, ms) {
 async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000, signal) {
   if (!validCode(code)) throw new Error('口令是 16 位字母数字（可以带横线），请照对方弹窗里显示的填');
   const end = Date.now() + Math.max(1000, Number(timeoutMs) || 15000);
-  const target = await lanTarget(addr, end - Date.now());
+  const target = await lanTarget(addr, end - Date.now(), signal);
   const left = Math.max(1, end - Date.now());
   const reqKey = keyOf(code, 'req');
   const resKey = keyOf(code, 'res');

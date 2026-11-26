@@ -984,3 +984,39 @@ test('分段发给扩展：每段前问一下，取消了就不再发', async ()
   await assert.rejects(sendItem(async () => { calls++; stopped = '已取消'; return { ok: true }; }, 'sharedApply', 'x', big, {}, () => stopped), /已取消/);
   assert.equal(calls, 1, '第一段发出后取消，后面的不发');
 });
+
+test('被盖掉要另存的环境同步时原脚本正忙：先不另存；重新共享时应答丢了，下一轮补记成在用', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b');
+    await share(store, a, 'x');
+    await sync(store, b, ['x']);
+    a.edit('x', { name: 'A 先改' });
+    b.edit('x', { name: 'B 后改' });
+    await sync(store, a);
+    await sync(store, b);
+    assert.equal(store.get('x').keep.a, '环境b');
+    a.recording = 'x';
+    assert.equal((await sync(store, a)).busy, true);
+    assert.deepEqual(names(a), ['A 先改'], '原脚本正忙：不先另存一份');
+    a.recording = null;
+    await sync(store, a);
+    assert.deepEqual(names(a), ['A 先改（本环境的版本）', 'B 后改']);
+
+    // B 停止共享、改了更早的一版；A 后改。B 再点共享：换成 A 的那次写进去了但应答丢了
+    shareOff(store, b.env, 'x');
+    b.edit('x', { name: 'B 又改' });
+    a.edit('x', { name: 'A 最后改' });
+    await sync(store, a);
+    const call = b.call;
+    b.call = async (m, p) => { const r = await call(m, p); if (m === 'sharedApply' && p.done && !p.copyName) throw new Error('浏览器扩展连接已断开'); return r; };
+    await assert.rejects(share(store, b, 'x'));
+    b.call = call;
+    assert.equal(b.lib.get('x').name, 'A 最后改', '其实已经换了');
+    await sync(store, b);
+    assert.deepEqual(b.state.shared.map((x) => x.id), ['x'], '下一轮认出来，算在用');
+    assert.equal(store.get('x').left, undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
