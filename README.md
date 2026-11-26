@@ -241,7 +241,7 @@ REST 接口（`/api/recordings/…/run`、`/call`）照旧返回完整的原始�
 
 反过来，扩展不核对连上的是不是你的桥接：本机有程序抢先占住 17321 端口，扩展就会连上它、执行它发来的回放和调用。这一点不防，因为能这么做的一般是以你的身份运行的程序，它本来就能直接读你的文件和浏览器 Cookie。`--token` 防的是别的程序冒充扩展连桥接，防不了冒充桥接（口令是扩展连接时带过去的）。多人共用一台电脑时，不用的时候在扩展「设置」里关掉桥接连接。
 
-自动更新时，桥接把自己这个 npm 包里的扩展文件写进扩展目录。npm 包由 GitHub Actions 带构建证明（provenance）发布，可以用 `npm audit signatures` 核验；不想自动更新的设 `PR_AUTO_UPDATE=0`，或在 AI 工具的配置里固定版本号（`npx page-recorder-mcp@1.8.1`）。
+自动更新时，桥接把自己这个 npm 包里的扩展文件写进扩展目录。npm 包由 GitHub Actions 带构建证明（provenance）发布，可以用 `npm audit signatures` 核验；不想自动更新的设 `PR_AUTO_UPDATE=0`，或在 AI 工具的配置里固定版本号（`npx page-recorder-mcp@1.9.0`）。
 
 可以直接对 Claude Code 说：
 > 用 page-recorder 看看脚本库，分析「商品搜索下单」每个接口是做什么的，把说明保存回去，然后搜索 macbook 第 2 页给我看结果。
