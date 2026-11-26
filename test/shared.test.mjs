@@ -15,6 +15,11 @@ import http from 'node:http';
 const require = createRequire(import.meta.url);
 const { createShared, syncEnv, shareOn, shareOff } = require('../bridge/shared.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+// 让系统给一个空闲端口：随机挑的可能落在 Windows 保留给系统的端口段里（监听报 EACCES）
+const freePort = () => new Promise((resolve, reject) => {
+  const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+  s.once('error', reject);
+});
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), 'pr-shared-')));
 const item = (id, savedAt, extra) => ({ id, name: `脚本 ${id}`, savedAt, state: { id, startUrl: 'https://app.test/' }, events: [{ kind: 'step', ts: 1, type: 'navigate', url: 'https://app.test/' }], ...extra });
 
@@ -631,7 +636,7 @@ async function until(fn, what, ms = 8000) {
 test('桥接：一个环境共享，另一个接收；之后改动自动同步；AI 工具只列一套、要指定浏览器', async () => {
   const dir = tmp();
   writeFileSync(join(dir, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef'] }));
-  const port = 20000 + Math.floor(Math.random() * 12000);
+  const port = await freePort();
   const p = spawn(process.execPath, [join(root, 'bridge', 'server.js'), '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PR_BRIDGE_DIR: dir, PR_AUTO_UPDATE: '0' } });
   const a = fakeEnv('envA', [item('x', tick())]);
   const b = fakeEnv('envB');
@@ -714,7 +719,7 @@ test('桥接：一个环境共享，另一个接收；之后改动自动同步�
 async function startBridge(env = {}) {
   const dir = tmp();
   writeFileSync(join(dir, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef'] }));
-  const port = 20000 + Math.floor(Math.random() * 12000);
+  const port = await freePort();
   const p = spawn(process.execPath, [join(root, 'bridge', 'server.js'), '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PR_BRIDGE_DIR: dir, PR_AUTO_UPDATE: '0', ...env } });
   await new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('启动超时')), 10000);
@@ -725,7 +730,7 @@ async function startBridge(env = {}) {
 }
 
 test('局域网：一台开开关显示地址口令，另一台凭口令读共享脚本、复制一份；开开关的浏览器关了端口就关', async () => {
-  const lanPort = 33000 + Math.floor(Math.random() * 20000);
+  const lanPort = await freePort();
   const host = await startBridge({ PR_LAN_PORT: String(lanPort), PR_LAN_GRACE_MS: '400' });
   const guest = await startBridge();
   const a = fakeEnv('macA', [item('x', tick(), { events: [{ kind: 'step', ts: 1, type: 'upload', value: '/Users/me/a.png', recordedValue: '/Users/me/a.png' }] }), item('private', tick())]);
@@ -781,7 +786,7 @@ test('局域网：一台开开关显示地址口令，另一台凭口令读共�
         res.end(JSON.stringify(seal(keyOf(fakeCode, 'res'), { nonce: msg.nonce, ok: true, result: { device: '\u0007 ', scripts } })));
       });
     });
-    const peerPort = 33000 + Math.floor(Math.random() * 20000);
+    const peerPort = await freePort();
     await new Promise((resolve) => peer.listen(peerPort, '127.0.0.1', resolve));
     try {
       const odd = await w.request('lanList', { addr: `127.0.0.1:${peerPort}`, code: fakeCode });

@@ -6,7 +6,11 @@ import http from 'node:http';
 
 const require = createRequire(import.meta.url);
 const { createLanServer, lanRequest, newCode, normCode, validCode, showCode, keyOf, seal, open, parseAddr } = require('../bridge/lan.js');
-const port = () => 33000 + Math.floor(Math.random() * 20000) % 20000;
+// 让系统给一个空闲端口：随机挑的可能落在 Windows 保留给系统的端口段里（监听报 EACCES）
+const port = (host = '0.0.0.0') => new Promise((resolve, reject) => {
+  const s = http.createServer().listen(0, host, () => { const { port: p } = s.address(); s.close(() => resolve(p)); });
+  s.once('error', reject);
+});
 const store = (metas, items) => ({ list: () => metas, read: (id) => items[id] || null });
 
 test('口令：16 位、能带横线小写空格，派生的密钥只有同一口令解得开，改过的内容解不开', () => {
@@ -34,7 +38,7 @@ test('口令：16 位、能带横线小写空格，派生的密钥只有同一�
 test('只读服务：凭口令拿共享脚本列表和内容，删了的不给；口令不对拿不到，错太多次先拒绝；网页来的不理', async () => {
   const items = { x: { id: 'x', name: 'X', events: [] } };
   const lan = createLanServer({ shared: store([{ id: 'x', name: 'X', savedAt: 5, from: { profile: '店铺A' } }, { id: 'gone', name: 'G', savedAt: 1, from: {}, deleted: { at: 2 } }], items) });
-  const info = await lan.start({ port: port() });
+  const info = await lan.start({ port: await port() });
   try {
     assert.equal(info.on, true);
     assert.equal(info.count, 1);
@@ -66,18 +70,18 @@ test('只读服务：凭口令拿共享脚本列表和内容，删了的不给�
 });
 
 test('端口被占了往后找', async () => {
-  const p = port();
+  const p = await port();
   const busy = http.createServer().listen(p, '0.0.0.0');
   await new Promise((r) => busy.once('listening', r));
   const lan = createLanServer({ shared: store([], {}) });
   try {
     const info = await lan.start({ port: p });
-    assert.equal(info.port, p + 1);
-  } finally { lan.stop(); busy.close(); }
+    assert.ok(info.port > p && info.port < p + 10, '往后找到一个能用的');
+  } finally { await lan.stop(); busy.close(); }
 });
 
 test('同时开两次只开一个端口，关掉后端口确实释放；请求和回应用不同的密钥', async () => {
-  const p = port();
+  const p = await port();
   const lan = createLanServer({ shared: store([], {}) });
   const [one, two] = await Promise.all([lan.start({ port: p }), lan.start({ port: p })]);
   assert.equal(one.port, p);
@@ -95,7 +99,7 @@ test('只连局域网地址；重放的请求不处理；对方回得太大就�
   await assert.rejects(lanRequest('example.com', newCode(), 'list'), /不是局域网地址|找不到/);
 
   const lan = createLanServer({ shared: store([], {}) });
-  const info = await lan.start({ port: port() });
+  const info = await lan.start({ port: await port() });
   try {
     // 抓到的请求原样再发一次
     const code = info.code;
@@ -110,7 +114,7 @@ test('只连局域网地址；重放的请求不处理；对方回得太大就�
 
   // 冒充的「对方」：不管口令，回一个很大的东西
   const big = http.createServer((req, res) => { res.writeHead(200, { 'content-length': String(64 * 1024 * 1024) }); res.write('x'.repeat(1024)); });
-  const p = port();
+  const p = await port();
   await new Promise((r) => big.listen(p, '127.0.0.1', r));
   try {
     await assert.rejects(lanRequest(`127.0.0.1:${p}`, newCode(), 'list'), /太大/);
@@ -131,7 +135,7 @@ test('对方的错误文字：没核对口令的不显示（按状态码说）�
       res.end(JSON.stringify(seal(keyOf(code, 'res'), { nonce: msg.nonce, ok: false, error: 'bad\u0007\nthing'.repeat(100) })));
     });
   });
-  const p = port();
+  const p = await port();
   await new Promise((r) => srv.listen(p, '127.0.0.1', r));
   try {
     await assert.rejects(lanRequest(`127.0.0.1:${p}`, code, 'list'), (e) => e.message === '口令不对');
@@ -148,7 +152,7 @@ test('对方一点点慢慢发：整个请求有总时限，不会一直拖着',
     const t = setInterval(() => res.write(' '), 100);
     res.on('close', () => clearInterval(t));
   });
-  const p = port();
+  const p = await port();
   await new Promise((r) => srv.listen(p, '127.0.0.1', r));
   try {
     const started = Date.now();

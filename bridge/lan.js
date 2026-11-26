@@ -189,7 +189,8 @@ function createLanServer({ shared, log = () => {} }) {
           return info();
         } catch (e) {
           lastErr = e;
-          if (e.code !== 'EADDRINUSE') break;
+          // EACCES：Windows 把一段端口保留给系统（Hyper-V 等），这段里监听不了，接着往后找
+          if (e.code !== 'EADDRINUSE' && e.code !== 'EACCES') break;
         }
       }
       throw new Error(`开不了局域网端口：${lastErr ? lastErr.message : '未知错误'}`);
