@@ -779,7 +779,13 @@ $('#lanList').addEventListener('click', async (e) => {
   b.disabled = true;
   const r = await send({ type: 'lanReceive', addr: lanRemote.addr, code: lanRemote.code, ids, expect });
   b.disabled = false;
-  if (!r || r.error) return toast('接收失败：' + ((r && r.error) || '后台没有响应'));
+  if (!r || r.error) {
+    // 超时、出错时可能已经收进来几条：刷新一下，脚本库里看得到
+    await refresh(true);
+    renderLibrary();
+    renderLanList();
+    return toast('接收失败：' + ((r && r.error) || '后台没有响应'));
+  }
   const failed = r.failed || [];
   toast(`已接收 ${(r.received || []).length} 条${failed.length ? `，${failed.length} 条失败：${[...new Set(failed.map((x) => x.error))].join('；')}` : ''}。之后两边各管各的，要更新就再接收一次（按导入的录制包对待）`);
   await refresh(true);

@@ -203,6 +203,16 @@ function createLanServer({ shared, log = () => {} }) {
   return { start, stop, info, get running() { return !!server; } };
 }
 
+const STATUS_TEXT = {
+  403: '口令不对',
+  404: '对方这个端口不是 Page Recorder 的局域网同步',
+  409: '请求重复了，请重试',
+  429: '口令错误次数太多，对方先拒绝一分钟，请稍后再试',
+  503: '对方已经关了局域网同步',
+};
+// 对方发来、要显示给用户的文字：去掉控制字符、限长
+const clean = (text, n) => String(text).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n);
+
 // 另一台电脑一侧：addr 是「IP:端口」，只连局域网地址；按口令加密发请求、解开回应
 function parseAddr(addr) {
   const m = /^\s*([A-Za-z0-9.-]{1,253})(?::(\d{1,5}))?\s*$/.exec(String(addr || ''));
@@ -218,8 +228,10 @@ async function lanTarget(addr) {
   if (!isLanIp(ip)) throw new Error(`${host} 不是局域网地址（只能连 192.168.x.x、10.x.x.x、172.16–31.x.x 这类）`);
   return { host: ip, port };
 }
+// timeoutMs 是整个请求的时限（不只是空闲时长）：对方一点点慢慢发也拖不过它
 async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000) {
   if (!validCode(code)) throw new Error('口令是 16 位字母数字（可以带横线），请照对方弹窗里显示的填');
+  timeoutMs = Math.max(1000, Number(timeoutMs) || 15000);
   const target = await lanTarget(addr);
   const reqKey = keyOf(code, 'req');
   const resKey = keyOf(code, 'res');
@@ -241,15 +253,19 @@ async function lanRequest(addr, code, op, params = {}, timeoutMs = 15000) {
       res.on('end', () => {
         let j = null;
         try { j = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { /* 下面报错 */ }
-        if (res.statusCode !== 200) return reject(new Error((j && typeof j.error === 'string' && j.error.slice(0, 200)) || `对方返回 ${res.statusCode}`));
+        // 还没核对口令的回应里的文字不显示（冒充的一方能随便写），按状态码说
+        if (res.statusCode !== 200) return reject(new Error(STATUS_TEXT[res.statusCode] || `对方返回 ${res.statusCode}（可能不是 Page Recorder 的局域网端口）`));
         const msg = open(resKey, j);
         // 回应要能用口令解开、并且是这次请求的：对不上就当没收到
         if (!msg || msg.nonce !== nonce) return reject(new Error('对方的回应解不开（口令不对，或者不是 Page Recorder）'));
-        if (!msg.ok) return reject(new Error(String(msg.error || '对方处理失败').slice(0, 300)));
+        const said = typeof msg.error === 'string' ? clean(msg.error, 200) : '';
+        if (!msg.ok) return reject(new Error(said ? `对方说：${said}` : '对方处理失败'));
         resolve(msg.result);
       });
       res.on('error', reject);
     });
+    const overall = setTimeout(() => req.destroy(new Error('对方太久没传完，超时了')), timeoutMs);
+    req.on('close', () => clearTimeout(overall));
     req.on('timeout', () => req.destroy(new Error('连不上对方：超时。确认对方开着局域网同步、两台电脑在同一个网络、防火墙允许 node 接收连接')));
     req.on('error', (e) => reject(e.code === 'ECONNREFUSED' ? new Error('对方没有开局域网同步（连接被拒绝）')
       : e.code === 'ECONNRESET' ? new Error('连接被对方断开了（对方可能刚关了局域网同步）') : e));

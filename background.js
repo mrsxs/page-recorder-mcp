@@ -2222,11 +2222,24 @@ const libImports = new Map(); // id → 分段收到的文字
 const MAX_ITEM_CHARS = 512 * 1024 * 1024;
 function joinChunks(parts, p) {
   const key = typeof p.tx === 'string' && p.tx ? p.tx.slice(0, 64) : String(p.id || '');
-  const text = (p.start ? '' : parts.get(key) || '') + String(p.chunk || '');
+  // 前面的分段已经没了（中断后被清掉）：直接说中断，不把后半段当成新开头拼
+  if (!p.start && !parts.has(key)) throw new Error('分段传输中断了，请重试');
+  const text = (p.start ? '' : parts.get(key).text) + String(p.chunk || '');
   if (text.length > MAX_ITEM_CHARS) { parts.delete(key); throw new Error('脚本太大'); }
-  if (!p.done) { parts.set(key, text); return null; }
+  if (!p.done) { parts.set(key, { text, at: Date.now() }); sweepLater(); return null; }
   parts.delete(key);
   return text;
+}
+// 分段传到一半断了（桥接那边出错、超时，连接却没断）：这么久没有下一段，半截内容就丢掉，不一直占着后台内存
+const PART_TTL_MS = 2 * 60 * 1000;
+let sweepTimer = null;
+function sweepParts(now = Date.now()) {
+  for (const m of [libImports, sharedParts, libExports]) for (const [k, v] of m) if (now - v.at > PART_TTL_MS) m.delete(k);
+  sweepTimer = null;
+  sweepLater();
+}
+function sweepLater() {
+  if (!sweepTimer && (libImports.size || sharedParts.size || libExports.size)) sweepTimer = setTimeout(sweepParts, 30000);
 }
 // 步骤可能录在 about:srcdoc、blob: 这样的框架里；起始页面只能是真实地址
 const validLibUrl = (value, inFrame) => {
@@ -2250,7 +2263,6 @@ function validLibItem(x) {
 }
 function libraryChunk(id, item, offset, limit, tx) {
   const key = typeof tx === 'string' && tx ? tx.slice(0, 64) : id; // 旧版桥接不带 tx
-  for (const [k, v] of libExports) if (Date.now() - v.at > 120000) libExports.delete(k);
   let snap = libExports.get(key);
   if (offset && snap && snap.id !== id) snap = null;
   if (offset && !snap && tx) throw new Error('分段读取中断了，请重新读取');
@@ -2258,24 +2270,39 @@ function libraryChunk(id, item, offset, limit, tx) {
     // 和录制包同样脱敏，并清掉密码框的值，不看这条录制自己的开关：这个目录会长期留在磁盘上
     const { item: clean } = packageOf({ ...PR_EXPORTER.scrubBackup(item), settings: DEFAULT_SETTINGS });
     snap = { id, at: Date.now(), text: JSON.stringify({ ...clean, id: item.id, savedAt: item.savedAt, imported: !!item.imported }) };
-    libExports.set(key, snap);
   }
   const start = Math.max(0, Number(offset) || 0);
   const end = start + Math.min(8e6, Math.max(1, Number(limit) || 4e6));
   const done = end >= snap.text.length;
   const chunk = snap.text.slice(start, end);
+  // 一段读完的不用留快照；还要接着读的留着，从最后一次读算起两分钟没人读就清掉
   if (done) libExports.delete(key);
+  else { libExports.set(key, { ...snap, at: Date.now() }); sweepLater(); }
   return { chunk, done };
 }
 // ---------- 发给桥接、等它回结果（局域网同步用）：事件带 req 编号，桥接做完调 bridgeReply ----------
 const bridgeWaits = new Map(); // req → { resolve, reject }
+// timeoutMs 是多久没有进展就不等了：做得久的（批量接收）桥接每做完一条报一次进度（bridgeProgress），等待时间从那时重新算
 function bridgeRequest(event, params, timeoutMs = 15000) {
   if (!bridgeConnected()) return Promise.reject(new Error('桥接没有连接：要先让 AI 工具（或 npx page-recorder-mcp）运行起来'));
   const req = uid();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { bridgeWaits.delete(req); reject(new Error('桥接没有回应（可能版本太旧，不支持局域网同步）')); }, timeoutMs);
+    let progress = null;
+    const giveUp = () => {
+      bridgeWaits.delete(req);
+      // 告诉桥接不等了：还在跑的批量接收停下来，不在弹窗报失败之后接着写
+      if (bridgeConnected()) ws.send(JSON.stringify({ type: 'event', event: 'cancel', req }));
+      reject(new Error(progress
+        ? `桥接 ${Math.round(timeoutMs / 1000)} 秒没有新进展，先不等了：已处理 ${progress.done} / ${progress.total} 条（收到 ${progress.received} 条，已经在脚本库里）。没收到的请再接收一次`
+        : '桥接没有回应（可能版本太旧，不支持局域网同步）'));
+    };
+    let timer = setTimeout(giveUp, timeoutMs);
     const done = (fn) => (x) => { clearTimeout(timer); bridgeWaits.delete(req); fn(x); };
-    bridgeWaits.set(req, { resolve: done(resolve), reject: done(reject) });
+    bridgeWaits.set(req, {
+      resolve: done(resolve),
+      reject: done(reject),
+      progress: (p) => { progress = p; clearTimeout(timer); timer = setTimeout(giveUp, timeoutMs); },
+    });
     ws.send(JSON.stringify({ ...params, type: 'event', event, req }));
   });
 }
@@ -2310,16 +2337,25 @@ function applySharedItem(c, raw, p) {
     if (editorBusy(c, id)) return { ok: false, busy: true };
     const open = c.state.id === id;
     const name = copyName || String(raw.name || '');
-    // 上传步骤里的本机文件路径不带过来（和恢复备份、导入录制包一样）：另一个环境回放时要传文件就在参数里给
-    const events = raw.events.map((e) => (e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e));
+    // 上传步骤里的本机文件路径不带过来（和恢复备份、导入录制包一样）：另一个环境回放时要传文件就在参数里给。
+    // 另一台电脑来的还和导入录制包一样：去掉步骤上分析时算出来的字段（按这里的分析重算），分析不了的不收
+    const events = raw.events.map((e) => {
+      const step = e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e;
+      return fromLan && step.kind === 'step' ? PR_EXPORTER.bareStep(step) : step;
+    });
+    const apiOverrides = raw.apiOverrides && typeof raw.apiOverrides === 'object' ? raw.apiOverrides : {};
+    const aiDocs = raw.aiDocs && typeof raw.aiDocs === 'object' ? raw.aiDocs : {};
+    if (fromLan) {
+      try { PR_EXPORTER.analyze(events, c.settings, raw.state, apiOverrides, aiDocs); } catch (e) { throw new Error('另一台电脑发来的脚本内容不对，分析不了：' + e.message); }
+    }
     const savedAt = copyName || fromLan || !Number.isFinite(raw.savedAt) ? Date.now() : raw.savedAt;
     const imported = fromLan || !!raw.imported;
     // 只拿脚本该有的字段，别的（对方塞进来的）不存
     const item = {
       id, name, description: String(raw.description || ''), imported, savedAt, events,
       state: { ...raw.state, id, recording: false, imported, ...(copyName ? { name } : {}) },
-      apiOverrides: raw.apiOverrides && typeof raw.apiOverrides === 'object' ? raw.apiOverrides : {},
-      aiDocs: raw.aiDocs && typeof raw.aiDocs === 'object' ? raw.aiDocs : {},
+      apiOverrides,
+      aiDocs,
       settings: c.settings,
     };
     c.libIndex = [libEntryOf(item), ...c.libIndex.filter((x) => x.id !== id)];
@@ -2411,6 +2447,12 @@ async function bridgeHandle(method, p) {
     case 'bridgeReply': {
       const w = bridgeWaits.get(String(p.req || ''));
       if (w) (p.ok ? w.resolve(p.data) : w.reject(new Error(String(p.error || '桥接处理失败'))));
+      return { ok: true };
+    }
+    case 'bridgeProgress': {
+      const w = bridgeWaits.get(String(p.req || ''));
+      const n = (x) => (Number.isFinite(x) ? x : 0);
+      if (w) w.progress({ done: n(p.done), total: n(p.total), received: n(p.received) });
       return { ok: true };
     }
     case 'lanState':
@@ -2924,11 +2966,12 @@ async function handleMessage(msg, sender) {
       return { list: r };
     }
     case 'lanReceive': {
-      const ids = (Array.isArray(msg.ids) ? msg.ids : []).map(String).slice(0, 500);
+      // 不在这里截断：超过一次能收的条数，桥接会把多出来的逐条列成失败，弹窗看得到
+      const ids = [...new Set((Array.isArray(msg.ids) ? msg.ids : []).map(String))].slice(0, 2000);
       // 用户确认时这里每条的版本（没有 = 0）：桥接写入前核对，期间这里变过的不覆盖
       const expect = Object.fromEntries(ids.map((id) => [id, (c.libIndex.find((x) => x.id === id) || {}).savedAt || 0]));
       if (msg.expect && typeof msg.expect === 'object') for (const id of ids) if (Number.isFinite(msg.expect[id])) expect[id] = msg.expect[id];
-      return bridgeRequest('lanReceive', { addr: String(msg.addr || ''), code: String(msg.code || ''), ids, expect }, 660000);
+      return bridgeRequest('lanReceive', { addr: String(msg.addr || ''), code: String(msg.code || ''), ids, expect }, 5 * 60 * 1000);
     }
     case 'libRestoreOffer':
       if (!bridgeConnected()) throw new Error('桥接没有连接，暂时不能恢复');

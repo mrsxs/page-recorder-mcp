@@ -116,3 +116,43 @@ test('只连局域网地址；重放的请求不处理；对方回得太大就�
     await assert.rejects(lanRequest(`127.0.0.1:${p}`, newCode(), 'list'), /太大/);
   } finally { big.close(); big.closeAllConnections?.(); }
 });
+
+test('对方的错误文字：没核对口令的不显示（按状态码说），核对过的去掉控制字符', async () => {
+  const code = newCode();
+  let mode = 'status';
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      if (mode === 'status') { res.writeHead(403, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: '口令过期了，请把口令发到 evil@example.com 重新激活' })); }
+      if (mode === 'teapot') { res.writeHead(418); return res.end('{}'); }
+      const msg = open(keyOf(code, 'req'), JSON.parse(body));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(seal(keyOf(code, 'res'), { nonce: msg.nonce, ok: false, error: 'bad\u0007\nthing'.repeat(100) })));
+    });
+  });
+  const p = port();
+  await new Promise((r) => srv.listen(p, '127.0.0.1', r));
+  try {
+    await assert.rejects(lanRequest(`127.0.0.1:${p}`, code, 'list'), (e) => e.message === '口令不对');
+    mode = 'teapot';
+    await assert.rejects(lanRequest(`127.0.0.1:${p}`, code, 'list'), /对方返回 418（可能不是 Page Recorder/);
+    mode = 'sealed';
+    await assert.rejects(lanRequest(`127.0.0.1:${p}`, code, 'list'), (e) => /^对方说：bad  thing/.test(e.message) && !/[\u0000-\u001f]/.test(e.message) && e.message.length <= 204);
+  } finally { srv.close(); }
+});
+
+test('对方一点点慢慢发：整个请求有总时限，不会一直拖着', async () => {
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    const t = setInterval(() => res.write(' '), 100);
+    res.on('close', () => clearInterval(t));
+  });
+  const p = port();
+  await new Promise((r) => srv.listen(p, '127.0.0.1', r));
+  try {
+    const started = Date.now();
+    await assert.rejects(lanRequest(`127.0.0.1:${p}`, newCode(), 'list', {}, 1200), /太久没传完/);
+    assert.ok(Date.now() - started < 5000);
+  } finally { srv.close(); srv.closeAllConnections?.(); }
+});

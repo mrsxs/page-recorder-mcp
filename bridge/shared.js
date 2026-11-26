@@ -31,7 +31,8 @@ const copyIdOf = (id, rev, savedAt) => 'c' + crypto.createHash('sha256').update(
 
 function validMeta(m, id) {
   return isObj(m) && m.id === id && REV_RE.test(m.rev || '') && Number.isFinite(m.savedAt) && isObj(m.from) && isObj(m.members)
-    && Object.keys(m.members).every(isId) && Object.values(m.members).every((x) => isObj(x) && Number.isFinite(x.at) && typeof x.rev === 'string')
+    && Object.keys(m.members).every(isId) && Object.values(m.members).every((x) => isObj(x) && Number.isFinite(x.at) && typeof x.rev === 'string'
+      && (x.pending === undefined || (isObj(x.pending) && Number.isFinite(x.pending.at) && typeof x.pending.rev === 'string')))
     && (m.keep === undefined || (isObj(m.keep) && Object.keys(m.keep).every(isId) && Object.values(m.keep).every((x) => typeof x === 'string')))
     && (m.left === undefined || (isObj(m.left) && Object.keys(m.left).every(isId)));
 }
@@ -77,13 +78,21 @@ function createShared(dir) {
     return j && j.format === FORMAT && j.id === id && j.rev === m.rev && isObj(j.item) && j.item.id === id && revOf(j.item) === m.rev ? j.item : null;
   }
   // 这个环境的版本成为共享版本；prev 里别的环境照旧在用，等它们同步时更新
-  function publish(item, env, prev) {
+  // 这个环境的版本成为共享版本，prev 里别的环境照旧在用。expected 是这一轮开头读到的那条：
+  // 期间另一个桥接进程（另一个端口）已经改过就不发布，下一轮重新比
+  function publish(item, env, prev, expected = prev) {
+    const now = load().get(item.id) || null;
+    const sig = (m) => (m ? `${m.rev}:${!!m.deleted}` : '');
+    if (sig(now) !== sig(expected)) throw new Error('共享区刚被另一个桥接进程改过，下一轮再同步');
     const rev = revOf(item);
     fs.mkdirSync(itemsDir, { recursive: true, mode: 0o700 });
     writeAtomic(itemFile(item.id, rev), JSON.stringify({ format: FORMAT, version: 1, id: item.id, rev, item }));
     const members = { ...(prev ? prev.members : {}), [env.instanceId]: { rev, at: item.savedAt, profile: env.profile || '' } };
-    const keep = Object.fromEntries(Object.entries((prev && prev.keep) || {}).filter(([k]) => k !== env.instanceId));
-    return set({ id: item.id, rev, name: String(item.name || ''), savedAt: item.savedAt, from: { instanceId: env.instanceId, profile: env.profile || '' }, members, ...(Object.keys(keep).length ? { keep } : {}) });
+    const others = (x) => Object.fromEntries(Object.entries(x || {}).filter(([k]) => k !== env.instanceId));
+    const keep = others(prev && prev.keep);
+    const left = others(prev && prev.left); // 停止共享过的环境仍旧算停止过，内容碰巧一样也不自动加回去
+    return set({ id: item.id, rev, name: String(item.name || ''), savedAt: item.savedAt, from: { instanceId: env.instanceId, profile: env.profile || '' }, members,
+      ...(Object.keys(keep).length ? { keep } : {}), ...(Object.keys(left).length ? { left } : {}) });
   }
   function purge(id) {
     load().delete(id);
@@ -95,6 +104,8 @@ function createShared(dir) {
 
 const memberOf = (meta, instanceId) => (hasOwn(meta.members, instanceId) ? meta.members[instanceId] : null);
 const withMember = (meta, env, rev, at) => ({ ...meta, members: { ...meta.members, [env.instanceId]: { rev, at, profile: env.profile || '' } } });
+// 发给环境之前先记下「正要写这一版」：写进去了但应答丢了（断线），下一轮按它认出来，不当成这个环境自己改的
+const withPending = (meta, env, rev, at) => ({ ...meta, members: { ...meta.members, [env.instanceId]: { ...memberOf(meta, env.instanceId), pending: { rev, at } } } });
 // keep：被别的环境较新的改动盖掉的那个环境，下次同步时先把它自己那份另存一份（值是盖掉它的环境名）
 const keepOf = (meta, instanceId) => (meta.keep && hasOwn(meta.keep, instanceId) ? meta.keep[instanceId] : null);
 function withoutKeep(meta, instanceId) {
@@ -122,12 +133,12 @@ function apply(call, item, opts) {
 
 // 两个环境都改过：较新的成为共享版本，被盖掉的那份另存在改它的那个环境里，哪边改的都不丢。
 // 返回 'published'（这里的成为共享版本）、'applied'（换成了共享版本）、'failed'（这一轮没办成）
-async function resolveConflict(store, env, call, meta, mine, notices) {
+async function resolveConflict(store, env, call, meta, mine, notices, flags = {}) {
   const head = store.read(meta.id);
   if (!head) return 'failed';
   const other = labelOf(meta.from);
   if (mine.savedAt > meta.savedAt) {
-    const next = store.publish(mine, env, store.get(meta.id));
+    const next = store.publish(mine, env, store.get(meta.id), meta);
     // 共享版本是 other 改的：它下次同步、被换成这里的版本之前，先把它自己那份另存（它不在了就不用存，内容本来就在它那里）
     const by = meta.from.instanceId;
     if (by !== env.instanceId && memberOf(next, by)) store.set({ ...next, keep: { ...(next.keep || {}), [by]: labelOf(env) } });
@@ -136,21 +147,22 @@ async function resolveConflict(store, env, call, meta, mine, notices) {
   }
   const copyName = `${mine.name || '脚本'}（本环境的版本）`;
   const c = await apply(call, mine, { copyName, copyId: copyIdOf(meta.id, revOf(mine), mine.savedAt) });
-  if (!c || !c.ok) return 'failed';
+  if (!c || !c.ok) { flags.busy = flags.busy || !!(c && c.busy); return 'failed'; }
+  if (memberOf(store.get(meta.id), env.instanceId)) store.set(withPending(store.get(meta.id), env, meta.rev, head.savedAt));
   const r = await apply(call, head, { expectAt: mine.savedAt });
-  if (!r || !r.ok) return 'failed'; // 刚又改了、或正在录：副本 id 固定，下一轮不会再存一份
+  if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return 'failed'; } // 刚又改了、或正在录：副本 id 固定，下一轮不会再存一份
   store.set(withMember(store.get(meta.id), env, meta.rev, r.savedAt));
   notices.push(`「${head.name}」在 ${other} 改得更晚：已换成那边的版本，这里改的另存为「${copyName}」`);
   return 'applied';
 }
 
 // 共享区里已经删了的：这个环境没改过就跟着删，改过就留下当它自己的脚本
-async function followDelete(store, env, call, meta, local, notices) {
+async function followDelete(store, env, call, meta, local, notices, flags = {}) {
   const member = memberOf(meta, env.instanceId);
   const by = meta.deleted.by || '其他环境';
   if (local !== undefined && local === member.at) {
     const r = await call('sharedRemove', { id: meta.id, expectAt: local }, 30000);
-    if (r && r.busy) return; // 正在录这条，下次再删
+    if (r && r.busy) { flags.busy = true; return; } // 正在录这条，过一会儿再删
     notices.push(r && r.ok ? `「${meta.name}」已在 ${by} 删除，这里也删了` : `「${meta.name}」已在 ${by} 删除，这里刚改过，留作本环境的脚本`);
   } else if (local !== undefined) {
     notices.push(`「${meta.name}」已在 ${by} 删除，这里改过，留作本环境的脚本`);
@@ -163,10 +175,15 @@ const hasLeft = (meta, instanceId) => !!(meta.left && hasOwn(meta.left, instance
 const compared = new Set();
 
 // 一条共享脚本和一个环境对一次，返回共享区有没有变（内容、在用的环境；变了要让别的环境也同步）
-async function syncOne(store, env, call, meta, { local, del, receive, notices }) {
-  const member = memberOf(meta, env.instanceId);
+async function syncOne(store, env, call, meta, { local, del, receive, notices, flags = {} }) {
+  let member = memberOf(meta, env.instanceId);
+  // 上一轮发过去的那一版其实写进去了（保存时间对得上），只是应答没回来：补记上
+  if (member && member.pending && local === member.pending.at) {
+    meta = store.set(withMember(meta, env, member.pending.rev, local));
+    member = memberOf(meta, env.instanceId);
+  }
   if (meta.deleted) {
-    if (member) await followDelete(store, env, call, meta, local, notices);
+    if (member) await followDelete(store, env, call, meta, local, notices, flags);
     return !!member;
   }
   if (!member) {
@@ -175,7 +192,7 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices })
     if (del !== undefined || !receive) return false;
     const item = store.read(meta.id);
     const r = item && await apply(call, item, { expectAt: 0 });
-    if (!r || !r.ok) return false;
+    if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return false; }
     store.set(withMember(store.get(meta.id), env, meta.rev, r.savedAt));
     return true;
   }
@@ -203,10 +220,11 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices })
       if (!mine || mine.id !== meta.id || mine.savedAt !== local) return false;
       copyName = `${mine.name || '脚本'}（本环境的版本）`;
       const c = await apply(call, mine, { copyName, copyId: copyIdOf(meta.id, revOf(mine), mine.savedAt) });
-      if (!c || !c.ok) return false;
+      if (!c || !c.ok) { flags.busy = flags.busy || !!(c && c.busy); return false; }
     }
+    store.set(withPending(store.get(meta.id), env, meta.rev, item.savedAt));
     const r = await apply(call, item, { expectAt: local });
-    if (!r || !r.ok) return false;
+    if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return false; }
     store.set(withoutKeep(withMember(store.get(meta.id), env, meta.rev, r.savedAt), env.instanceId));
     if (by) notices.push(`「${item.name}」在 ${by} 改得更晚：已换成那边的版本，这里改的另存为「${copyName}」`);
     return false;
@@ -218,7 +236,7 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices })
   const rev = revOf(mine);
   if (rev === meta.rev) { store.set(withMember(meta, env, rev, local)); return false; }
   if (member.rev === meta.rev) { store.publish(mine, env, meta); return true; }
-  return (await resolveConflict(store, env, call, meta, mine, notices)) === 'published';
+  return (await resolveConflict(store, env, call, meta, mine, notices, flags)) === 'published';
 }
 
 // 环境里有同 id 的、却不算在用：接收时扩展存好了、应答没传回来（断线），或者重装扩展后从备份恢复的。
@@ -267,19 +285,20 @@ async function syncEnv(store, env, call, { receive = new Set(), log = () => {} }
   const here = new Map(m.items.filter((x) => isId(x.id) && Number.isFinite(x.savedAt)).map((x) => [x.id, x.savedAt]));
   const deleted = new Map((Array.isArray(m.deleted) ? m.deleted : []).filter((d) => isId(d.id) && Number.isFinite(d.at)).map((d) => [d.id, d.at]));
   const notices = [];
+  const flags = { busy: false }; // 有因为编辑区正忙没做成的：桥接过一会儿再来一轮
   let changed = false;
   for (const { id } of store.list()) {
     if (!store.get(id)) continue;
     try {
       const meta = renamed(store, store.get(id), env);
-      const opts = { local: here.get(id), del: deleted.get(id), receive: m.autoReceiveShared === true || receive.has(id), notices };
+      const opts = { local: here.get(id), del: deleted.get(id), receive: m.autoReceiveShared === true || receive.has(id), notices, flags };
       if (await syncOne(store, env, call, meta, opts)) changed = true;
     } catch (e) { log(`共享脚本 ${id} 和环境 ${labelOf(env)} 同步失败：${e.message}`); }
   }
   const state = stateFor(store, env, here, deleted);
   // 发不出去也要把 changed 交回去：共享区已经改了，别的环境还得同步
   try { await call('sharedState', { ...state, notices }, 10000); } catch (e) { log(`共享脚本的状态没发给环境 ${labelOf(env)}：${e.message}`); }
-  return { changed, state };
+  return { changed, state, busy: flags.busy };
 }
 
 // 用户在某个环境点了「共享」：还没人共享就成为新的共享脚本；共享区里已有（重新共享、重装后恢复的）按两边都改过处理
@@ -290,7 +309,7 @@ async function shareOn(store, env, call, id, { notices = [] } = {}) {
   const found = store.get(id);
   const meta = found && found.left ? store.set(withoutLeft(found, env.instanceId)) : found;
   // 删过的重新共享：当成全新的一条，删除流程里还没处理完的环境不跟过来（它们手上那份留作自己的脚本）
-  if (!meta || meta.deleted) { store.publish(mine, env, null); return true; }
+  if (!meta || meta.deleted) { store.publish(mine, env, null, meta); return true; }
   if (memberOf(meta, env.instanceId)) return false;
   if (revOf(mine) === meta.rev) { store.set(withMember(meta, env, meta.rev, mine.savedAt)); return true; }
   const r = await resolveConflict(store, env, call, meta, mine, notices);

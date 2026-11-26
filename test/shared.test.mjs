@@ -500,6 +500,18 @@ test('background: 共享来的按这里录的对待，导入的还是导入的�
   await assert.rejects(applyTo(bg, item('lan2', 1, { state: { startUrl: 'file:///etc/hosts' } }), { expectAt: 0, fromLan: true }), /http\(s\)/);
   await applyTo(bg, item('extra1', 1, { sneaky: 'x', settings: { aiApiKey: 'K' } }), { expectAt: 0 });
   assert.equal(store.get('lib:extra1').sneaky, undefined, '只存脚本该有的字段');
+  const analyzed = [{ kind: 'step', ts: 1, type: 'navigate', url: 'https://app.test/', desc: '对方写的说明', param: 'x', memberSteps: [1] }];
+  await applyTo(bg, item('lan3', 1, { events: analyzed }), { expectAt: 0, fromLan: true });
+  assert.equal(store.get('lib:lan3').events[0].desc, undefined, '另一台电脑来的：和导入录制包一样去掉分析字段');
+  assert.equal(store.get('lib:lan3').events[0].memberSteps, undefined);
+
+  // 分段传到一半断了：过一阵子半截内容就丢掉，之后再来的后半段拼不起来
+  const text = JSON.stringify(item('cut1', 1));
+  const half = { id: 'cut1', tx: 'tx-cut', expectAt: 0 };
+  assert.deepEqual(plain(await bg.bridgeHandle('sharedApply', { ...half, chunk: text.slice(0, 20), start: true, done: false })), { ok: true });
+  bg.sweepParts(Date.now() + 3 * 60 * 1000);
+  await assert.rejects(bg.bridgeHandle('sharedApply', { ...half, chunk: text.slice(20), start: false, done: true }), /分段传输中断了/);
+  assert.equal(store.has('lib:cut1'), false);
   assert.deepEqual(plain(await bg.bridgeHandle('sharedRemove', { id: 'x', expectAt: 1 })), { ok: false, changed: true });
   assert.deepEqual(plain(await bg.bridgeHandle('sharedRemove', { id: 'x', expectAt: r.savedAt })), { ok: true });
   assert.equal(store.has('lib:x'), false);
@@ -575,6 +587,7 @@ function connectEnv(port, e) {
     if (m.method === 'libraryRestore') return { ok: true, skipped: true };
     if (m.method === 'libraryOffer') return { ok: true };
     if (m.method === 'lanState') { e.lan = m.params; return { ok: true }; }
+    if (m.method === 'bridgeProgress') { (e.progress = e.progress || []).push(m.params); return { ok: true }; }
     if (m.method === 'bridgeReply') {
       const w = e.waits.get(m.params.req);
       e.waits.delete(m.params.req);
@@ -667,6 +680,9 @@ test('桥接：一个环境共享，另一个接收；之后改动自动同步�
     assert.match(ok.content[0].text, /envB/);
     assert.deepEqual(b.runs, ['x']);
     assert.deepEqual(a.runs, []);
+    const byId = await rpc('tools/call', { name: run.name, arguments: { browser: 'envA' } });
+    assert.match(byId.content[0].text, /envA/, '选项是 instanceId 的按 id 精确发，不会落到资料名同名的 twin');
+    assert.deepEqual(a.runs, ['x']);
     assert.deepEqual(twin.runs, []);
 
     // B 停止共享后各改各的：接口不一样了，各列各的工具
@@ -734,9 +750,12 @@ test('局域网：一台开开关显示地址口令，另一台凭口令读共�
     await assert.rejects(w.request('lanList', { addr, code: 'AAAA-BBBB-CCCC-DDDD' }), /口令不对/);
     const list = await w.request('lanList', { addr, code: info.code.toLowerCase() });
     assert.deepEqual(list.scripts.map((x) => x.id), ['x'], '没共享的不给');
-    const r = await w.request('lanReceive', { addr, code: info.code, ids: ['x', 'private'] });
-    assert.deepEqual(r.received.map((x) => x.id), ['x']);
+    w.progress = [];
+    const r = await w.request('lanReceive', { addr, code: info.code, ids: ['x', 'private', 'x'] });
+    assert.deepEqual(r.received.map((x) => x.id), ['x'], '重复的 id 只收一次');
+    assert.equal(r.failed.length, 1);
     assert.equal(r.failed[0].id, 'private');
+    assert.deepEqual(w.progress.map((p) => [p.done, p.total, p.received]), [[0, 2, 0], [1, 2, 1], [2, 2, 1]], '开始时报一次、每做完一条报一次进度');
     assert.equal(w.lib.get('x').name, '脚本 x');
     assert.equal(w.lib.get('x').imported, undefined, '假扩展不处理信任标记（扩展那边的测试管）');
 
@@ -748,6 +767,26 @@ test('局域网：一台开开关显示地址口令，另一台凭口令读共�
     assert.equal(w.lib.get('x').name, 'W 刚改');
     const ok = await w.request('lanReceive', { addr, code: info.code, ids: ['x'], expect: { x: w.lib.get('x').savedAt } });
     assert.deepEqual(ok.received.map((x) => x.id), ['x']);
+
+    // 冒充的「对方」：口令对得上，但列表格式乱七八糟；桥接按格式过滤后才给弹窗
+    const { keyOf, seal, open: unseal } = require('../bridge/lan.js');
+    const fakeCode = 'ABCD-EFGH-JKLM-NPQR';
+    const peer = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const msg = unseal(keyOf(fakeCode, 'req'), JSON.parse(body));
+        const scripts = [{ id: 'ok1', name: 'A\nB', savedAt: 1 }, { id: '../bad' }, 'str', null, { id: 'ok1', name: '重复' }, { id: 'ok2', name: 5, from: { x: 1 } }, { id: 'ok3', name: ' \n\u0000 ' }];
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(seal(keyOf(fakeCode, 'res'), { nonce: msg.nonce, ok: true, result: { device: '\u0007 ', scripts } })));
+      });
+    });
+    const peerPort = 33000 + Math.floor(Math.random() * 20000);
+    await new Promise((resolve) => peer.listen(peerPort, '127.0.0.1', resolve));
+    try {
+      const odd = await w.request('lanList', { addr: `127.0.0.1:${peerPort}`, code: fakeCode });
+      assert.deepEqual(odd, { device: '对方', scripts: [{ id: 'ok1', name: 'A B', from: '', savedAt: 1 }, { id: 'ok2', name: 'ok2', from: '', savedAt: 0 }, { id: 'ok3', name: 'ok3', from: '', savedAt: 0 }] }, '全是空白、控制字符的名字退回默认');
+    } finally { peer.close(); }
 
     // 别的浏览器关掉过：错过通知的浏览器重连时带着旧编号来，不再打开
     assert.deepEqual(a.lan.owners, ['环境macA']);
@@ -770,4 +809,73 @@ test('局域网：一台开开关显示地址口令，另一台凭口令读共�
     host.stop();
     guest.stop();
   }
+});
+
+test('写进去了但应答丢了：下一轮认出是那一版，不当成这个环境自己改的去盖掉别人刚改的', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick(), { name: 'v1' })]);
+    const b = fakeEnv('b');
+    await share(store, a, 'x');
+    await sync(store, b, ['x']);
+    a.edit('x', { name: 'v2' });
+    await sync(store, a);
+    const call = b.call;
+    b.call = async (m, p) => { const r = await call(m, p); if (m === 'sharedApply' && p.done) throw new Error('浏览器扩展连接已断开'); return r; };
+    await sync(store, b).catch(() => {});
+    b.call = call;
+    assert.equal(b.lib.get('x').name, 'v2', 'B 其实写进去了');
+    a.edit('x', { name: 'v1' }); // A 改回去了
+    await sync(store, a);
+    await sync(store, b);
+    assert.equal(store.get('x').name, 'v1', '没有把 B 手上的 v2 当成 B 改的发布出去');
+    assert.equal(b.lib.get('x').name, 'v1', 'B 跟着换成 A 改回去的版本');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('停止共享过的：别的环境再发布、内容碰巧一样也不自动加回去；编辑区忙时报给桥接过一会儿再来', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b');
+    await share(store, a, 'x');
+    await sync(store, b, ['x']);
+    const original = { ...b.lib.get('x') };
+    shareOff(store, b.env, 'x');
+    a.edit('x', { name: '改了' });
+    await sync(store, a);
+    a.lib.set('x', { ...original, savedAt: tick() }); // 又改回和 B 手上一样
+    await sync(store, a);
+    await sync(store, b);
+    assert.deepEqual(b.state.shared, [], 'B 停止共享过，不自动算回在用');
+
+    a.edit('x', { name: '再改' });
+    await sync(store, a);
+    const c = fakeEnv('c');
+    await sync(store, c, ['x']);
+    a.edit('x', { name: '又改' });
+    await sync(store, a);
+    c.recording = 'x';
+    assert.equal((await sync(store, c)).busy, true);
+    c.recording = null;
+    assert.equal((await sync(store, c)).busy, false);
+    assert.equal(c.lib.get('x').name, '又改');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('另一个桥接进程刚改过：这边拿着旧的那条不发布，下一轮重新比', async () => {
+  const dir = tmp();
+  try {
+    const one = createShared(dir);
+    const two = createShared(dir);
+    const a = fakeEnv('a', [item('x', tick())]);
+    await share(one, a, 'x');
+    const stale = two.get('x');
+    a.edit('x', { name: '一号改的' });
+    await sync(one, a);
+    assert.throws(() => two.publish({ ...a.lib.get('x'), name: '二号拿旧的发' }, a.env, stale), /另一个桥接进程/);
+    assert.equal(createShared(dir).get('x').name, '一号改的');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

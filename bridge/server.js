@@ -354,6 +354,9 @@ function onExtMessage(conn, text) {
   } else if (m.type === 'event' && m.event === 'shareSet') {
     if (m.req) replyTo(conn, m.req, () => runShareSet(conn, m.id, m.on === true));
     else runShareSet(conn, m.id, m.on === true).catch((e) => callConn(conn, 'sharedState', { notices: [`${m.on === true ? '共享' : '停止共享'}失败：${e.message}`] }, 10000).catch(() => {}));
+  } else if (m.type === 'event' && m.event === 'cancel') {
+    // 扩展不等某个请求了（超时）：还在跑的批量接收看到就停
+    if (typeof m.req === 'string' && m.req.length <= 64) conn.lanCancel = new Set([...(conn.lanCancel || []), m.req].slice(-20));
   } else if (m.type === 'event' && typeof m.event === 'string' && Object.hasOwn(LAN_EVENTS, m.event)) {
     replyTo(conn, m.req, () => LAN_EVENTS[m.event](conn, m));
   } else if (m.type === 'event' && m.event === 'sharedReceive') {
@@ -384,17 +387,24 @@ function waitExt(ms) {
 function browserInfo(conn) { return { instanceId: conn.instanceId, profile: conn.profile || '' }; }
 // 给 AI 选浏览器用的值：资料名在所有浏览器里唯一就用资料名，没起名或重名的用 instanceId（按资料名找重名时会报错）
 function browserChoices(list, all) {
-  const count = (p) => all.filter((b) => b.profile === p).length;
-  return list.map((b) => (b.profile && count(b.profile) === 1 ? b.profile : b.instanceId));
+  const low = (x) => String(x || '').toLowerCase();
+  const ids = new Set(all.map((b) => low(b.instanceId)));
+  const count = (p) => all.filter((b) => low(b.profile) === low(p)).length;
+  // 资料名不分大小写也唯一、又不和任何 instanceId 撞的才用资料名；还撞就全用 instanceId
+  const picks = list.map((b) => (b.profile && count(b.profile) === 1 && !ids.has(low(b.profile)) ? b.profile : b.instanceId));
+  return new Set(picks.map(low)).size === picks.length ? picks : list.map((b) => b.instanceId);
 }
 function browserLabel(conn) { return `${conn.profile ? '「' + conn.profile + '」' : '（未命名资料）'} instanceId=${conn.instanceId || '待定'}`; }
 function browserList(conns) {
   return conns.map((c) => '  · ' + browserLabel(c)).join('\n') + '\n调用时传 browser 参数指定（填 instanceId 或资料名）。';
 }
 // 按 browser 参数（instanceId 或资料名）找连接；找不到返回空数组，资料名重名时返回多个
+// 「id:<instanceId>」只按 instanceId 找，不退回按资料名找：几个浏览器都有的脚本按选项精确发，目标断线时不会落到同名的别的浏览器
+const EXACT_ID = 'id:';
 function findBrowser(ref) {
   const r = String(ref).trim();
   const all = [...instances.values()];
+  if (r.startsWith(EXACT_ID)) return all.filter((c) => c.instanceId === r.slice(EXACT_ID.length));
   let hit = all.filter((c) => c.instanceId === r);
   if (!hit.length) hit = all.filter((c) => c.profile && c.profile === r);
   if (!hit.length) hit = all.filter((c) => c.profile && c.profile.toLowerCase() === r.toLowerCase());
@@ -403,12 +413,13 @@ function findBrowser(ref) {
 // 指定的浏览器可能正在重连（service worker 最多 30 秒唤醒一次）：最近连过的才等，填错的直接报错
 const recentlySeen = new Map(); // instanceId -> { profile, at }
 function seenRecently(ref) {
-  const r = String(ref).trim().toLowerCase();
+  const exact = String(ref).trim().startsWith(EXACT_ID);
+  const r = String(ref).trim().toLowerCase().slice(exact ? EXACT_ID.length : 0);
   const now = Date.now();
   let hit = false;
   for (const [id, x] of recentlySeen) {
     if (now - x.at >= 10 * 60000) { recentlySeen.delete(id); continue; }
-    if (!hit && (id.toLowerCase() === r || (x.profile && x.profile.toLowerCase() === r))) hit = true;
+    if (!hit && (id.toLowerCase() === r || (!exact && x.profile && x.profile.toLowerCase() === r))) hit = true;
   }
   return hit;
 }
@@ -764,15 +775,21 @@ async function runSharedSync(conn) {
   if (!canShare(conn)) return;
   const receive = conn.sharedReceive || new Set();
   conn.sharedReceive = null;
-  let changed = false;
+  let r;
   try {
-    ({ changed } = await sharedTask(() => syncEnv(shared, envOf(conn), connCall(conn), { receive, log })));
+    r = await sharedTask(() => syncEnv(shared, envOf(conn), connCall(conn), { receive, log }));
   } catch (e) {
     conn.sharedReceive = new Set([...receive, ...(conn.sharedReceive || [])]); // 用户点的接收留到下一轮
     throw e;
   }
-  if (changed) sharedChanged(conn);
+  if (r.changed) sharedChanged(conn);
+  // 编辑区正忙（录制、编辑中）没做成的：忙完不一定有新改动来触发，过 30 秒自己再来一轮
+  if (r.busy) {
+    clearTimeout(conn.sharedRetry);
+    conn.sharedRetry = setTimeout(() => scheduleSharedSync(conn), SHARED_RETRY_MS);
+  }
 }
+const SHARED_RETRY_MS = Number(process.env.PR_SHARED_RETRY_MS) || 30000;
 // 共享 / 停止共享：改完、再和这个环境对一次才回（弹窗等它回了才算完成：「停止共享」后马上删除不能被当成在共享时删的）
 async function runShareSet(conn, id, on) {
   if (!canShare(conn) || typeof id !== 'string') throw new Error('这个扩展版本不支持共享');
@@ -852,9 +869,21 @@ const LAN_EVENTS = {
       return { ...lanState(), session: lanSession };
     });
   },
+  // 对方发来的列表按格式过滤：不是这个样子的条目不给弹窗
   async lanList(conn, m) {
     const { addr, code } = lanTarget(m);
-    return lanRequest(addr, code, 'list');
+    const r = await lanRequest(addr, code, 'list');
+    if (!r || typeof r !== 'object' || !Array.isArray(r.scripts)) throw new Error('对方发来的列表格式不对');
+    const text = (x, n) => (typeof x === 'string' ? x.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n) : '');
+    const seen = new Set();
+    const scripts = [];
+    for (const x of r.scripts) {
+      if (scripts.length >= 2000) break;
+      if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !SHARE_ID_RE.test(x.id) || seen.has(x.id)) continue;
+      seen.add(x.id);
+      scripts.push({ id: x.id, name: text(x.name, 200) || x.id, from: text(x.from, 60), savedAt: Number.isFinite(x.savedAt) ? x.savedAt : 0 });
+    }
+    return { device: text(r.device, 100) || '对方', scripts };
   },
   // 收到的复制一份进这个浏览器的脚本库（之后各管各的）。这里已有同一条的，只在它还是用户确认覆盖时的那个版本（expect）才覆盖。
   // 同一个浏览器一次只跑一批；整批有总时限，浏览器断开就停
@@ -862,26 +891,39 @@ const LAN_EVENTS = {
     if (!canShare(conn)) throw new Error('这个扩展版本不支持接收');
     if (conn.lanReceiving) throw new Error('上一批还在接收，等它完了再点');
     const { addr, code } = lanTarget(m);
-    const all = (Array.isArray(m.ids) ? m.ids : []).filter((x) => typeof x === 'string' && SHARE_ID_RE.test(x));
+    const all = [...new Set((Array.isArray(m.ids) ? m.ids : []).filter((x) => typeof x === 'string' && SHARE_ID_RE.test(x)))];
     const expect = m.expect && typeof m.expect === 'object' ? m.expect : {};
     const call = connCall(conn);
     const out = { received: [], failed: all.slice(LAN_RECEIVE_MAX).map((id) => ({ id, error: `一次最多接收 ${LAN_RECEIVE_MAX} 条` })) };
     const deadline = Date.now() + LAN_RECEIVE_MS;
+    const batch = all.slice(0, LAN_RECEIVE_MAX);
+    const skipped = out.failed.length;
+    // 开始时报一次、每做完一条报一次：扩展按「多久没进展」算超时，批量大也不会误报桥接没回应
+    const progress = () => callConn(conn, 'bridgeProgress', { req: m.req, done: out.received.length + out.failed.length - skipped, total: batch.length, received: out.received.length }, 10000).catch(() => {});
+    const cancelled = () => !!(conn.lanCancel && conn.lanCancel.has(m.req));
+    progress();
     conn.lanReceiving = true;
     try {
-      for (const id of all.slice(0, LAN_RECEIVE_MAX)) {
-        if (conn.dead || Date.now() > deadline) { out.failed.push({ id, error: conn.dead ? '浏览器连接断开了' : '这一批太久了，剩下的没接收' }); continue; }
+      for (const [i, id] of batch.entries()) {
+        const left = deadline - Date.now();
+        // 断开了、扩展不等了、整批超时：剩下的一起记失败，不再一条条报进度
+        const stop = conn.dead ? '浏览器连接断开了' : cancelled() ? '已取消（弹窗不等了）' : left < 1000 ? '这一批太久了，剩下的没接收' : '';
+        if (stop) { out.failed.push(...batch.slice(i).map((x) => ({ id: x, error: stop }))); break; }
         try {
           const want = Object.hasOwn(expect, id) && Number.isFinite(expect[id]) ? expect[id] : 0;
-          const { item } = await lanRequest(addr, code, 'get', { id }, Math.min(120000, deadline - Date.now()));
-          if (!item || item.id !== id) throw new Error('对方发来的不是这条脚本');
-          if (conn.dead) throw new Error('浏览器连接断开了');
+          const { item } = await lanRequest(addr, code, 'get', { id }, Math.min(120000, left));
+          if (!item || typeof item !== 'object' || item.id !== id) throw new Error('对方发来的不是这条脚本');
+          if (conn.dead || cancelled()) throw new Error(conn.dead ? '浏览器连接断开了' : '已取消（弹窗不等了）');
           const r = await sendItem(call, 'sharedApply', id, item, { expectAt: want, fromLan: true });
           if (!r || !r.ok) throw new Error(r && r.busy ? '这个浏览器正在录制或编辑这条脚本' : '这个浏览器里的这条在你确认后变过，没有覆盖；刷新后重新接收');
-          out.received.push({ id, name: item.name });
+          out.received.push({ id });
         } catch (e) { out.failed.push({ id, error: e.message }); }
+        if (!conn.dead) progress();
       }
-    } finally { conn.lanReceiving = false; }
+    } finally {
+      conn.lanReceiving = false;
+      if (conn.lanCancel) conn.lanCancel.delete(m.req);
+    }
     return out;
   },
 };
@@ -1970,8 +2012,9 @@ async function callTool(name, args, ctx) {
       if (info.browsers) {
         const v = typeof args[info.browserArg] === 'string' ? args[info.browserArg].trim() : '';
         const ids = Object.values(info.browserTarget);
-        target = Object.hasOwn(info.browserTarget, v) ? info.browserTarget[v] : ids.includes(v) ? v : '';
-        if (!target) throw new Error(`脚本「${info.name}」在 ${info.browsers.length} 个浏览器里都有，请用 ${info.browserArg} 参数指定在哪个执行（只能是这几个）：${info.browsers.join('、')}`);
+        const id = Object.hasOwn(info.browserTarget, v) ? info.browserTarget[v] : ids.includes(v) ? v : '';
+        if (!id) throw new Error(`脚本「${info.name}」在 ${info.browsers.length} 个浏览器里都有，请用 ${info.browserArg} 参数指定在哪个执行（只能是这几个）：${info.browsers.join('、')}`);
+        target = EXACT_ID + id;
         rest = Object.fromEntries(Object.entries(args).filter(([k]) => k !== info.browserArg));
       }
       if (info.kind === 'run') {
