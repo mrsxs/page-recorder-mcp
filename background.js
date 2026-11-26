@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
   autoUpdate: true,      // 桥接发现新版时自动更新扩展目录并重新加载（录制、回放中不动）
   // 多个浏览器资料都装了扩展时，桥接用这个名字区分（AI 调用时可用 browser 参数指定）
   profileLabel: '',
+  autoReceiveShared: false, // 别的环境共享的脚本自动收进来，不用在脚本库里点「接收」
 };
 
 const TRACKING = /google-analytics\.com|googletagmanager\.com|analytics\.google\.com|doubleclick\.net|googlesyndication|hm\.baidu\.com|cnzz\.com|umeng\.com|umengcloud|sentry\.io|ingest\.sentry|\/sentry\/api|hotjar\.|segment\.(io|com)|mixpanel\.com|amplitude\.com|clarity\.ms|facebook\.com\/tr|connect\.facebook\.net|bat\.bing\.com|newrelic\.com|nr-data\.net|datadoghq|browser-intake|growingio|sensorsdata|arms-retcode|mmstat\.com|zhugeio|fullstory\.com|intercom\.io|bytedance\.com\/.*\/(log|monitor)|mcs\.zijieapi|snssdk\.com\/.*log|log\.zhihu|\/collect\?v=|\/gen_204|\/log204|beacon/i;
@@ -147,18 +148,19 @@ async function syncLibrary(c) {
   if (!c.state.id) return;
   if (!c.events.length) {
     // 录制被删光了（停止录制或删除步骤时都会走到这里）：脚本库里这条也删掉，免得还能运行旧步骤
-    if (!c.libIndex.some((x) => x.id === c.state.id)) return;
-    c.libIndex = c.libIndex.filter((x) => x.id !== c.state.id);
-    await chrome.storage.local.remove('lib:' + c.state.id);
-    await chrome.storage.local.set({ libIndex: c.libIndex });
-    await noteLibDeleted(c.state.id);
-    bridgeNotify('libraryChanged');
+    if (c.libIndex.some((x) => x.id === c.state.id)) await deleteLibItem(c, c.state.id);
     return;
   }
+  // 导入的录制包打开改过再存还是导入的（不能改个名就换成本机录的权限）。按脚本库里那条算；旧版本的索引没记这个，读一次原来那条；
+  // 脚本库里已经没有了（编辑时被删掉）就看打开时记在编辑区的
+  const prev = c.libIndex.find((x) => x.id === c.state.id);
+  let imported = prev ? !!prev.imported : !!c.state.imported;
+  if (prev && prev.imported === undefined) imported = !!((await chrome.storage.local.get('lib:' + prev.id))['lib:' + prev.id] || {}).imported;
   const item = {
     id: c.state.id,
     name: defaultName(c), // 未手动命名时：优先用 AI 建议的名称，否则用页面标题 + 时间
     description: c.state.description || (c.aiDocs && c.aiDocs.description) || '',
+    imported,
     savedAt: Date.now(),
     state: { ...c.state, recording: false },
     events: c.events,
@@ -181,7 +183,21 @@ function libEntryOf(item) {
     direct = A.apis.some((a) => !a.ignore && /\{\{[^{}]+\}\}/.test(JSON.stringify(a.editParams || {})));
   } catch (e) { /* ignore */ }
   const docs = item.aiDocs;
-  return { id: item.id, name: item.name, description: item.description, startUrl: item.state.startUrl, savedAt: item.savedAt, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(docs && (docs.title || Object.values(docs.apis || {}).some((d) => d.fn || d.title || d.description))), params, direct };
+  return { id: item.id, name: item.name, description: item.description, startUrl: item.state.startUrl, savedAt: item.savedAt, imported: !!item.imported, steps: cnt.steps, requests: cnt.requests, hasDocs: !!(docs && (docs.title || Object.values(docs.apis || {}).some((d) => d.fn || d.title || d.description))), params, direct };
+}
+async function deleteLibItem(c, id) {
+  c.libIndex = c.libIndex.filter((x) => x.id !== id);
+  await chrome.storage.local.remove('lib:' + id);
+  await chrome.storage.local.set({ libIndex: c.libIndex });
+  await noteLibDeleted(id);
+  bridgeNotify('libraryChanged');
+}
+async function forgetLibDeleted(id) {
+  await withLock('libDeleted', async () => {
+    const all = (await chrome.storage.local.get('libDeleted')).libDeleted || {};
+    if (!Object.hasOwn(all, id)) return;
+    await chrome.storage.local.set({ libDeleted: Object.fromEntries(Object.entries(all).filter(([k]) => k !== id)) });
+  });
 }
 // 删掉的脚本记下来：桥接没开时删的，下次连上也要从本机目录里删，不能被恢复回来
 async function noteLibDeleted(id) {
@@ -730,15 +746,18 @@ async function saveDocsTo(c, ref, docs) {
     if (!c.state.recording) await syncLibrary(c);
     return { ok: true, id: c.state.id };
   }
-  const item = await getLibItem(c, ref);
-  if (item.id === c.state.id) return saveDocsTo(c, 'current', docs);
-  item.aiDocs = mergeDocs(item.aiDocs, docs);
-  if (!item.state.name && item.aiDocs.title) item.name = item.aiDocs.title;
-  item.savedAt = Date.now();
-  c.libIndex = c.libIndex.map((x) => (x.id === item.id ? { ...x, name: item.name, savedAt: item.savedAt, hasDocs: true, description: item.description || item.aiDocs.description || '' } : x));
-  await chrome.storage.local.set({ ['lib:' + item.id]: item, libIndex: c.libIndex });
-  bridgeNotify('libraryChanged');
-  return { ok: true, id: item.id };
+  const found = await getLibItem(c, ref);
+  if (found.id === c.state.id) return saveDocsTo(c, 'current', docs);
+  return withLock('lib:' + found.id, async () => {
+    const item = await getLibItem(c, found.id); // 排队期间可能被共享来的更新换过：重新读
+    item.aiDocs = mergeDocs(item.aiDocs, docs);
+    if (!item.state.name && item.aiDocs.title) item.name = item.aiDocs.title;
+    item.savedAt = Date.now();
+    c.libIndex = c.libIndex.map((x) => (x.id === item.id ? { ...x, name: item.name, savedAt: item.savedAt, hasDocs: true, description: item.description || item.aiDocs.description || '' } : x));
+    await chrome.storage.local.set({ ['lib:' + item.id]: item, libIndex: c.libIndex });
+    bridgeNotify('libraryChanged');
+    return { ok: true, id: item.id };
+  });
 }
 
 // ======================= 在浏览器中执行 =======================
@@ -2127,6 +2146,7 @@ function packageOf(item) {
   const state = { ...item.state };
   state.startUrl = PR_EXPORTER.maskUrl(state.startUrl, s.maskPasswords !== false);
   delete state.tabId;
+  delete state.imported; // 编辑区自己记的，导出的录制包和备份里有没有导入标记看 item
   return {
     format: 'page-recorder-package',
     version: 1,
@@ -2140,6 +2160,14 @@ const noProto = (k, v) => (k === '__proto__' ? undefined : v);
 function untrusted(x) {
   if (typeof x === 'string') return JSON.parse(x, noProto);
   return x && typeof x === 'object' ? JSON.parse(JSON.stringify(x), noProto) : x;
+}
+// 别人给的脚本（录制包、局域网另一台电脑）：起始地址、跳转、接口都只能是不带账号密码的 http(s) 地址
+function validPackageUrls(state, events) {
+  const validUrl = (value) => {
+    try { const u = new URL(value); return /^https?:$/.test(u.protocol) && !u.username && !u.password; } catch (e) { return false; }
+  };
+  return validUrl(state && state.startUrl) && !events.some((e) => (e.url != null &&
+    (e.kind === 'step' || e.via !== 'websocket') && !validUrl(e.url)) || (e.frame?.url && !validUrl(e.frame.url)));
 }
 async function importPackage(c, pkg) {
   try { pkg = untrusted(pkg); } catch (e) { throw new Error('录制包不是有效的 JSON'); }
@@ -2155,13 +2183,7 @@ async function importPackage(c, pkg) {
   const id = uid();
   const state = Object.assign({}, src.state || {}, { id, recording: false });
   delete state.tabId;
-  const validUrl = (value) => {
-    try { const u = new URL(value); return /^https?:$/.test(u.protocol) && !u.username && !u.password; } catch (e) { return false; }
-  };
-  if (!validUrl(state.startUrl) || events.some((e) => (e.url != null &&
-      (e.kind === 'step' || e.via !== 'websocket') && !validUrl(e.url)) || (e.frame?.url && !validUrl(e.frame.url)))) {
-    throw new Error('导入录制包的起始地址、跳转和接口必须使用无内嵌凭据的有效地址');
-  }
+  if (!validPackageUrls(state, events)) throw new Error('导入录制包的起始地址、跳转和接口必须使用无内嵌凭据的有效地址');
   const name = String(src.name || pkg.name || '导入的录制').slice(0, 100);
   if (!state.name) state.name = name;
   const item = { id, name, imported: true, description: String(src.description || ''), savedAt: Date.now(), state, events, apiOverrides: src.apiOverrides || {}, aiDocs: src.aiDocs || {}, settings: c.settings };
@@ -2193,8 +2215,32 @@ async function mergeRecordings(c, p) {
 }
 // ---------- 脚本库同步到本机目录（桥接来取、来补）----------
 let libraryOffers = [];
-let libExport = null; // { id, text }：一条脚本分段发给桥接时留着，发完就放掉
+// 一条脚本分段发给桥接时留着的快照，按这次读取的编号（tx）分开：备份和共享同时读同一条也不会拼出两个版本。发完就放掉
+const libExports = new Map(); // tx → { id, text, at }
 const libImports = new Map(); // id → 分段收到的文字
+// 桥接分段发来的一条脚本：收齐了返回整段文字，没收齐返回 null。按这次传输的编号（tx）拼，同一条同时传两次也不串
+const MAX_ITEM_CHARS = 512 * 1024 * 1024;
+function joinChunks(parts, p) {
+  const key = typeof p.tx === 'string' && p.tx ? p.tx.slice(0, 64) : String(p.id || '');
+  // 前面的分段已经没了（中断后被清掉）：直接说中断，不把后半段当成新开头拼
+  if (!p.start && !parts.has(key)) throw new Error('分段传输中断了，请重试');
+  const text = (p.start ? '' : parts.get(key).text) + String(p.chunk || '');
+  if (text.length > MAX_ITEM_CHARS) { parts.delete(key); throw new Error('脚本太大'); }
+  if (!p.done) { parts.set(key, { text, at: Date.now() }); sweepLater(); return null; }
+  parts.delete(key);
+  return text;
+}
+// 分段传到一半断了（桥接那边出错、超时，连接却没断）：这么久没有下一段，半截内容就丢掉，不一直占着后台内存
+const PART_TTL_MS = 2 * 60 * 1000;
+let sweepTimer = null;
+function sweepParts(now = Date.now()) {
+  for (const m of [libImports, sharedParts, libExports]) for (const [k, v] of m) if (now - v.at > PART_TTL_MS) m.delete(k);
+  sweepTimer = null;
+  sweepLater();
+}
+function sweepLater() {
+  if (!sweepTimer && (libImports.size || sharedParts.size || libExports.size)) sweepTimer = setTimeout(sweepParts, 30000);
+}
 // 步骤可能录在 about:srcdoc、blob: 这样的框架里；起始页面只能是真实地址
 const validLibUrl = (value, inFrame) => {
   try {
@@ -2215,18 +2261,135 @@ function validLibItem(x) {
     && validLibUrl(x.state.startUrl) && x.events.every((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && Number.isFinite(e.ts)
       && (e.url == null || validLibUrl(e.url, true)) && (!e.frame?.url || validLibUrl(e.frame.url, true))));
 }
-function libraryChunk(id, item, offset, limit) {
-  if (!libExport || libExport.id !== id || !offset) {
+function libraryChunk(id, item, offset, limit, tx) {
+  const key = typeof tx === 'string' && tx ? tx.slice(0, 64) : id; // 旧版桥接不带 tx
+  let snap = libExports.get(key);
+  if (offset && snap && snap.id !== id) snap = null;
+  if (offset && !snap && tx) throw new Error('分段读取中断了，请重新读取');
+  if (!snap || !offset) {
     // 和录制包同样脱敏，并清掉密码框的值，不看这条录制自己的开关：这个目录会长期留在磁盘上
     const { item: clean } = packageOf({ ...PR_EXPORTER.scrubBackup(item), settings: DEFAULT_SETTINGS });
-    libExport = { id, text: JSON.stringify({ ...clean, id: item.id, savedAt: item.savedAt, imported: !!item.imported }) };
+    snap = { id, at: Date.now(), text: JSON.stringify({ ...clean, id: item.id, savedAt: item.savedAt, imported: !!item.imported }) };
   }
   const start = Math.max(0, Number(offset) || 0);
   const end = start + Math.min(8e6, Math.max(1, Number(limit) || 4e6));
-  const done = end >= libExport.text.length;
-  const chunk = libExport.text.slice(start, end);
-  if (done) libExport = null;
+  const done = end >= snap.text.length;
+  const chunk = snap.text.slice(start, end);
+  // 一段读完的不用留快照；还要接着读的留着，从最后一次读算起两分钟没人读就清掉
+  if (done) libExports.delete(key);
+  else { libExports.set(key, { ...snap, at: Date.now() }); sweepLater(); }
   return { chunk, done };
+}
+// ---------- 发给桥接、等它回结果（局域网同步用）：事件带 req 编号，桥接做完调 bridgeReply ----------
+const bridgeWaits = new Map(); // req → { resolve, reject }
+// timeoutMs 是多久没有进展就不等了：做得久的（批量接收）桥接每做完一条报一次进度（bridgeProgress），等待时间从那时重新算
+function bridgeRequest(event, params, timeoutMs = 15000) {
+  if (!bridgeConnected()) return Promise.reject(new Error('桥接没有连接：要先让 AI 工具（或 npx page-recorder-mcp）运行起来'));
+  const req = uid();
+  return new Promise((resolve, reject) => {
+    let progress = null;
+    const giveUp = () => {
+      bridgeWaits.delete(req);
+      // 告诉桥接不等了：还在跑的批量接收停下来，不在弹窗报失败之后接着写
+      if (bridgeConnected()) ws.send(JSON.stringify({ type: 'event', event: 'cancel', req }));
+      reject(new Error(progress
+        ? `桥接 ${Math.round(timeoutMs / 1000)} 秒没有新进展，先不等了：已处理 ${progress.done} / ${progress.total} 条（收到 ${progress.received} 条，已经在脚本库里）。没收到的请再接收一次`
+        : '桥接没有回应（可能版本太旧，不支持局域网同步）'));
+    };
+    let timer = setTimeout(giveUp, timeoutMs);
+    const done = (fn) => (x) => { clearTimeout(timer); bridgeWaits.delete(req); fn(x); };
+    bridgeWaits.set(req, {
+      resolve: done(resolve),
+      reject: done(reject),
+      progress: (p) => { progress = p; clearTimeout(timer); timer = setTimeout(giveUp, timeoutMs); },
+    });
+    ws.send(JSON.stringify({ ...params, type: 'event', event, req }));
+  });
+}
+let lanInfo = { on: false }; // 这台电脑的局域网同步：{ on, port, code, addresses, count }
+
+// ---------- 共享脚本：同一台电脑上别的环境共享的，桥接发来、或者让这里删掉 ----------
+let sharedInfo = { ready: false, shared: [], offers: [], notices: [] }; // 桥接每次同步时发来，弹窗显示
+const sharedParts = new Map(); // id → 分段收到的文字
+// 能连上桥接的扩展都是桥接认过的（同一台电脑上用户自己装的），所以按这里录的对待；导入的录制包共享过来还是导入的。
+// 局域网另一台电脑来的（fromLan）不知道是谁的电脑，和别人给的录制包一样按导入的对待，地址也按录制包的规矩查。
+// expectAt：桥接上次看到的这条的 savedAt（0 = 这里还没有），对不上说明用户刚改过，不覆盖，桥接下一轮再对。
+// 保存时间沿用共享版本的（同一台电脑同一个时钟），两边都改过时才比得出谁改得晚
+// 编辑区正忙（录制、改动、AI 解读进行中）：共享来的更新、删除先不碰正打开着的这条
+const editorBusy = (c, id) => c.state.id === id && !!(c.state.recording || editing || stopInFlight || aiRunning);
+function applySharedItem(c, raw, p) {
+  raw = untrusted(raw);
+  if (!validLibItem(raw)) throw new Error('共享的脚本格式不对');
+  const fromLan = p.fromLan === true;
+  if (fromLan && !validPackageUrls(raw.state, raw.events)) throw new Error('另一台电脑发来的脚本，起始地址、跳转和接口必须是无内嵌凭据的 http(s) 地址');
+  const copyName = typeof p.copyName === 'string' && p.copyName ? p.copyName.slice(0, 100) : '';
+  const copyId = typeof p.copyId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(p.copyId) ? p.copyId : '';
+  if (copyName && !copyId) throw new Error('另存副本缺少 id');
+  const id = copyName ? copyId : raw.id;
+  // 和给 AI 解读存说明的那条路一样按脚本排队，读改写不交错
+  return withLock('lib:' + id, async () => {
+    const deleted = ((await chrome.storage.local.get('libDeleted')).libDeleted || {})[id];
+    // 从这里到写存储前不 await：检查和改内存一气做完，之后进来的改动都基于新内容
+    const cur = c.libIndex.find((x) => x.id === id);
+    // 副本已经存过（同一次冲突重试）、或用户删掉了：不再存
+    if (copyName && (cur || deleted)) return { ok: true, id, existed: true };
+    if (!copyName && (cur ? cur.savedAt : 0) !== (Number(p.expectAt) || 0)) return { ok: false, changed: true };
+    if (editorBusy(c, id)) return { ok: false, busy: true };
+    const open = c.state.id === id;
+    const name = copyName || String(raw.name || '');
+    // 上传步骤里的本机文件路径不带过来（和恢复备份、导入录制包一样）：另一个环境回放时要传文件就在参数里给。
+    // 另一台电脑来的还和导入录制包一样：去掉步骤上分析时算出来的字段（按这里的分析重算），分析不了的不收
+    const events = raw.events.map((e) => {
+      const step = e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e;
+      return fromLan && step.kind === 'step' ? PR_EXPORTER.bareStep(step) : step;
+    });
+    const apiOverrides = raw.apiOverrides && typeof raw.apiOverrides === 'object' ? raw.apiOverrides : {};
+    const aiDocs = raw.aiDocs && typeof raw.aiDocs === 'object' ? raw.aiDocs : {};
+    if (fromLan) {
+      try { PR_EXPORTER.analyze(events, c.settings, raw.state, apiOverrides, aiDocs); } catch (e) { throw new Error('另一台电脑发来的脚本内容不对，分析不了：' + e.message); }
+    }
+    const savedAt = copyName || fromLan || !Number.isFinite(raw.savedAt) ? Date.now() : raw.savedAt;
+    const imported = fromLan || !!raw.imported;
+    // 只拿脚本该有的字段，别的（对方塞进来的）不存
+    const item = {
+      id, name, description: String(raw.description || ''), imported, savedAt, events,
+      state: { ...raw.state, id, recording: false, imported, ...(copyName ? { name } : {}) },
+      apiOverrides,
+      aiDocs,
+      settings: c.settings,
+    };
+    c.libIndex = [libEntryOf(item), ...c.libIndex.filter((x) => x.id !== id)];
+    // 正打开着编辑的就是这条：编辑区也换成新的，不然下次改动会把旧内容存回去
+    if (open) {
+      c.state = { ...item.state };
+      c.events = item.events;
+      c.apiOverrides = item.apiOverrides || {};
+      c.aiDocs = item.aiDocs || {};
+    }
+    await chrome.storage.local.set({ ['lib:' + id]: item, libIndex: c.libIndex });
+    if (open) await persist(true);
+    if (deleted) await forgetLibDeleted(id); // 删过的又收回来了：删除记录作废，不然备份那边会当它已删
+    bridgeNotify('libraryChanged');
+    return { ok: true, id, savedAt: item.savedAt };
+  });
+}
+function removeSharedItem(c, id, expectAt) {
+  return withLock('lib:' + id, async () => {
+    const cur = c.libIndex.find((x) => x.id === id);
+    if (!cur || cur.savedAt !== expectAt) return { ok: false, changed: true };
+    if (editorBusy(c, id)) return { ok: false, busy: true };
+    // 正打开着编辑：清掉编辑区，不然下次改动又把它存回脚本库
+    const open = c.state.id === id;
+    if (open) {
+      c.state = { recording: false };
+      c.events = [];
+      c.apiOverrides = {};
+      c.aiDocs = {};
+    }
+    await deleteLibItem(c, id);
+    if (open) await persist(true);
+    return { ok: true };
+  });
 }
 async function restoreLibItem(c, raw, sourceExtension) {
   raw = untrusted(raw);
@@ -2261,21 +2424,49 @@ async function bridgeHandle(method, p) {
     case 'libraryManifest': {
       const all = (await chrome.storage.local.get('libDeleted')).libDeleted || {};
       const here = new Set(c.libIndex.map((x) => x.id));
-      return { items: c.libIndex.map((x) => ({ id: x.id, savedAt: x.savedAt })), deleted: Object.entries(all).filter(([id]) => !here.has(id)).map(([id, at]) => ({ id, at })) };
+      return { items: c.libIndex.map((x) => ({ id: x.id, savedAt: x.savedAt })), deleted: Object.entries(all).filter(([id]) => !here.has(id)).map(([id, at]) => ({ id, at })), autoReceiveShared: c.settings.autoReceiveShared === true };
     }
     case 'libraryGet': {
       const item = (await chrome.storage.local.get('lib:' + p.id))['lib:' + p.id];
-      return item ? libraryChunk(p.id, item, p.offset, p.limit) : null;
+      return item ? libraryChunk(p.id, item, p.offset, p.limit, p.tx) : null;
     }
     case 'libraryRestore': {
-      const id = String(p.id || '');
-      const text = (p.start ? '' : libImports.get(id) || '') + String(p.chunk || '');
-      if (!p.done) { libImports.set(id, text); return { ok: true }; }
-      libImports.delete(id);
+      const text = joinChunks(libImports, p);
+      if (text === null) return { ok: true };
       return restoreLibItem(c, JSON.parse(text), p.sourceExtension);
     }
     case 'libraryOffer':
       libraryOffers = Array.isArray(p.offers) ? p.offers.slice(0, 20) : [];
+      return { ok: true };
+    case 'sharedApply': {
+      const text = joinChunks(sharedParts, p);
+      if (text === null) return { ok: true };
+      return applySharedItem(c, JSON.parse(text), p);
+    }
+    case 'sharedRemove': return removeSharedItem(c, String(p.id || ''), p.expectAt);
+    case 'bridgeReply': {
+      const w = bridgeWaits.get(String(p.req || ''));
+      if (w) (p.ok ? w.resolve(p.data) : w.reject(new Error(String(p.error || '桥接处理失败'))));
+      return { ok: true };
+    }
+    case 'bridgeProgress': {
+      const w = bridgeWaits.get(String(p.req || ''));
+      const n = (x) => (Number.isFinite(x) ? x : 0);
+      if (w) w.progress({ done: n(p.done), total: n(p.total), received: n(p.received) });
+      return { ok: true };
+    }
+    case 'lanState':
+      lanInfo = p && p.on ? p : { on: false };
+      if (!lanInfo.on) await chrome.storage.session.remove('lan').catch(() => {}); // 在别的浏览器里关掉了
+      return { ok: true };
+    case 'sharedState':
+      // 只带提示的是共享、停止共享的结果；列表在每次同步时整份发
+      sharedInfo = {
+        ready: true,
+        shared: Array.isArray(p.shared) ? p.shared.slice(0, 1000) : sharedInfo.shared,
+        offers: Array.isArray(p.offers) ? p.offers.slice(0, 100) : sharedInfo.offers,
+        notices: [...sharedInfo.notices, ...(Array.isArray(p.notices) ? p.notices.map(String) : [])].slice(-10),
+      };
       return { ok: true };
     case 'updatePrepare':
       if (c.settings.autoUpdate === false) return { ok: false, disabled: true };
@@ -2340,9 +2531,19 @@ function bridgeConnect() {
     if (ws !== sock || sock.readyState !== 1) return;
     // profile：多个浏览器资料都装了扩展时给桥接看的名字（设置里可以填，没填就空着，桥接按 instanceId 区分）
     const profile = String((cache && cache.settings.profileLabel) || '').slice(0, 40);
-    sock.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version, instanceId, profile, capabilities: ['librarySync', 'selfUpdate'] }));
+    sock.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version, instanceId, profile, capabilities: ['librarySync', 'selfUpdate', 'sharedSync', 'lanSync'] }));
     clearInterval(wsKeep);
     wsKeep = setInterval(() => { if (ws === sock && sock.readyState === 1) sock.send(JSON.stringify({ type: 'ping' })); }, 20000);
+    // 局域网同步开着（这次浏览器会话里打开过）：重连后再告诉桥接一次，桥接重启过也能接着开
+    // 带上这次开启的编号：在这期间被别的浏览器关掉过的，桥接不会再打开
+    const { lan } = await chrome.storage.session.get('lan').catch(() => ({}));
+    if (lan && lan.on) {
+      bridgeRequest('lanSet', { on: true, resume: lan.session || '', code: lan.code }).then((info) => {
+        lanInfo = info && info.on ? info : { on: false };
+        if (info && info.on) chrome.storage.session.set({ lan: { on: true, code: info.code, session: info.session } }).catch(() => {});
+        else chrome.storage.session.remove('lan').catch(() => {});
+      }, () => {});
+    }
   };
   sock.onmessage = async (ev) => {
     let m;
@@ -2358,7 +2559,20 @@ function bridgeConnect() {
       if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'response', id: m.id, ok: false, error: String((e && e.message) || e) }));
     }
   };
-  sock.onclose = () => { if (ws === sock) { ws = null; clearInterval(wsKeep); wsKeep = null; } };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    ws = null;
+    clearInterval(wsKeep);
+    wsKeep = null;
+    // 下次连上的可能是旧版桥接（不支持共享）：等它发来共享状态再显示共享按钮；收了一半的分段也不要了
+    sharedInfo = { ready: false, shared: [], offers: [], notices: sharedInfo.notices };
+    lanInfo = { on: false };
+    for (const w of bridgeWaits.values()) w.reject(new Error('桥接连接断开了'));
+    bridgeWaits.clear();
+    sharedParts.clear();
+    libImports.clear();
+    libExports.clear();
+  };
   sock.onerror = () => {};
 }
 chrome.alarms.create('bridge', { periodInMinutes: 0.5 });
@@ -2417,7 +2631,15 @@ function replayContext(msg, sender) {
       (context.docId && context.docId !== sender.documentId)) return null;
   return context;
 }
+// 改编辑区、存回脚本库的消息：进行中时共享来的更新不碰编辑区（不然改了一半的内容会被换掉）
+const EDIT_MESSAGES = new Set(['start', 'stop', 'restartAtEntry', 'clear', 'deleteEvent', 'deleteEvents', 'setParam', 'setOptional', 'setMeta', 'saveApiOverrides', 'saveToLibrary', 'saveAiDocs', 'libOpen', 'updateEvent']);
+let editing = 0;
 async function handle(msg, sender) {
+  if (!EDIT_MESSAGES.has(msg.type)) return handleMessage(msg, sender);
+  editing++;
+  try { return await handleMessage(msg, sender); } finally { editing--; }
+}
+async function handleMessage(msg, sender) {
   const c = await load();
   if (sender.tab && sender.url !== chrome.runtime.getURL('popup/popup.html') &&
       !sender.url?.startsWith(chrome.runtime.getURL('popup/popup.html') + '?')) {
@@ -2507,12 +2729,12 @@ async function handle(msg, sender) {
     }
     case 'stop': await stop(c); return { ok: true };
     case 'getData':
-      return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, libraryOffers, bridge: bridgeConnected(), bridgeRejected: bridgeConnected() ? '' : bridgeRejected };
+      return { state: c.state, events: c.events, settings: c.settings, apiOverrides: c.apiOverrides, aiDocs: c.aiDocs, aiStatus: c.aiStatus, counts: counts(c), libIndex: c.libIndex, libraryOffers, sharedInfo, lanInfo, lanPeer: (await chrome.storage.session.get('lanPeer').catch(() => ({}))).lanPeer || null, bridge: bridgeConnected(), bridgeRejected: bridgeConnected() ? '' : bridgeRejected };
     case 'clear':
       c.events = [];
       c.apiOverrides = {};
       c.aiDocs = {};
-      c.state = c.state.recording ? { ...c.state, id: uid(), name: '' } : { recording: false };
+      c.state = c.state.recording ? { ...c.state, id: uid(), name: '', imported: false } : { recording: false };
       await persist(true);
       return { ok: true };
     case 'deleteEvent':
@@ -2619,8 +2841,10 @@ async function handle(msg, sender) {
     case 'saveSettings': {
       const prevBridge = c.settings.bridgeUrl + c.settings.bridgeEnabled;
       const prevLabel = c.settings.profileLabel;
+      const prevAuto = c.settings.autoReceiveShared;
       c.settings = { ...c.settings, ...msg.settings };
       await persist(true);
+      if (prevAuto !== c.settings.autoReceiveShared) bridgeNotify('libraryChanged'); // 打开自动接收：让桥接马上把共享的发过来
       if (prevLabel !== c.settings.profileLabel) setActionTitle(c);
       // 名字在连上桥接时告诉它：改了名重新连一次，桥接马上用新名字
       if (prevBridge !== c.settings.bridgeUrl + c.settings.bridgeEnabled || prevLabel !== c.settings.profileLabel) { if (ws) ws.close(); ws = null; bridgeConnect(); }
@@ -2696,7 +2920,7 @@ async function handle(msg, sender) {
     case 'libOpen': {
       if (c.state.recording) throw new Error('请先停止录制');
       const item = await getLibItem(c, msg.id);
-      c.state = { ...item.state, recording: false };
+      c.state = { ...item.state, recording: false, imported: !!item.imported };
       c.events = item.events;
       c.apiOverrides = item.apiOverrides || {};
       c.aiDocs = item.aiDocs || {};
@@ -2704,12 +2928,51 @@ async function handle(msg, sender) {
       return { ok: true };
     }
     case 'libDelete':
-      c.libIndex = c.libIndex.filter((x) => x.id !== msg.id);
-      await chrome.storage.local.remove('lib:' + msg.id);
-      await chrome.storage.local.set({ libIndex: c.libIndex });
-      await noteLibDeleted(msg.id);
-      bridgeNotify('libraryChanged');
+      await deleteLibItem(c, msg.id);
       return { ok: true };
+    case 'libShare': {
+      if (!bridgeConnected()) throw new Error('桥接没有连接，暂时不能共享');
+      if (!c.libIndex.some((x) => x.id === msg.id)) throw new Error('脚本库里没有这条脚本');
+      // 等桥接真的改完再回：「停止共享」后马上删除，不能被当成在共享时删的（那会让别的环境也删）
+      const r = await bridgeRequest('shareSet', { id: String(msg.id), on: msg.on === true }, 120000);
+      const mine = (r && r.state && r.state.shared) || null;
+      if (mine) sharedInfo = { ...sharedInfo, ready: true, shared: mine.slice(0, 1000) };
+      return { ok: true, notices: (r && r.notices) || [] };
+    }
+    case 'sharedReceive': {
+      if (!bridgeConnected()) throw new Error('桥接没有连接，暂时不能接收');
+      const ids = (Array.isArray(msg.ids) ? msg.ids : []).map(String).slice(0, 200);
+      ws.send(JSON.stringify({ type: 'event', event: 'sharedReceive', ids }));
+      sharedInfo = { ...sharedInfo, offers: sharedInfo.offers.filter((x) => !ids.includes(x.id)) };
+      return { ok: true };
+    }
+    case 'sharedDismiss':
+      sharedInfo = { ...sharedInfo, notices: [] };
+      return { ok: true };
+    // 局域网同步的开关只记在这次浏览器会话里（chrome.storage.session）：关掉浏览器就没了，下次要重新打开
+    case 'lanToggle': {
+      const on = msg.on === true;
+      const { lan } = await chrome.storage.session.get('lan');
+      const info = await bridgeRequest('lanSet', { on, code: on && lan ? lan.code : undefined });
+      if (on && info && info.on) await chrome.storage.session.set({ lan: { on: true, code: info.code, session: info.session } });
+      else await chrome.storage.session.remove('lan');
+      lanInfo = info && info.on ? info : { on: false };
+      return { lanInfo };
+    }
+    case 'lanList': {
+      const peer = { addr: String(msg.addr || '').trim().slice(0, 300), code: String(msg.code || '').trim().slice(0, 64) };
+      const r = await bridgeRequest('lanList', peer, 20000);
+      await chrome.storage.session.set({ lanPeer: peer }); // 这次会话里记着，不用每次重填
+      return { list: r };
+    }
+    case 'lanReceive': {
+      // 不在这里截断：超过一次能收的条数，桥接会把多出来的逐条列成失败，弹窗看得到
+      const ids = [...new Set((Array.isArray(msg.ids) ? msg.ids : []).map(String))].slice(0, 2000);
+      // 用户确认时这里每条的版本（没有 = 0）：桥接写入前核对，期间这里变过的不覆盖
+      const expect = Object.fromEntries(ids.map((id) => [id, (c.libIndex.find((x) => x.id === id) || {}).savedAt || 0]));
+      if (msg.expect && typeof msg.expect === 'object') for (const id of ids) if (Number.isFinite(msg.expect[id])) expect[id] = msg.expect[id];
+      return bridgeRequest('lanReceive', { addr: String(msg.addr || ''), code: String(msg.code || ''), ids, expect }, 5 * 60 * 1000);
+    }
     case 'libRestoreOffer':
       if (!bridgeConnected()) throw new Error('桥接没有连接，暂时不能恢复');
       ws.send(JSON.stringify({ type: 'event', event: 'libraryRestore', owner: String(msg.owner || '') }));

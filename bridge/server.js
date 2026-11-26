@@ -13,7 +13,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
-const { createLibrary, syncBrowser, restoreOwner } = require('./library');
+const { createLibrary, syncBrowser, restoreOwner, sendItem } = require('./library');
+const { createShared, syncEnv, shareOn, shareOff } = require('./shared');
+const { createLanServer, lanRequest } = require('./lan');
 const { createUpdater, copyTree, EXTENSION_FILES } = require('./updater');
 
 const ROOT = path.resolve(__dirname, '..'); // 扩展本体所在目录（npm 包根目录）
@@ -50,6 +52,9 @@ if (argv[0] === '--help' || argv[0] === '-h') {
                     改用 search_apis 按关键词找接口、call_api 调用（0 = 总是这样）
   --no-auto-update  不自动更新扩展目录和技能                         PR_AUTO_UPDATE=0
 脚本库会同步到 ~/.page-recorder/library/，升级、重装扩展不影响。
+在脚本库里点「共享」的脚本放在 ~/.page-recorder/shared/，这台电脑上连着桥接的其他浏览器资料可以接收、之后跟着同步。
+在扩展弹窗「脚本库 → 局域网」打开开关后，局域网里的另一台电脑可以凭口令读这些共享脚本（端口默认 17322，PR_LAN_PORT 可改）；
+关掉浏览器（开开关的那个）就关。
 --stdio 时会在后台起一个桥接，之后各个 AI 工具、各次会话都复用它，扩展不用反复重连；
 启动它的程序（WorkBuddy、Cursor 等）都退出后，后台桥接自动关闭。日志在 ~/.page-recorder/。
 改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext；
@@ -187,6 +192,7 @@ function attachWs(socket, origin, head) {
       log(`扩展已断开：${browserLabel(conn)}，还剩 ${instances.size} 个浏览器`);
       invalidateIndex();
       toolsChanged();
+      lanOwnerGone(conn.instanceId);
     }
   };
   const failWs = () => {
@@ -313,6 +319,8 @@ function register(conn, instanceId, info) {
   while (extWaiters.length) extWaiters.shift()();
   scheduleLibrarySync(conn);
   scheduleAutoUpdate();
+  // 局域网同步开着：新连上的浏览器马上显示（不用等下一次变化）
+  if (canLan(conn) && lan.running) callConn(conn, 'lanState', lanState(), 10000).catch(() => {});
 }
 // 扩展在 hello 里声明自己支持什么；旧版扩展不声明，就不给它发新方法
 const capabilitiesOf = (info) => (Array.isArray(info.capabilities) ? info.capabilities.map(String).slice(0, 16) : []);
@@ -343,6 +351,18 @@ function onExtMessage(conn, text) {
     scheduleLibrarySync(conn);
   } else if (m.type === 'event' && m.event === 'libraryRestore') {
     runLibraryRestore(conn, m.owner);
+  } else if (m.type === 'event' && m.event === 'shareSet') {
+    if (m.req) replyTo(conn, m.req, () => runShareSet(conn, m.id, m.on === true));
+    else runShareSet(conn, m.id, m.on === true).catch((e) => callConn(conn, 'sharedState', { notices: [`${m.on === true ? '共享' : '停止共享'}失败：${e.message}`] }, 10000).catch(() => {}));
+  } else if (m.type === 'event' && m.event === 'cancel') {
+    // 扩展不等某个请求了（超时）：还在跑的批量接收看到就停
+    if (typeof m.req === 'string' && m.req.length <= 64) conn.lanCancel = new Set([...(conn.lanCancel || []), m.req].slice(-20));
+  } else if (m.type === 'event' && typeof m.event === 'string' && Object.hasOwn(LAN_EVENTS, m.event)) {
+    replyTo(conn, m.req, () => LAN_EVENTS[m.event](conn, m));
+  } else if (m.type === 'event' && m.event === 'sharedReceive') {
+    if (!Array.isArray(m.ids)) return;
+    conn.sharedReceive = new Set([...(conn.sharedReceive || []), ...m.ids.filter((x) => typeof x === 'string').slice(0, 200)]);
+    scheduleSharedSync(conn);
   }
 }
 function toolsChanged() { libraryListeners.forEach((fn) => fn()); }
@@ -365,14 +385,26 @@ function waitExt(ms) {
 
 // 给人和 AI 看的浏览器标识
 function browserInfo(conn) { return { instanceId: conn.instanceId, profile: conn.profile || '' }; }
+// 给 AI 选浏览器用的值：资料名在所有浏览器里唯一就用资料名，没起名或重名的用 instanceId（按资料名找重名时会报错）
+function browserChoices(list, all) {
+  const low = (x) => String(x || '').toLowerCase();
+  const ids = new Set(all.map((b) => low(b.instanceId)));
+  const count = (p) => all.filter((b) => low(b.profile) === low(p)).length;
+  // 资料名不分大小写也唯一、又不和任何 instanceId 撞的才用资料名；还撞就全用 instanceId
+  const picks = list.map((b) => (b.profile && count(b.profile) === 1 && !ids.has(low(b.profile)) ? b.profile : b.instanceId));
+  return new Set(picks.map(low)).size === picks.length ? picks : list.map((b) => b.instanceId);
+}
 function browserLabel(conn) { return `${conn.profile ? '「' + conn.profile + '」' : '（未命名资料）'} instanceId=${conn.instanceId || '待定'}`; }
 function browserList(conns) {
   return conns.map((c) => '  · ' + browserLabel(c)).join('\n') + '\n调用时传 browser 参数指定（填 instanceId 或资料名）。';
 }
 // 按 browser 参数（instanceId 或资料名）找连接；找不到返回空数组，资料名重名时返回多个
+// 「id:<instanceId>」只按 instanceId 找，不退回按资料名找：几个浏览器都有的脚本按选项精确发，目标断线时不会落到同名的别的浏览器
+const EXACT_ID = 'id:';
 function findBrowser(ref) {
   const r = String(ref).trim();
   const all = [...instances.values()];
+  if (r.startsWith(EXACT_ID)) return all.filter((c) => c.instanceId === r.slice(EXACT_ID.length));
   let hit = all.filter((c) => c.instanceId === r);
   if (!hit.length) hit = all.filter((c) => c.profile && c.profile === r);
   if (!hit.length) hit = all.filter((c) => c.profile && c.profile.toLowerCase() === r.toLowerCase());
@@ -381,12 +413,13 @@ function findBrowser(ref) {
 // 指定的浏览器可能正在重连（service worker 最多 30 秒唤醒一次）：最近连过的才等，填错的直接报错
 const recentlySeen = new Map(); // instanceId -> { profile, at }
 function seenRecently(ref) {
-  const r = String(ref).trim().toLowerCase();
+  const exact = String(ref).trim().startsWith(EXACT_ID);
+  const r = String(ref).trim().toLowerCase().slice(exact ? EXACT_ID.length : 0);
   const now = Date.now();
   let hit = false;
   for (const [id, x] of recentlySeen) {
     if (now - x.at >= 10 * 60000) { recentlySeen.delete(id); continue; }
-    if (!hit && (id.toLowerCase() === r || (x.profile && x.profile.toLowerCase() === r))) hit = true;
+    if (!hit && (id.toLowerCase() === r || (!exact && x.profile && x.profile.toLowerCase() === r))) hit = true;
   }
   return hit;
 }
@@ -703,6 +736,7 @@ async function runLibrarySync(conn) {
   try {
     const offers = await syncBrowser(library, conn, connCall(conn), { extensionId: extensionOriginId(conn.origin), connected: new Set(instances.keys()), log });
     conn.libraryOffers = new Set(offers.map((x) => x.owner));
+    await runSharedSync(conn);
   } catch (e) {
     if (!conn.dead) log(`同步脚本库失败：${e.message}`);
   } finally {
@@ -710,6 +744,189 @@ async function runLibrarySync(conn) {
     if (conn.syncAgain) { conn.syncAgain = false; scheduleLibrarySync(conn); }
   }
 }
+// 共享脚本：几个环境共用一个共享区，一次只处理一个环境；共享区变了就让其他环境也同步一次
+const shared = createShared(path.join(STATE_DIR, 'shared'));
+// instanceId 是扩展自己报的：要当共享区里的键用，只认正常的格式
+const SHARE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const canShare = (conn) => canSync(conn) && conn.instanceId !== ANON_ID && SHARE_ID_RE.test(conn.instanceId || '')
+  && !['__proto__', 'constructor', 'prototype'].includes(conn.instanceId) && (conn.capabilities || []).includes('sharedSync');
+const envOf = (conn) => ({ instanceId: conn.instanceId, profile: conn.profile || '' });
+let sharedQueue = Promise.resolve();
+function sharedTask(fn) {
+  const p = sharedQueue.then(fn);
+  sharedQueue = p.catch(() => {});
+  return p;
+}
+// 只同步共享脚本（不碰脚本库备份）：别的环境改了共享脚本、用户点了接收时
+function scheduleSharedSync(conn) {
+  if (!canShare(conn)) return;
+  clearTimeout(conn.sharedTimer);
+  conn.sharedTimer = setTimeout(() => runSharedSync(conn).catch((e) => { if (!conn.dead) log(`同步共享脚本失败：${e.message}`); }), 300);
+}
+function sharedChanged(conn) {
+  for (const other of instances.values()) if (other !== conn) scheduleSharedSync(other);
+  if (lan.running) lanBroadcast(); // 弹窗里「现在有几条共享的脚本」跟着变
+}
+function sharedCount() {
+  try { return shared.list().filter((m) => !m.deleted).length; } catch (e) { return 0; }
+}
+// 和 syncBrowser 各取一次清单：备份那一步可能刚把脚本补回扩展，用它的清单会过时
+async function runSharedSync(conn) {
+  if (!canShare(conn)) return;
+  const receive = conn.sharedReceive || new Set();
+  conn.sharedReceive = null;
+  let r;
+  try {
+    r = await sharedTask(() => syncEnv(shared, envOf(conn), connCall(conn), { receive, log }));
+  } catch (e) {
+    conn.sharedReceive = new Set([...receive, ...(conn.sharedReceive || [])]); // 用户点的接收留到下一轮
+    throw e;
+  }
+  if (r.changed) sharedChanged(conn);
+  // 编辑区正忙（录制、编辑中）没做成的：忙完不一定有新改动来触发，过 30 秒自己再来一轮
+  if (r.busy) {
+    clearTimeout(conn.sharedRetry);
+    conn.sharedRetry = setTimeout(() => scheduleSharedSync(conn), SHARED_RETRY_MS);
+  }
+}
+const SHARED_RETRY_MS = Number(process.env.PR_SHARED_RETRY_MS) || 30000;
+// 共享 / 停止共享：改完、再和这个环境对一次才回（弹窗等它回了才算完成：「停止共享」后马上删除不能被当成在共享时删的）
+async function runShareSet(conn, id, on) {
+  if (!canShare(conn) || typeof id !== 'string') throw new Error('这个扩展版本不支持共享');
+  const notices = [];
+  const changed = await sharedTask(() => (on ? shareOn(shared, envOf(conn), connCall(conn), id, { notices }) : shareOff(shared, envOf(conn), id)));
+  if (changed) sharedChanged(conn);
+  const r = await sharedTask(() => syncEnv(shared, envOf(conn), connCall(conn), { log }));
+  if (r.changed) sharedChanged(conn);
+  if (notices.length) callConn(conn, 'sharedState', { notices }, 10000).catch(() => {});
+  return { notices, state: r.state };
+}
+// ---------- 局域网同步：这台电脑开端口给另一台读共享脚本；或者去读另一台的 ----------
+// 开关只在开它的浏览器连着时有效：那个浏览器断开超过 LAN_GRACE_MS（关了浏览器）就关掉端口。
+// 扩展的后台偶尔重启会断开一下，重连后会把开关再发过来
+const lan = createLanServer({ shared, log });
+const LAN_GRACE_MS = Number(process.env.PR_LAN_GRACE_MS) || 60000;
+const LAN_PORT = Number(process.env.PR_LAN_PORT) || undefined; // 默认 17322，被占了往后找
+const LAN_RECEIVE_MAX = 500;
+const LAN_RECEIVE_MS = 10 * 60 * 1000;
+const lanOwners = new Map(); // instanceId → { at: 断开的时间（0 = 连着）, profile }
+let lanSession = ''; // 这次开启的编号，扩展记在会话里；关掉就作废
+const lanClosed = new Set(); // 关掉过的编号：断线时错过了关闭通知的浏览器重连带着旧编号来，不再打开
+let lanQueue = Promise.resolve(); // 开、关、自动关排队做
+const lanSerial = (fn) => { const p = lanQueue.then(fn, fn); lanQueue = p.catch(() => {}); return p; };
+const canLan = (conn) => !conn.dead && (conn.capabilities || []).includes('lanSync');
+// 给弹窗看的：开着时还有是哪几个浏览器开的
+const lanState = () => (lan.running ? { ...lan.info(), owners: [...lanOwners.values()].map((o) => o.profile || '未命名环境') } : { on: false });
+function lanBroadcast() {
+  const info = lanState();
+  for (const c of instances.values()) if (canLan(c)) callConn(c, 'lanState', info, 10000).catch(() => {});
+}
+async function lanClose() {
+  if (lanSession) lanClosed.add(lanSession);
+  lanSession = '';
+  lanOwners.clear();
+  await lan.stop();
+  lanBroadcast();
+}
+function lanOwnerGone(instanceId) {
+  if (!lanOwners.has(instanceId)) return;
+  lanOwners.set(instanceId, { ...lanOwners.get(instanceId), at: Date.now() });
+  setTimeout(() => lanSerial(async () => {
+    // 重连上来并且又发了开关的，at 已经回到 0；只连上没发（浏览器关了又开，会话里的开关没了）的照样算走了
+    for (const [id, o] of lanOwners) if (o.at && Date.now() - o.at >= LAN_GRACE_MS) lanOwners.delete(id);
+    if (!lanOwners.size && lan.running) await lanClose();
+  }), LAN_GRACE_MS + 100).unref();
+}
+// 扩展发来的请求（带 req 编号）：做完把结果按编号发回去
+function replyTo(conn, req, fn) {
+  if (typeof req !== 'string' || !req || req.length > 64) return;
+  Promise.resolve().then(fn).then(
+    (data) => callConn(conn, 'bridgeReply', { req, ok: true, data }, 10000),
+    (e) => callConn(conn, 'bridgeReply', { req, ok: false, error: e.message }, 10000),
+  ).catch(() => {});
+}
+const lanTarget = (m) => ({ addr: typeof m.addr === 'string' ? m.addr : '', code: typeof m.code === 'string' ? m.code : '' });
+const LAN_EVENTS = {
+  lanSet(conn, m) {
+    if (!canLan(conn)) throw new Error('这个扩展版本不支持局域网同步');
+    const code = typeof m.code === 'string' ? m.code : '';
+    return lanSerial(async () => {
+      if (m.on !== true) { await lanClose(); return { on: false }; }
+      // resume：扩展重连后按会话里记着的开关恢复。这次开启已经被关掉过就不再开；桥接重启过（不认识这个编号）就照旧开
+      const resume = typeof m.resume === 'string' ? m.resume : null;
+      if (resume !== null && (!resume || lanClosed.has(resume))) return { on: false };
+      if (!lan.running) {
+        await lan.start({ port: LAN_PORT, code });
+        lanSession = resume || crypto.randomBytes(8).toString('hex');
+      }
+      // 开端口期间这个浏览器断开了：不登记（登记了就没人会再关它）
+      if (conn.dead || instances.get(conn.instanceId) !== conn) {
+        if (!lanOwners.size) await lanClose();
+        throw new Error('浏览器连接断开了');
+      }
+      lanOwners.set(conn.instanceId, { at: 0, profile: conn.profile || '' });
+      lanBroadcast();
+      return { ...lanState(), session: lanSession };
+    });
+  },
+  // 对方发来的列表按格式过滤：不是这个样子的条目不给弹窗
+  async lanList(conn, m) {
+    const { addr, code } = lanTarget(m);
+    const r = await lanRequest(addr, code, 'list');
+    if (!r || typeof r !== 'object' || !Array.isArray(r.scripts)) throw new Error('对方发来的列表格式不对');
+    const text = (x, n) => (typeof x === 'string' ? x.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n) : '');
+    const seen = new Set();
+    const scripts = [];
+    for (const x of r.scripts) {
+      if (scripts.length >= 2000) break;
+      if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !SHARE_ID_RE.test(x.id) || seen.has(x.id)) continue;
+      seen.add(x.id);
+      scripts.push({ id: x.id, name: text(x.name, 200) || x.id, from: text(x.from, 60), savedAt: Number.isFinite(x.savedAt) ? x.savedAt : 0 });
+    }
+    return { device: text(r.device, 100) || '对方', scripts };
+  },
+  // 收到的复制一份进这个浏览器的脚本库（之后各管各的）。这里已有同一条的，只在它还是用户确认覆盖时的那个版本（expect）才覆盖。
+  // 同一个浏览器一次只跑一批；整批有总时限，浏览器断开就停
+  async lanReceive(conn, m) {
+    if (!canShare(conn)) throw new Error('这个扩展版本不支持接收');
+    if (conn.lanReceiving) throw new Error('上一批还在接收，等它完了再点');
+    const { addr, code } = lanTarget(m);
+    const all = [...new Set((Array.isArray(m.ids) ? m.ids : []).filter((x) => typeof x === 'string' && SHARE_ID_RE.test(x)))];
+    const expect = m.expect && typeof m.expect === 'object' ? m.expect : {};
+    const call = connCall(conn);
+    const out = { received: [], failed: all.slice(LAN_RECEIVE_MAX).map((id) => ({ id, error: `一次最多接收 ${LAN_RECEIVE_MAX} 条` })) };
+    const deadline = Date.now() + LAN_RECEIVE_MS;
+    const batch = all.slice(0, LAN_RECEIVE_MAX);
+    const skipped = out.failed.length;
+    // 开始时报一次、每做完一条报一次：扩展按「多久没进展」算超时，批量大也不会误报桥接没回应
+    const progress = () => callConn(conn, 'bridgeProgress', { req: m.req, done: out.received.length + out.failed.length - skipped, total: batch.length, received: out.received.length }, 10000).catch(() => {});
+    const cancelled = () => !!(conn.lanCancel && conn.lanCancel.has(m.req));
+    progress();
+    conn.lanReceiving = true;
+    try {
+      for (const [i, id] of batch.entries()) {
+        const left = deadline - Date.now();
+        // 断开了、扩展不等了、整批超时：剩下的一起记失败，不再一条条报进度
+        const stop = conn.dead ? '浏览器连接断开了' : cancelled() ? '已取消（弹窗不等了）' : left < 1000 ? '这一批太久了，剩下的没接收' : '';
+        if (stop) { out.failed.push(...batch.slice(i).map((x) => ({ id: x, error: stop }))); break; }
+        try {
+          const want = Object.hasOwn(expect, id) && Number.isFinite(expect[id]) ? expect[id] : 0;
+          const { item } = await lanRequest(addr, code, 'get', { id }, Math.min(120000, left));
+          if (!item || typeof item !== 'object' || item.id !== id) throw new Error('对方发来的不是这条脚本');
+          if (conn.dead || cancelled()) throw new Error(conn.dead ? '浏览器连接断开了' : '已取消（弹窗不等了）');
+          const r = await sendItem(call, 'sharedApply', id, item, { expectAt: want, fromLan: true });
+          if (!r || !r.ok) throw new Error(r && r.busy ? '这个浏览器正在录制或编辑这条脚本' : '这个浏览器里的这条在你确认后变过，没有覆盖；刷新后重新接收');
+          out.received.push({ id });
+        } catch (e) { out.failed.push({ id, error: e.message }); }
+        if (!conn.dead) progress();
+      }
+    } finally {
+      conn.lanReceiving = false;
+      if (conn.lanCancel) conn.lanCancel.delete(m.req);
+    }
+    return out;
+  },
+};
 async function runLibraryRestore(conn, ownerId) {
   if (!canSync(conn) || typeof ownerId !== 'string') return;
   try {
@@ -1114,11 +1331,38 @@ async function dynamicTools(quick) {
   const used = new Set(STATIC_TOOLS.map((t) => t.name));
   // 多个浏览器同时连着：工具说明里注明是哪个浏览器的脚本，调用时直接发给那个浏览器
   const multi = new Set(list.map((r) => r.browser && r.browser.instanceId)).size > 1;
+  // 同一条脚本（共享的、恢复来的）在几个浏览器里都一样：只列一套工具，调用时必须指定在哪个浏览器执行。
+  // 参数、接口不一样的（停止共享后各改各的）还是各列各的
+  const allBrowsers = [...new Map([...list.map((r) => r.browser).filter(Boolean), ...[...instances.values()].map(browserInfo)].map((b) => [b.instanceId, b])).values()];
+  const groups = new Map();
   for (const r of list) {
+    const tools = (r.tools || []).map((t) => [t.name, t.api, t.inputSchema]).sort((x, y) => String(x[0]).localeCompare(String(y[0])));
+    const key = JSON.stringify([r.id, Object.keys(r.params || {}).sort(), r.paramInfo || {}, !!r.dynamicStart, tools]);
+    groups.set(key, [...(groups.get(key) || []), r]);
+  }
+  for (const copies of groups.values()) {
+    const r = copies.reduce((a, b) => ((b.savedAt || 0) > (a.savedAt || 0) ? b : a));
+    const pickFrom = copies.length > 1 ? copies.map((x) => x.browser).filter(Boolean) : [];
+    const pick = pickFrom.length > 1 ? browserChoices(pickFrom, allBrowsers) : null;
     const base = slug(r.slug || r.name, 'rec_' + String(r.id).slice(0, 6));
-    const where = multi && r.browser ? ` · 浏览器 ${r.browser.profile || r.browser.instanceId}` : '';
-    const browser = r.browser ? r.browser.instanceId : '';
-    const add = (name, def, info) => {
+    const where = pick ? ` · 浏览器 ${pick.join('、')}` : multi && r.browser ? ` · 浏览器 ${r.browser.profile || r.browser.instanceId}` : '';
+    const browser = !pick && r.browser ? r.browser.instanceId : '';
+    // 加上选浏览器的参数（和脚本自己的参数重名时换个名字）
+    const withPick = (schema, info) => {
+      if (!pick) return { schema, info };
+      const props = schema.properties || {};
+      let arg = 'browser';
+      for (let i = 2; props[arg]; i++) arg = i === 2 ? 'pr_browser' : `pr_browser_${i}`;
+      // 选项 → instanceId：调用时只按这个精确的 id 发，资料名改了、和别人的 id 撞了都不会发错
+      const target = Object.fromEntries(pick.map((v, i) => [v, pickFrom[i].instanceId]));
+      return {
+        schema: { ...schema, properties: { ...props, [arg]: { type: 'string', enum: pick, description: `必填。这条脚本在这几个浏览器里都有，填在哪个执行：${pick.join('、')}` } }, required: [...(schema.required || []), arg] },
+        info: { ...info, browsers: pick, browserTarget: target, browserArg: arg },
+      };
+    };
+    const add = (name, def0, info0) => {
+      const { schema, info } = withPick(def0.inputSchema, info0);
+      const def = { ...def0, inputSchema: schema };
       let n = name.slice(0, 64);
       let i = 2;
       while (used.has(n)) n = (name.slice(0, 60) + '_' + i++).slice(0, 64);
@@ -1145,12 +1389,12 @@ async function dynamicTools(quick) {
     add(`${base}__run`, {
       description: `[录制脚本「${r.name}」${where}] ${r.description || (r.steps || []).slice(0, 6).join('；')}。传入参数后运行：有关联接口时直接在页面里请求接口（不操作界面），否则回放页面操作。返回接口数据与提取数据。`,
       inputSchema: Object.assign({ type: 'object', properties: Object.assign(Object.create(null), RESULT_PROPS, startArg ? { start_url: START_URL_PARAM } : {}, props), additionalProperties: true }, required.length ? { required } : {}),
-    }, { kind: 'run', recording: r.id, browser, own: Object.keys(props), startArg });
+    }, { kind: 'run', recording: r.id, name: r.name, browser, own: Object.keys(props), startArg });
     for (const t of r.tools || []) {
       add(`${base}__${t.name}`, {
         description: `[录制脚本「${r.name}」${where} ${t.api}] ${t.description}`,
         inputSchema: withResultProps(fixToolSchema(t.inputSchema, r)),
-      }, { kind: 'call', recording: r.id, api: t.api, browser, own: Object.keys((t.inputSchema && t.inputSchema.properties) || {}) });
+      }, { kind: 'call', recording: r.id, name: r.name, api: t.api, browser, own: Object.keys((t.inputSchema && t.inputSchema.properties) || {}) });
     }
   }
   dynamicMap = nextMap;
@@ -1762,13 +2006,24 @@ async function callTool(name, args, ctx) {
       if (!dynamicMap.has(name)) await dynamicTools();
       const info = dynamicMap.get(name);
       if (!info) throw new Error('未知工具：' + name);
+      // 几个浏览器里都有的脚本：在哪个执行由调用方选，不替它挑（挑错店铺比报错更糟）
+      let target = info.browser;
+      let rest = args;
+      if (info.browsers) {
+        const v = typeof args[info.browserArg] === 'string' ? args[info.browserArg].trim() : '';
+        const ids = Object.values(info.browserTarget);
+        const id = Object.hasOwn(info.browserTarget, v) ? info.browserTarget[v] : ids.includes(v) ? v : '';
+        if (!id) throw new Error(`脚本「${info.name}」在 ${info.browsers.length} 个浏览器里都有，请用 ${info.browserArg} 参数指定在哪个执行（只能是这几个）：${info.browsers.join('、')}`);
+        target = EXACT_ID + id;
+        rest = Object.fromEntries(Object.entries(args).filter(([k]) => k !== info.browserArg));
+      }
       if (info.kind === 'run') {
-        const params = withoutResultArgs(args, info.own);
+        const params = withoutResultArgs(rest, info.own);
         let startUrl;
         if (info.startArg) { startUrl = params.start_url; delete params.start_url; }
-        return aiResult(await extCall('run', { recording: info.recording, params, startUrl, timeout: 180000 }, 210000, info.browser), args, info.own);
+        return aiResult(await extCall('run', { recording: info.recording, params, startUrl, timeout: 180000 }, 210000, target), args, info.own);
       }
-      return callResult(await extCall('call', { recording: info.recording, api: info.api, args: withoutResultArgs(args, info.own) }, 90000, info.browser), args, info.own);
+      return callResult(await extCall('call', { recording: info.recording, api: info.api, args: withoutResultArgs(rest, info.own) }, 90000, target), args, info.own);
     }
   }
 }
@@ -1934,6 +2189,8 @@ async function route(req, res) {
         ok: true, name: 'page-recorder-bridge', version: VERSION, pid: process.pid, extensionConnected: instances.size > 0,
         ...(DAEMON ? { background: true, owners: [...owners] } : {}),
         browsers: [...instances.values()].map(browserStatus),
+        sharedScripts: sharedCount(),
+        lan: lan.running ? { on: true, port: lan.info().port } : { on: false }, // 口令不放这里
         ...(rejectedIds.size ? { rejectedExtensions: [...rejectedIds.keys()].slice(-10).map((id) => ({ id, how: `page-recorder-mcp trust ${id}` })) } : {}),
         endpoints: {
           'GET  /api/recordings': '脚本列表（含每个接口拆出的工具；多个浏览器时汇总，每条带 browser）',

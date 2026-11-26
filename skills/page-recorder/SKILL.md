@@ -71,6 +71,10 @@ description: 用 page-recorder（mcp__page-recorder__* 工具）的录制脚本�
 4. `merge_recordings`，`parts` 按执行顺序排，带上 `name`。原来的脚本不动，返回新脚本的 id、步骤和参数。
 5. 核对返回的步骤顺序；参数里出现「_第N次」说明几段用了同一个输入框，告诉用户回放时各填哪个。再用 `save_api_docs` 写说明。
 
+## 几个浏览器里都有的脚本
+
+共享脚本会出现在几个浏览器（不同店铺的资料、指纹浏览器环境）里。它的工具带必填的 `browser` 参数，可选值是这几个浏览器；`call_api`、`run_recording` 按 id 找脚本分不清时也会报错让你传 `browser`。用户没说在哪个店铺、哪个环境执行时先问，不要自己挑一个。
+
 ## 结果太大
 
 调用时带 `result_path` / `result_fields` / `result_limit`；拿到 `result_id` 后用 `read_result` 翻页、换字段，不会重复请求接口。`result_id` 保留最近 30 次、30 分钟内的结果，MCP 进程重启后失效（有的 AI 工具每条消息都重启）。失效后，查询类接口重新调用并直接带 `result_path`，提交类接口先确认能重复执行。

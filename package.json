@@ -41,6 +41,6 @@
   "scripts": {
     "start": "node bridge/server.js",
     "mcp": "node bridge/server.js --stdio",
-    "test": "node --test test/smoke.test.mjs test/result.test.mjs test/tools.test.mjs test/params.test.mjs test/security-and-bugs.test.mjs test/persistence.test.mjs test/merge.test.mjs test/dynamic.test.mjs"
+    "test": "node --test test/smoke.test.mjs test/result.test.mjs test/tools.test.mjs test/params.test.mjs test/security-and-bugs.test.mjs test/persistence.test.mjs test/merge.test.mjs test/dynamic.test.mjs test/shared.test.mjs test/lan.test.mjs"
   }
 }
