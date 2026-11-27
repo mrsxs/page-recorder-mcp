@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const util = require('util');
 
 const EXTENSION_FILES = ['manifest.json', 'background.js', 'content', 'inject', 'lib', 'popup', 'icons'];
 const LOCK_STALE_MS = 60000;
@@ -16,13 +17,14 @@ function compareVersions(a, b) {
   for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0) ? -1 : 1;
   return 0;
 }
-// Chrome 给已解压扩展的 ID：路径的 SHA-256 前 16 字节，每半字节映射到 a-p（Windows 上路径是 UTF-16、盘符大写）
+// 扩展 ID：SHA-256 的前 16 字节，每半字节映射到 a-p
+const idOfHash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32).replace(/./g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
+// 已解压扩展按路径算（Windows 上路径是 UTF-16、盘符大写）
 function unpackedExtensionId(p, platform = process.platform) {
-  const bytes = platform === 'win32'
-    ? Buffer.from(p.replace(/^[a-z]:/, (x) => x.toUpperCase()), 'utf16le')
-    : Buffer.from(p, 'utf8');
-  return crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 32).replace(/./g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
+  return idOfHash(platform === 'win32' ? Buffer.from(p.replace(/^[a-z]:/, (x) => x.toUpperCase()), 'utf16le') : Buffer.from(p, 'utf8'));
 }
+// 打包的（crx）按公钥（DER）算
+const extensionIdOfKey = (pubDer) => idOfHash(pubDer);
 function extensionIdsOf(dir) {
   const out = new Set([unpackedExtensionId(path.resolve(dir))]);
   for (const real of [fs.realpathSync, fs.realpathSync.native]) {
@@ -48,12 +50,36 @@ function browserDataRoots(home, platform = process.platform, env = process.env) 
   const chrome = env.CHROME_CONFIG_HOME || config; // Chrome / Chromium 用它代替 XDG_CONFIG_HOME，下面照样接 google-chrome 这些
   return extra.concat(['google-chrome', 'google-chrome-beta', 'google-chrome-unstable', 'chromium'].map((x) => join(chrome, x)), [['microsoft-edge'], ['BraveSoftware', 'Brave-Browser']].map((x) => join(config, ...x)));
 }
-// 已解压扩展在资料里记的是绝对路径（商店装的是相对路径，不算）。异步一个个读，不卡住桥接；特别大的文件不读。
+// HubStudio：每个环境一个资料目录，放在它的缓存目录里（<缓存目录>/chromium_<环境>/Default）。缓存目录可以在客户端里改，
+// 记在 hubstudio-client/ELECTRON_DB_LOCAL_STORAGE（SQLite）里的设置 JSON 中：不用 SQLite 也读得出，按文本找 "cachePath":"…"
+const APP_DB_MAX_BYTES = 64 * 1024 * 1024;
+async function hubstudioRoots(home, platform = process.platform, env = process.env) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  let app;
+  if (platform === 'win32') app = p.join(env.APPDATA || p.join(home, 'AppData', 'Roaming'), 'hubstudio-client');
+  else if (platform === 'darwin') app = p.join(home, 'Library', 'Application Support', 'hubstudio-client');
+  else return [];
+  const out = new Set([p.join(app, 'sdk', 'cache')]);
+  // 刚改的设置可能还在 -wal 里没写回主库，一起找；记录跨了页、被拆开的找不到，靠 PR_BROWSER_DATA_DIRS 或 trust
+  for (const name of ['ELECTRON_DB_LOCAL_STORAGE', 'ELECTRON_DB_LOCAL_STORAGE-wal']) {
+    try {
+      const f = p.join(app, name);
+      if ((await fs.promises.stat(f)).size > APP_DB_MAX_BYTES) continue;
+      const text = (await fs.promises.readFile(f)).toString('utf8');
+      for (const m of text.matchAll(/"[cC]achePath":("(?:[^"\\\r\n]|\\.){1,1024}")/g)) {
+        try { const dir = JSON.parse(m[1]); if (p.isAbsolute(dir)) out.add(dir); } catch (e) { /* 截断的半截 */ }
+      }
+    } catch (e) { /* 没装 HubStudio、没有 -wal */ }
+  }
+  return [...out];
+}
+// 资料里记着的这些扩展装在哪：已解压的记绝对路径；打包装的（crx：商店、HubStudio 这类指纹浏览器装的）记相对 <资料>/Extensions 的路径。
+// 异步一个个读，不卡住桥接；特别大的文件不读。
 // 资料目录可能是 <根>/<资料>/Preferences（Chrome），也可能直接就是一个资料（<根>/Preferences），
 // 或者指纹浏览器那样每个环境一个 --user-data-dir（<根>/<环境>/Default/Preferences）：三种都找
 const PREFS_MAX_BYTES = 32 * 1024 * 1024;
-async function unpackedDirsOf(roots, ids) {
-  const out = new Set();
+async function installedDirsOf(roots, ids) {
+  const out = new Map(); // 目录 → 是不是打包装的
   for (const root of roots) {
     let children = [];
     try { children = (await fs.promises.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { continue; }
@@ -68,12 +94,18 @@ async function unpackedDirsOf(roots, ids) {
         } catch (e) { continue; }
         for (const id of ids) {
           const p = settings && settings[id] && settings[id].path;
-          if (typeof p === 'string' && path.isAbsolute(p)) out.add(p);
+          if (typeof p !== 'string' || !p) continue;
+          if (path.isAbsolute(p)) out.set(p, false);
+          else if (!p.split(/[\\/]/).includes('..')) out.set(path.join(profile, 'Extensions', p), true);
         }
       }
     }
   }
-  return [...out];
+  return [...out].map(([dir, packed]) => ({ dir, packed }));
+}
+// 自动更新只动已解压的目录：打包装的由浏览器（或指纹浏览器客户端）自己管
+async function unpackedDirsOf(roots, ids) {
+  return (await installedDirsOf(roots, ids)).filter((x) => !x.packed).map((x) => x.dir);
 }
 const sha = (x) => crypto.createHash('sha256').update(x).digest('hex');
 function writeAtomic(file, data) {
@@ -152,6 +184,8 @@ function rollback(dir, saved, done) {
 function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
   const installFailures = new Map();
   const lookups = new Map(); // 扩展 ID → { n: 找了几次没找到, next: 下次最早什么时候再找 }（资料文件可能还没写盘，隔一分钟再找，最多 3 次）
+  const staleWarned = new Set(); // 提示过“装了但代码对不上”的扩展 ID：扩展每 30 秒重连一次，不反复提示
+  const allRoots = async () => browserRoots || [...browserDataRoots(home), ...await hubstudioRoots(home)];
   const stateFile = path.join(stateDir, 'update.json');
   const lockDir = path.join(stateDir, 'update.lock');
   const skillSource = path.join(root, 'skills', 'page-recorder', 'SKILL.md');
@@ -313,7 +347,7 @@ function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
       const tried = (id) => lookups.get(id) || { n: 0, next: 0 };
       const unknown = [...new Set(due.filter((b) => !dirOf(b)).map((b) => b.extensionId))].filter((id) => tried(id).n < 3 && Date.now() >= tried(id).next);
       if (unknown.length) {
-        for (const d of await unpackedDirsOf(browserRoots || browserDataRoots(home), unknown)) {
+        for (const d of await unpackedDirsOf(await allRoots(), unknown)) {
           if (dirs.includes(d) || !updatableDir(d) || !unknown.some((id) => extensionIdsOf(d).has(id))) continue;
           dirs.push(d);
           rememberExtensionDir(d); // 记下来，下次不用再找
@@ -370,7 +404,10 @@ function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
   // 连上来的扩展是不是 Page Recorder：按路径算出来的 ID 就是它的目录里，
   // · 扩展文件和这个程序带的逐个一样（内容比对，别人照抄名字改了代码的过不了）；
   // · 或者是 `extension` 子命令生成、更新器记下的目录、默认目录（旧版本的文件，等连上后自动更新），manifest 名字对得上。
-  // 浏览器资料里登记的其他目录只认第一种。找到返回目录，找不到返回空
+  // 浏览器资料里登记的其他目录只认第一种。打包装的（`pack` 打的 crx 传进 HubStudio 这类）也是第一种，但浏览器安装时
+  // 会往 manifest 里写公钥（key）、重新编码图标：manifest 去掉 key 后要一样、key 算出的 ID 要就是它，图标不比（放不了代码），
+  // 别的文件照样逐个一样。版本号也不比：这种装法不会自动更新，只改了桥接的新版发出来后，装好的还认（代码变了就不认）。
+  // 找到返回目录，找不到返回空
   let packageHashes = null;
   const hashesOf = (dir) => {
     const out = new Map();
@@ -381,12 +418,22 @@ function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
     }
     return out;
   };
-  const samePackage = (dir) => {
+  const readManifest = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  const samePackage = (dir, packed = false) => {
     try {
       packageHashes = packageHashes || hashesOf(root);
-      for (const [f, h] of packageHashes) if (sha(fs.readFileSync(path.join(dir, f))) !== h) return false;
+      for (const [f, h] of packageHashes) {
+        if (packed && f === 'manifest.json') {
+          const { key, version: v1, ...installed } = readManifest(dir);
+          const { version: v2, ...ours } = readManifest(root);
+          if (!util.isDeepStrictEqual(installed, ours)) return false;
+        } else if (!(packed && f.endsWith('.png')) && sha(fs.readFileSync(path.join(dir, f))) !== h) return false;
+      }
       return true;
     } catch (e) { return false; }
+  };
+  const packedId = (dir) => {
+    try { return extensionIdOfKey(Buffer.from(String(readManifest(dir).key), 'base64')); } catch (e) { return ''; }
   };
   const namedOurs = (dir) => {
     try { return String(JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).name || '').startsWith('Page Recorder'); } catch (e) { return false; }
@@ -394,10 +441,24 @@ function createUpdater({ root, version, stateDir, home, log, browserRoots }) {
   async function extensionDir(id) {
     const known = [...readState().extensionDirs, path.join(home, 'page-recorder-extension'), root];
     for (const d of known) if (extensionIdsOf(d).has(id) && namedOurs(d)) return d;
-    for (const d of await unpackedDirsOf(browserRoots || browserDataRoots(home), [id])) if (extensionIdsOf(d).has(id) && samePackage(d)) return d;
+    // pack 打的 zip 解开按已解压扩展加载时，资料里记的是绝对路径，但 ID 按 manifest 里的公钥算：也按打包的规则核对。
+    // HubStudio 每个环境各装一份，没打开过的环境里可能还是旧版：都扫完没有对得上的才提示
+    let stale = '';
+    for (const { dir, packed } of await installedDirsOf(await allRoots(), [id])) {
+      const byKey = packedId(dir) === id;
+      if (byKey ? samePackage(dir, true) : !packed && extensionIdsOf(dir).has(id) && samePackage(dir)) {
+        staleWarned.delete(id);
+        return dir;
+      }
+      if (byKey && !stale && namedOurs(dir)) stale = dir;
+    }
+    if (stale && !staleWarned.has(id)) {
+      staleWarned.add(id);
+      log(`扩展 ${id} 装在 ${stale}，但代码和这个桥接带的 ${version} 版不一样，没认：用这一版重新 pack、上传新的 crx，或者确认是自己装的就运行 page-recorder-mcp trust ${id}`);
+    }
     return '';
   }
   return { rememberExtensionDir, updateExtensions, updateSkills, extensionDir };
 }
 
-module.exports = { createUpdater, compareVersions, unpackedExtensionId, copyTree, browserDataRoots, EXTENSION_FILES };
+module.exports = { createUpdater, compareVersions, unpackedExtensionId, extensionIdOfKey, copyTree, browserDataRoots, hubstudioRoots, EXTENSION_FILES };
