@@ -42,6 +42,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   page-recorder-mcp trust <扩展ID>    放行桥接没认的扩展（找不到安装目录时，比如装在指纹浏览器里的）
   page-recorder-mcp extension [目录] 生成浏览器扩展（默认 ~/page-recorder-extension），
                                     在 Chrome 的 chrome://extensions 里「加载已解压的扩展程序」选这个目录
+  page-recorder-mcp pack [目录]      打包成 .crx 和 .zip（默认放当前目录），给 HubStudio 等指纹浏览器「上传扩展」用；
+                                    crx 用 ~/.page-recorder/extension-key.pem 签名（--key <私钥文件> 换一个），扩展 ID 固定
 
 选项（也可以用环境变量）：
   --port <端口>     监听端口，默认 17321              PR_BRIDGE_PORT
@@ -111,6 +113,37 @@ if (argv[0] === 'trust') {
   }
   writeTrusted([id]);
   process.stdout.write(`已放行扩展 ${id}，扩展 30 秒内会自动连上桥接\n`);
+  process.exit(0);
+}
+if (argv[0] === 'pack') {
+  // HubStudio 等指纹浏览器「上传扩展」用的安装包。crx 的扩展 ID 由私钥定，这里打包的就是用户自己要装的，直接放行
+  const dirArg = argv.slice(1).find((a, i, rest) => !a.startsWith('-') && !['--key', '--port'].includes(rest[i - 1]));
+  const out = path.resolve(dirArg || process.cwd());
+  const keyFile = flag('key') ? path.resolve(flag('key')) : path.join(STATE_DIR, 'extension-key.pem');
+  if (!flag('key') && argv.some((a) => a === '--key' || a.startsWith('--key='))) {
+    process.stderr.write('--key 后面要写私钥文件的路径\n'); // 不能悄悄换成默认私钥：扩展 ID 会变
+    process.exit(1);
+  }
+  let r;
+  try {
+    r = require('./pack').packExtension({ root: ROOT, files: EXTENSION_FILES, outDir: out, keyFile, createKey: !flag('key'), version: VERSION });
+  } catch (e) {
+    process.stderr.write(`打包失败：${e.message}\n`);
+    process.exit(1);
+  }
+  const bridgePort = flag('port') || process.env.PR_BRIDGE_PORT || 17321;
+  let trusted = '桥接已放行';
+  try { writeTrusted([r.id]); } catch (e) { trusted = `放行失败（${e.message}），装好后运行 page-recorder-mcp trust ${r.id}`; }
+  process.stdout.write(`Page Recorder 扩展 ${VERSION} 已打包：
+  ${r.crx}
+    HubStudio：环境列表 →「扩展管理」→「团队扩展」→ 上传扩展，安装文件选它。装上后扩展 ID 是 ${r.id}，${trusted}。
+    环境的「端口扫描保护」下面要填允许端口 ${bridgePort}，否则扩展连不上本机桥接；改完重启环境
+  ${r.zip}
+    只收 zip 的地方用（那边重新签名的话扩展 ID 会变，连不上桥接时按扩展弹窗里显示的 ID 运行 page-recorder-mcp trust <ID>）
+签名私钥：${keyFile}
+  以后打新版要用同一个私钥，扩展 ID 才不变、脚本不丢；在别的电脑上打包就把它复制过去，加 --key <私钥文件>。
+指纹浏览器里装的扩展不会自动更新：有新版时重新运行这个命令，再上传新的 crx。
+`);
   process.exit(0);
 }
 

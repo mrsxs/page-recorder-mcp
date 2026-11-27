@@ -3,14 +3,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import crypto from 'node:crypto';
+import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { createLibrary, syncBrowser, restoreOwner, CHUNK_CHARS } = require('../bridge/library.js');
-const { createUpdater, compareVersions, unpackedExtensionId, browserDataRoots, EXTENSION_FILES } = require('../bridge/updater.js');
+const { createUpdater, compareVersions, unpackedExtensionId, extensionIdOfKey, browserDataRoots, hubstudioRoots, EXTENSION_FILES } = require('../bridge/updater.js');
 const PR_EXPORTER = require('../lib/exporter.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = (name) => realpathSync(mkdtempSync(join(tmpdir(), `pr-${name}-`)));
@@ -434,6 +435,90 @@ test('浏览器资料目录：各系统的 Chrome / Edge 等，PR_BROWSER_DATA_D
   const linux = browserDataRoots('/home/a', 'linux', { CHROME_CONFIG_HOME: '/opt/chrome-cfg' });
   assert.equal(linux[0], '/opt/chrome-cfg/google-chrome');
   assert.ok(linux.includes('/opt/chrome-cfg/chromium') && linux.includes('/home/a/.config/microsoft-edge'));
+});
+test('HubStudio 的缓存目录：默认的加上客户端设置里改过的（从它的 SQLite 文件里按文本读出来）', async () => {
+  const home = tmp('hub');
+  try {
+    const app = join(home, 'Library', 'Application Support', 'hubstudio-client');
+    mkdirSync(app, { recursive: true });
+    const setting = JSON.stringify({ cachePath: '/Volumes/数据/HubCache', persistencePath: '/x' });
+    writeFileSync(join(app, 'ELECTRON_DB_LOCAL_STORAGE'), Buffer.concat([Buffer.from('SQLite format 3\0\x01\xb9'), Buffer.from(setting), Buffer.from('\0\0"CachePath":"相对路径不算"\0"cachePath":"/截断')]));
+    writeFileSync(join(app, 'ELECTRON_DB_LOCAL_STORAGE-wal'), Buffer.from('\x37\x7f\x06\x82{"cachePath":"/刚改的/缓存"}')); // 刚改、还没写回主库的
+    assert.deepEqual(await hubstudioRoots(home, 'darwin', {}), [posix.join(home, 'Library', 'Application Support', 'hubstudio-client', 'sdk', 'cache'), '/Volumes/数据/HubCache', '/刚改的/缓存']);
+    assert.deepEqual(await hubstudioRoots('C:\\Users\\a', 'win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }), ['C:\\Users\\a\\AppData\\Roaming\\hubstudio-client\\sdk\\cache']);
+    assert.deepEqual(await hubstudioRoots('/home/a', 'linux', {}), []);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// 打包装的（pack 打的 crx 传进 HubStudio）：<缓存目录>/<环境>/Default/Extensions/<ID>/<版本>_0，资料里记相对路径。
+// 浏览器装的时候往 manifest 里写 key（键顺序也变了）、重新编码图标
+function packedInstall(f, { key = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey, idKey = key, version, env = 'chromium_1' } = {}) {
+  writeFileSync(join(f.pkg, 'icons', 'icon16.png'), 'png from package');
+  const der = (k) => k.export({ type: 'spki', format: 'der' });
+  const id = extensionIdOfKey(der(idKey));
+  const cache = join(f.base, 'hubcache');
+  const profile = join(cache, env, 'Default');
+  const dir = join(profile, 'Extensions', id, '9.0.0_0');
+  for (const file of EXTENSION_FILES) cpSync(join(f.pkg, file), join(dir, file), { recursive: true, force: true });
+  const manifest = { ...JSON.parse(readFileSync(join(f.pkg, 'manifest.json'), 'utf8')), ...(version ? { version } : {}) };
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(Object.fromEntries(Object.entries({ ...manifest, key: der(key).toString('base64') }).reverse())));
+  writeFileSync(join(dir, 'icons', 'icon16.png'), 're-encoded png');
+  writeFileSync(join(profile, 'Secure Preferences'), JSON.stringify({ extensions: { settings: { [id]: { location: 1, path: `${id}/9.0.0_0` } } } }));
+  const updater = createUpdater({ root: f.pkg, version: '9.0.0', stateDir: f.stateDir, home: f.home, log: (x) => f.logs.push(x), browserRoots: [cache] });
+  return { id, dir, updater };
+}
+test('HubStudio 里按 crx 装的扩展：manifest 只多了 key、图标重新编码过，认；版本号不同、代码一样也认；自动更新不碰它', async () => {
+  const f = fixture();
+  try {
+    const { id, dir, updater } = packedInstall(f, { version: '8.9.0' });
+    assert.equal(await updater.extensionDir(id), dir);
+    const c = caller();
+    await updater.updateExtensions([{ instanceId: 'hub', version: '1.0.0', extensionId: id, capabilities: ['selfUpdate'] }], c.call);
+    assert.deepEqual(c.calls, []);
+    assert.equal(readFileSync(join(dir, 'icons', 'icon16.png'), 'utf8'), 're-encoded png');
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('按 crx 装的扩展：代码改过、manifest 多了权限、key 对不上 ID，都不认', async () => {
+  for (const tamper of ['code', 'manifest', 'key']) {
+    const f = fixture();
+    try {
+      const other = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey;
+      const { id, dir, updater } = packedInstall(f, tamper === 'key' ? { idKey: other } : {});
+      if (tamper === 'code') writeFileSync(join(dir, 'lib', 'a.js'), 'changed');
+      if (tamper === 'manifest') {
+        const m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+        writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...m, permissions: ['cookies'] }));
+      }
+      assert.equal(await updater.extensionDir(id), '', tamper);
+      if (tamper === 'code') assert.match(f.logs.join('\n'), /代码和这个桥接带的 9\.0\.0 版不一样/);
+    } finally { rmSync(f.base, { recursive: true, force: true }); }
+  }
+});
+test('HubStudio 几个环境各装一份、有的还是旧代码：有对得上的就认，不提示；都对不上只提示一次', async () => {
+  const f = fixture();
+  try {
+    const key = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey;
+    const old = packedInstall(f, { key, env: 'chromium_1' });
+    writeFileSync(join(old.dir, 'lib', 'a.js'), 'old code');
+    const { id, dir, updater } = packedInstall(f, { key, env: 'chromium_2' });
+    assert.equal(await updater.extensionDir(id), dir);
+    assert.doesNotMatch(f.logs.join('\n'), /没认/);
+    writeFileSync(join(dir, 'lib', 'a.js'), 'old code');
+    assert.equal(await updater.extensionDir(id), '');
+    assert.equal(await updater.extensionDir(id), '');
+    assert.equal(f.logs.filter((x) => /没认/.test(x)).length, 1);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+test('pack 打的 zip 解开按已解压扩展加载（资料里是绝对路径、ID 按公钥算）：也认', async () => {
+  const f = fixture();
+  try {
+    const { id, dir } = packedInstall(f);
+    const roots = join(f.base, 'Chrome User Data');
+    mkdirSync(join(roots, 'Default'), { recursive: true });
+    writeFileSync(join(roots, 'Default', 'Preferences'), JSON.stringify({ extensions: { settings: { [id]: { location: 4, path: dir } } } }));
+    const updater = createUpdater({ root: f.pkg, version: '9.0.0', stateDir: f.stateDir, home: f.home, log: (x) => f.logs.push(x), browserRoots: [roots] });
+    assert.equal(await updater.extensionDir(id), dir);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
 });
 test('浏览器资料里记着的是源码目录（有 .git）：照样不动', async () => {
   const f = fixture();
