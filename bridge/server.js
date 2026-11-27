@@ -1001,7 +1001,7 @@ function trustExtension(id) {
     if (Date.now() - (rejectedIds.get(id) || 0) < ((rejectCount.get(id) || 0) <= 3 ? 3000 : 60000)) return false;
     const dir = await updater.extensionDir(id).catch(() => '');
     if (!dir) {
-      if (!rejectedIds.has(id)) log(`没认扩展 ${id}：找不到它的安装目录，确认不了是 Page Recorder。是你自己装的就运行 page-recorder-mcp trust ${id} 放行（装在指纹浏览器等自定义资料目录里的，也可以把资料目录写进 PR_BROWSER_DATA_DIRS）`);
+      if (!rejectedIds.has(id)) log(`没认扩展 ${id}：没找到装着这一版 Page Recorder 的安装目录，确认不了是它。是你自己装的就运行 page-recorder-mcp trust ${id} 放行（装在指纹浏览器等自定义资料目录里的，也可以把资料目录写进 PR_BROWSER_DATA_DIRS）`);
       rejectedIds.set(id, Date.now());
       rejectCount.set(id, (rejectCount.get(id) || 0) + 1);
       return false;
@@ -2369,7 +2369,7 @@ server.on('upgrade', (req, socket, head) => {
     if (!ok) {
       // 握手后告诉扩展为什么不认（直接 403 的话扩展只知道连不上），然后关掉；什么请求都不转给它
       // 关闭帧带 1008（违反策略）；对方不回关闭也 2 秒后断开，不占连接名额
-      socket.end(Buffer.concat([wsFrame(JSON.stringify({ type: 'rejected', extensionId: extId, reason: `桥接没认这个扩展（ID ${extId}）：找不到它的安装目录，确认不了是 Page Recorder。是你自己装的，就在终端运行 npx page-recorder-mcp trust ${extId}` }), 1), wsFrame(Buffer.from([0x03, 0xf0]), 8)]));
+      socket.end(Buffer.concat([wsFrame(JSON.stringify({ type: 'rejected', extensionId: extId, reason: `桥接没认这个扩展（ID ${extId}）：没找到装着这一版 Page Recorder 的安装目录，确认不了是它。是你自己装的，就在终端运行 npx page-recorder-mcp trust ${extId}` }), 1), wsFrame(Buffer.from([0x03, 0xf0]), 8)]));
       setTimeout(() => socket.destroy(), 2000).unref();
       return;
     }
