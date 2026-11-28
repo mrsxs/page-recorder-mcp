@@ -378,3 +378,17 @@ test('录制：焦点在 body 上时数字不录成按键；页面上有看得�
   p.fire('keydown', p.doc.body, { key: 'j' });
   assert.deepEqual(keys(p), ['j']);
 });
+
+test('录制：pass 只认名字最后一个词——审核、证件字段（passReason、isPass、pass_rate、passport）不当密码', async () => {
+  const sensitive = ['pass', 'userPass', 'login_pass', 'user-pass', 'password', 'pass_word', 'pass1', 'pass_1', 'pass[0]', 'user[pass]', 'passCode', 'pwd', 'loginPwd'];
+  const plain = ['passReason', 'pass_rate', 'isPass', 'is_pass', 'noPassReason', 'notPass', 'hasPass', 'pass_status', 'passport', 'bypass', 'compass'];
+  for (const [names, want] of [[sensitive, true], [plain, undefined]]) {
+    for (const name of names) {
+      const p = page();
+      const f = p.add('input', { name });
+      await p.start();
+      p.type(f, 'value-123');
+      assert.equal(p.steps().find((s) => s.type === 'fill').sensitive, want, name);
+    }
+  }
+});

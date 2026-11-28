@@ -375,8 +375,10 @@
   // 还没键入就先点了“显示密码”的：键入时 type 已经是 text 了。所以每次扫描字段、聚焦时看到是密码框就先记下
   const notePassword = (el) => { if (el && el.type === 'password') everSensitive.add(el); };
   // 名字、id 里带 password / pwd 的（loginPwd、user_password、confirmPassword）也算；
-  // pass、otp、cvv、secret 这类短词要单独成词（passport、option 不算），pin 只认整个名字就是它（pin_code 是邮编）
-  const SECRET_WORD = /pass(?:word|wd|code|phrase)|pwd|(?:^|[^a-z])(?:pass|otp|cvv|cvc|secret)(?:$|[^a-z])|^pin$|verif(?:y|ication)[_-]?code/;
+  // otp、cvv、secret 这类短词要单独成词（option、secretary 不算），pin 只认整个名字就是它（pin_code 是邮编）；
+  // pass 只认名字的最后一个词（后面只能跟数字、符号：pass1、pass_1、pass[0]、user[pass]），前面也不能是 is / no / not / un / has
+  // ——passReason、pass_rate、isPass、noPassReason、passport 是审核、证件字段，不是密码
+  const SECRET_WORD = /pass[_-]?(?:word|wd|code|phrase)|pwd|(?:^|[^a-z])(?:otp|cvv|cvc|secret)(?:$|[^a-z])|(?<!(?:^|[^a-z])(?:is|no|not|un|has))(?:^|[^a-z])pass[^a-z]*$|^pin$|verif(?:y|ication)[_-]?code/;
   const nameWords = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase();
   const isSensitive = (el) => {
     if (everSensitive.has(el)) return true;
