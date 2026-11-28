@@ -74,3 +74,16 @@ test('外框标签叫 constructor 时老参数仍用自己的标签（和以前�
   const a = step('a', 2, { type: 'fill', target: tgt('#v', 'Enter a value', 'constructor'), value: 'x' });
   assert.deepEqual(PR_EXPORTER.analyze([nav, a], {}, {}).params, { 'Enter a value': 'x' });
 });
+
+test('上传参数：没存默认路径的必填；在这台电脑上存了默认路径的可以不传（回放时用它）', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const up = (value) => step('u', 2, { type: 'upload', target: tgt('#file', '附件', '', 'input', 'file'), files: ['a.pdf'], value });
+  const none = PR_EXPORTER.analyze([nav, up('')], {}, {});
+  const [name] = Object.keys(none.params);
+  assert.equal(none.paramInfo[name].kind, 'upload');
+  assert.equal(none.paramInfo[name].required, true);
+  const saved = PR_EXPORTER.analyze([nav, up('/Users/me/默认.pdf')], {}, {});
+  assert.equal(saved.params[name], '/Users/me/默认.pdf');
+  assert.equal(saved.paramInfo[name].required, undefined, '存了默认路径：按接口生成的工具不再要求必填');
+});
+

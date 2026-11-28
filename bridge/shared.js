@@ -34,10 +34,12 @@ function validMeta(m, id) {
     && Object.keys(m.members).every(isId) && Object.values(m.members).every((x) => isObj(x) && Number.isFinite(x.at) && typeof x.rev === 'string'
       && (x.pending === undefined || (isObj(x.pending) && Number.isFinite(x.pending.at) && typeof x.pending.rev === 'string')))
     && (m.keep === undefined || (isObj(m.keep) && Object.keys(m.keep).every(isId) && Object.values(m.keep).every((x) => typeof x === 'string')))
-    && (m.left === undefined || (isObj(m.left) && Object.keys(m.left).every(isId)));
+    && (m.left === undefined || (isObj(m.left) && Object.keys(m.left).every(isId)))
+    && (m.sharedAt === undefined || Number.isFinite(m.sharedAt));
 }
 
-function createShared(dir) {
+// clock：共享时刻用的时钟（和各环境的 savedAt、删除时间是同一个时钟，可以比先后）
+function createShared(dir, clock = Date.now) {
   const stateFile = path.join(dir, 'state.json');
   const itemsDir = path.join(dir, 'items');
   // 文件名带版本号：先写新版本、再改 state.json、最后删旧文件，中途断掉也读得到其中一版
@@ -95,8 +97,11 @@ function createShared(dir) {
     const others = (x) => Object.fromEntries(Object.entries(x || {}).filter(([k]) => k !== env.instanceId));
     const keep = others(base && base.keep);
     const left = others(base && base.left); // 停止共享过的环境仍旧算停止过，内容碰巧一样也不自动加回去
+    // sharedAt：有人点「共享」让它成为共享脚本的时刻（全新的、删掉后重新共享的）；之后在用的环境改内容不动它。
+    // 一个环境在这之前删过同一条，算删的是上一回共享的，这一回的照样提示它可以接收
+    const sharedAt = base ? base.sharedAt : clock();
     return set({ id: item.id, rev, name: String(item.name || ''), savedAt: item.savedAt, from: { instanceId: env.instanceId, profile: env.profile || '' }, members,
-      ...(Object.keys(keep).length ? { keep } : {}), ...(Object.keys(left).length ? { left } : {}) });
+      ...(Object.keys(keep).length ? { keep } : {}), ...(Object.keys(left).length ? { left } : {}), ...(Number.isFinite(sharedAt) ? { sharedAt } : {}) });
   }
   function purge(id) {
     load().delete(id);
@@ -216,7 +221,10 @@ const hasLeft = (meta, instanceId) => !!(meta.left && hasOwn(meta.left, instance
 const compared = new Set();
 
 // 一条共享脚本和一个环境对一次，返回共享区有没有变（内容、在用的环境；变了要让别的环境也同步）
-async function syncOne(store, env, call, meta, { local, del, receive, notices, flags = {} }) {
+// 这个环境删过这一条之后，又有人重新点了「共享」：删的是上一回共享的
+const sharedAfter = (meta, del) => Number.isFinite(meta.sharedAt) && meta.sharedAt > del;
+
+async function syncOne(store, env, call, meta, { local, del, receive, picked, notices, flags = {} }) {
   let member = memberOf(meta, env.instanceId);
   // 上一轮发过去的那一版其实写进去了（保存时间对得上），只是应答没回来：补记上
   // 当时是先另存了自己那份再换的（keep），那件事也算办完了
@@ -232,8 +240,8 @@ async function syncOne(store, env, call, meta, { local, del, receive, notices, f
   if (meta.deleted) return member ? followDelete(store, env, call, meta, local, notices, flags) : false;
   if (!member) {
     if (local !== undefined) return rejoin(store, env, call, meta, local);
-    // 删过的不收
-    if (del !== undefined || !receive) return false;
+    // 删过的不自动收（开着自动接收也一样）；用户在「可接收」里点了它才收
+    if (!receive || (del !== undefined && !picked)) return false;
     const item = store.read(meta.id);
     const r = item && await apply(call, item, { expectAt: 0 });
     if (!r || !r.ok) { flags.busy = flags.busy || !!(r && r.busy); return false; }
@@ -324,7 +332,8 @@ function stateFor(store, env, here, deleted) {
     if (meta.deleted) continue;
     if (memberOf(meta, env.instanceId)) {
       shared.push({ id: meta.id, others: Object.entries(meta.members).filter(([k]) => k !== env.instanceId).map(([, v]) => labelOf(v)) });
-    } else if (!here.has(meta.id) && !deleted.has(meta.id)) {
+    } else if (!here.has(meta.id) && (!deleted.has(meta.id) || sharedAfter(meta, deleted.get(meta.id)))) {
+      // 删过的不再提示；删了之后又有人重新共享的要提示，不然这个环境再也收不回来
       offers.push({ id: meta.id, name: meta.name, from: labelOf(meta.from), savedAt: meta.savedAt });
     }
   }
@@ -352,7 +361,7 @@ async function syncEnv(store, env, call, { receive = new Set(), log = () => {} }
     if (!store.get(id)) continue;
     try {
       const meta = renamed(store, store.get(id), env);
-      const opts = { local: here.get(id), del: deleted.get(id), receive: m.autoReceiveShared === true || receive.has(id), notices, flags };
+      const opts = { local: here.get(id), del: deleted.get(id), receive: m.autoReceiveShared === true || receive.has(id), picked: receive.has(id), notices, flags };
       if (await syncOne(store, env, call, meta, opts)) changed = true;
     } catch (e) { log(`共享脚本 ${id} 和环境 ${labelOf(env)} 同步失败：${e.message}`); }
   }

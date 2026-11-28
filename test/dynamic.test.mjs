@@ -234,6 +234,57 @@ test('background: 地址带会过期的参数时，先用开着的同一页面�
   assert.deepEqual(JSON.parse(JSON.stringify(await none.liveUrlOf('https://app.test/page?id=1'))), { url: 'https://app.test/page?id=1' });
 });
 
+test('background: 上传时按标记找文件框，open 的 Shadow DOM 里的（一层套一层的）也找得到', () => {
+  const bg = loadBackground([]);
+  const expr = vm.runInContext('findUploadExpr', bg)('up1abc');
+  // 假的 DOM：节点有属性、子节点，可能带 shadowRoot；querySelector 和真的一样不进 shadowRoot
+  const flat = (n) => n.children.flatMap((c) => [c, ...flat(c)]);
+  const tree = (children) => {
+    const r = { children };
+    r.querySelectorAll = () => flat(r);
+    r.querySelector = (sel) => flat(r).find((c) => sel === `[data-pr-upload="${c.attrs['data-pr-upload']}"]`) || null;
+    return r;
+  };
+  const node = (attrs = {}, children = [], shadow = null) => ({ attrs, children, shadowRoot: shadow && tree(shadow) });
+  const input = node({ 'data-pr-upload': 'up1abc' });
+  const run = (document) => vm.runInNewContext(expr, { document });
+  assert.equal(run(tree([node({}, [input])])), input, '普通页面');
+  assert.equal(run(tree([node({}, [node({}, [], [node({}, [input])])])])), input, '组件的 Shadow DOM 里');
+  assert.equal(run(tree([node(), node({}, [], [node({}, [node({}, [], [node(), input])])])])), input, 'Shadow DOM 里套 Shadow DOM');
+  assert.equal(run(tree([node({}, [node({ 'data-pr-upload': 'other' })], [node()])])), null, '标记对不上的不算');
+});
+
+test('background: 回放允许上传的文件——调用时给的路径；没传这个参数就用本机存的默认路径；传空 = 这次不上传', () => {
+  const bg = loadBackground([]);
+  const b = { params: { 文件: '/Users/me/默认.pdf', 关键词: 'a' }, recording: { steps: [{ type: 'upload', param: '文件' }, { type: 'fill', param: '关键词' }, { type: 'upload' }] } };
+  const list = (params) => JSON.parse(JSON.stringify(bg.uploadWhitelist(b, params)));
+  assert.deepEqual(list({ 关键词: 'x' }), ['/Users/me/默认.pdf'], '没传上传参数：用存着的默认路径（以前白名单是空的，回放报“只能上传回放参数里给的文件”）');
+  assert.deepEqual(list(undefined), ['/Users/me/默认.pdf']);
+  assert.deepEqual(list({ 文件: ' /tmp/a.png | /tmp/b.png ' }), ['/tmp/a.png', '/tmp/b.png'], '传了就只认传的');
+  assert.deepEqual(list({ 文件: '' }), [], '传空：这次不上传，默认路径也不放行');
+  assert.deepEqual(JSON.parse(JSON.stringify(bg.uploadWhitelist({ params: {}, recording: { steps: [{ type: 'upload', param: 'toString' }] } }, {}))), [], '参数名撞上原型上的名字也不出错');
+});
+
+test('background: 在弹窗里点停止——先让页面把没提交的输入交上来（这时还算在录制中），再结束录制', async () => {
+  const sent = [];
+  const stub = () => new Proxy(function () {}, {
+    get(t, k) { if (k === 'then') return undefined; if (k === 'addListener') return () => {}; return stub(); },
+    apply() { return Promise.resolve({}); },
+  });
+  const ctx = { console: { log() {}, warn() {}, error() {} }, URL, URLSearchParams, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, TextEncoder, TextDecoder, Headers, crypto: webcrypto };
+  ctx.self = ctx;
+  const c = { state: { id: 'r1', tabId: 5, recording: true, childTabs: [] }, events: [], settings: {}, libIndex: [], apiOverrides: {}, aiDocs: {} };
+  const tabs = new Proxy(stub(), { get: (x, m) => (m === 'sendMessage' ? async (tabId, msg) => { sent.push({ tabId, type: msg.type, recording: c.state.recording }); return { ok: true }; } : m === 'query' ? async () => [] : stub()) });
+  ctx.chrome = new Proxy(stub(), { get: (t, k) => (k === 'tabs' ? tabs : t[k]) });
+  ctx.importScripts = (...files) => { for (const f of files) vm.runInContext(readFileSync(join(root, f), 'utf8'), ctx); };
+  vm.createContext(ctx);
+  vm.runInContext(readFileSync(join(root, 'background.js'), 'utf8'), ctx);
+  await ctx.stop(c);
+  assert.equal(c.state.recording, false);
+  assert.deepEqual(sent[0], { tabId: 5, type: 'flush', recording: true }, '第一件事是让页面交输入，这时录制还没结束');
+  assert.ok(sent.some((m) => m.type === 'state' && m.recording === false), '之后才通知页面录制结束');
+});
+
 test('background: start_url 只认同一页面；只能去掉参数打开时先到来源页找指向它的链接', async () => {
   const bg = loadBackground([]);
   const page = 'https://app.test/page?id=1&ticket=OLDTICKET1';

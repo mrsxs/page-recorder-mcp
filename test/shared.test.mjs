@@ -121,7 +121,7 @@ test('共享后别的环境能接收；之后哪边改了另一边跟着更新�
 test('开了自动接收的环境不用点；删过的、本来就有同 id 的不收', async () => {
   const dir = tmp();
   try {
-    const store = createShared(dir);
+    const store = createShared(dir, tick); // 共享时刻和各环境的删除时间用同一个时钟
     const a = fakeEnv('a', [item('x', tick()), item('y', tick())]);
     await share(store, a, 'x');
     await share(store, a, 'y');
@@ -133,6 +133,54 @@ test('开了自动接收的环境不用点；删过的、本来就有同 id 的�
     const fresh = fakeEnv('fresh', [], { auto: true });
     await sync(store, fresh);
     assert.deepEqual(names(fresh), ['脚本 x', '脚本 y']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('删过之后别的环境又重新共享：重新出现在可接收里，点了才收（开着自动接收也不自动收）；重新共享之后才删的不再提示', async () => {
+  const dir = tmp();
+  try {
+    const store = createShared(dir, tick);
+    const a = fakeEnv('a', [item('x', tick())]);
+    const b = fakeEnv('b', [], { auto: true });
+    const c = fakeEnv('c');
+    await share(store, a, 'x');
+    await sync(store, b);
+    await sync(store, c, ['x']);
+    c.edit('x', { name: 'C 改过的' });
+    // a 删了：b 跟着删（留下删除记录），c 改过所以留着
+    a.remove('x');
+    await sync(store, a);
+    await sync(store, b);
+    await sync(store, c);
+    assert.equal(b.lib.size, 0);
+    assert.ok(b.deleted.has('x') && a.deleted.has('x'));
+    assert.equal(store.get('x'), null);
+    // c 把留下的那份重新共享（它的保存时间比 a、b 的删除时间早）
+    assert.equal(await share(store, c, 'x'), true);
+    await sync(store, b);
+    assert.equal(b.lib.size, 0, '删过的不自动收');
+    assert.deepEqual(b.state.offers.map((o) => o.id), ['x'], '重新共享的要提示，不然再也收不回来');
+    await sync(store, a);
+    assert.deepEqual(a.state.offers.map((o) => o.id), ['x']);
+    await sync(store, a, ['x']);
+    assert.equal(a.lib.get('x').name, 'C 改过的', '点了接收才收');
+    assert.equal(a.deleted.has('x'), false);
+    // 内容再改不算重新共享：b 还是只有那一条提示，不会变成自动接收
+    c.edit('x', { name: 'C 又改了' });
+    await sync(store, c);
+    await sync(store, b);
+    assert.equal(b.lib.size, 0);
+    // 重新共享之后才删的（看到了、不要）：不再提示
+    const d = fakeEnv('d');
+    d.deleted.set('x', tick());
+    await sync(store, d);
+    assert.deepEqual(d.state.offers, []);
+    // 旧版本留下的共享记录没有共享时刻：删过的照旧不提示
+    const legacy = store.get('x');
+    delete legacy.sharedAt;
+    store.set(legacy);
+    await sync(store, b);
+    assert.deepEqual(b.state.offers, []);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

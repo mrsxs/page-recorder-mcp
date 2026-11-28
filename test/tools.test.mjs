@@ -280,3 +280,44 @@ test('起始地址带会过期参数的脚本：__run 多一个 start_url，单�
     assert.equal(got.got.startUrl, 'https://order0.example.test/admin?ticket=NEW123456');
   });
 });
+
+test('环境登记满了：淘汰现在不在线的，新环境照样连得上；同时连着的超过上限才拒绝，并写进日志', async () => {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const p = spawn(process.execPath, [server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PR_MAX_INSTANCES: '2', PR_MAX_BROWSERS: '2' } });
+  let err = '';
+  const exts = [];
+  const ext = (id) => { const e = fakeExt(port, [], id); exts.push(e); return e; };
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('启动超时')), 10000);
+      p.stderr.on('data', (d) => { err += d; if (err.includes('已启动')) { clearTimeout(t); resolve(); } });
+      p.on('exit', (code) => { clearTimeout(t); reject(new Error('进程退出 ' + code)); });
+    });
+    const ids = async () => (await (await fetch(`http://127.0.0.1:${port}/api/status`)).json()).browsers.map((b) => b.instanceId).sort();
+    const until = async (want) => {
+      for (let i = 0; i < 100 && JSON.stringify(await ids()) !== JSON.stringify(want); i++) await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(await ids(), want);
+    };
+    const a = ext('envA');
+    ext('envB');
+    await until(['envA', 'envB']);
+    // 第三个同时连：超过同时在线的上限，握手就被拒绝，日志里说怎么调大
+    ext('envC');
+    await new Promise((r) => setTimeout(r, 300));
+    await until(['envA', 'envB']);
+    assert.match(err, /PR_MAX_BROWSERS/);
+    // envA 下线后 envC 再连：登记名额（2 个）满了，淘汰不在线的 envA，不再悄悄断开新环境
+    a.destroy();
+    await until(['envB']);
+    ext('envC');
+    await until(['envB', 'envC']);
+    // 被淘汰的 envA 回来（envB 下线腾出位置）也照样能连
+    exts[1].destroy();
+    await until(['envC']);
+    ext('envA');
+    await until(['envA', 'envC']);
+  } finally {
+    exts.forEach((e) => e.destroy());
+    p.kill();
+  }
+});

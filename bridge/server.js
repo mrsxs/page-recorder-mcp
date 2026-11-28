@@ -62,6 +62,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 改了端口的话，扩展「设置」里的桥接地址也要改成 ws://127.0.0.1:<端口>/ext；
 设置了 token 的话，桥接地址要写成 ws://127.0.0.1:<端口>/ext?token=<口令>。监听非本机地址时必须设置 token。
 多个浏览器资料（主 Chrome、指纹浏览器等）都装了扩展时可以同时连上，调用时用 browser 参数指定在哪个浏览器执行。
+同时连着的浏览器最多 32 个，要更多用环境变量 PR_MAX_BROWSERS 调大。
 导入录制包（POST /api/packages、import_package 工具经 HTTP 调用）必须设置 token。
 `);
   process.exit(0);
@@ -172,7 +173,11 @@ const log = (...a) => process.stderr.write('[page-recorder-bridge] ' + a.join(' 
 // 每个 Chrome 用户资料里的扩展是一个“实例”，连上后先发 hello 报 instanceId（和资料名 profile）。
 // 按 instanceId 各存一条连接：同一个实例重连只替换它自己，多个资料（主 Chrome、指纹浏览器、各店铺）可以同时在线。
 const instances = new Map(); // instanceId -> conn
+// instanceId → 第一次报这个标识的扩展来源：别的扩展不能冒用。按最近连接的先后排，满了淘汰最久没连过的
 const instanceOrigins = new Map();
+const MAX_INSTANCE_PINS = Math.max(1, Number(process.env.PR_MAX_INSTANCES) || 1024);
+// 同时连着的扩展（浏览器环境）上限，默认 32；同时开的指纹浏览器环境多就调大
+const MAX_EXT_SOCKETS = Math.max(1, Number(process.env.PR_MAX_BROWSERS) || 32);
 const wsSockets = new Set();
 const ANON_ID = 'anonymous'; // 旧版扩展不发 hello：当成一个匿名实例（几个旧版之间仍互相替换，和以前一样）
 const HELLO_WAIT_MS = 3000;  // 连上后等 hello 的时间，超时就按匿名实例登记
@@ -329,7 +334,19 @@ function register(conn, instanceId, info) {
     conn.close();
     return;
   }
-  if (!pinned && instanceOrigins.size >= 1024) { conn.close(); return; }
+  if (pinned) instanceOrigins.delete(instanceId); // 下面重新放到最后：最近连过的最后淘汰
+  else if (instanceOrigins.size >= MAX_INSTANCE_PINS) {
+    // 登记满了（指纹浏览器陆续开过很多环境）：淘汰最久没连过、现在也不在线的那个；全都在线才拒绝，并写进日志。
+    // 先淘汰同一个扩展来源自己登记的：一个来源换着标识连很多次，挤掉的也只是它自己的，别的来源的登记不会被它顶掉再冒用
+    const offline = [...instanceOrigins].filter(([id]) => !instances.has(id));
+    const stale = (offline.find(([, origin]) => origin === conn.origin) || offline[0] || [])[0];
+    if (stale === undefined) {
+      log(`同时连着的浏览器环境已有 ${instanceOrigins.size} 个，拒绝新连上的环境（来源 ${conn.origin}）`);
+      conn.close();
+      return;
+    }
+    instanceOrigins.delete(stale);
+  }
   instanceOrigins.set(instanceId, conn.origin);
   // 等 hello 超时先按匿名登记了，后来才收到 hello：从匿名位置挪走
   if (conn.instanceId && instances.get(conn.instanceId) === conn) instances.delete(conn.instanceId);
@@ -2353,7 +2370,11 @@ server.on('upgrade', (req, socket, head) => {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
     return;
   }
-  if (wsSockets.size >= 32) { socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n'); return; }
+  if (wsSockets.size >= MAX_EXT_SOCKETS) {
+    log(`同时连着的浏览器已有 ${wsSockets.size} 个（上限 ${MAX_EXT_SOCKETS}），新的连接被拒绝；要同时连更多，启动前设环境变量 PR_MAX_BROWSERS`);
+    socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+    return;
+  }
   wsSockets.add(socket);
   socket.once('close', () => wsSockets.delete(socket));
   socket.on('error', () => {});

@@ -540,6 +540,10 @@ async function stop(c) {
   const gen = recGen;
   if (stopInFlight?.gen === gen) return stopInFlight.promise;
   const promise = (async () => {
+    // 页面里还没提交的输入（键入后不到 1.5 秒就在弹窗里点了「停止」）：趁还算在录制中先让它交上来。
+    // 只等顶层或最先回话的那个框架，其余框架靠下面那 350 毫秒；页面里是旧版脚本（不认这条消息）就不等
+    if (c.state.tabId != null) await Promise.race([chrome.tabs.sendMessage(c.state.tabId, { type: 'flush' }).catch(() => null), sleep(800)]);
+    if (gen !== recGen) return;
     // 刚结束的请求：页面钩子的那条可能还在路上，等一下再对账，免得补记成没有返回内容的
     await sleep(350);
     if (gen !== recGen) return;
@@ -934,8 +938,11 @@ const KEY_DEFS = {
   '-': [189, 'Minus', '-'], '=': [187, 'Equal', '='], ',': [188, 'Comma', ','], '.': [190, 'Period', '.'], '/': [191, 'Slash', '/'],
   ';': [186, 'Semicolon', ';'], "'": [222, 'Quote', "'"], '[': [219, 'BracketLeft', '['], ']': [221, 'BracketRight', ']'], '\\': [220, 'Backslash', '\\'], '`': [192, 'Backquote', '`'],
 };
+// 带 Shift 的符号按它所在的那个键算（美式键盘）：? 是 / 键、! 是 1 键
+const SHIFT_KEYS = { _: '-', '+': '=', '<': ',', '>': '.', '?': '/', ':': ';', '"': "'", '{': '[', '}': ']', '|': '\\', '~': '`', '!': '1', '@': '2', '#': '3', $: '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
 function keyDef(key) {
   if (KEY_DEFS[key]) return KEY_DEFS[key];
+  if (Object.hasOwn(SHIFT_KEYS, key)) { const d = keyDef(SHIFT_KEYS[key]); return [d[0], d[1], key]; }
   if (/^[a-z]$/i.test(key)) return [key.toUpperCase().charCodeAt(0), 'Key' + key.toUpperCase(), key];
   if (/^[0-9]$/.test(key)) return [48 + Number(key), 'Digit' + key, key];
   if (/^F\d{1,2}$/.test(key)) return [111 + Number(key.slice(1)), key];
@@ -998,7 +1005,26 @@ async function realMouse(tabId, a) {
     await ev('mouseReleased', a.x, a.y, { button: btn, buttons: 0, clickCount: c });
   }
 }
-// 上传：页面给文件框打了临时标记，这里在各个框架里按标记找到它，把本机文件设进去
+// 一次回放里允许上传的本机文件：每个上传步骤的参数值，调用时传了就用传的（传空 = 这次不上传），没传用存着的默认值
+function uploadWhitelist(b, params) {
+  const given = params && typeof params === 'object' ? params : {};
+  const saved = b.params && typeof b.params === 'object' ? b.params : {};
+  return b.recording.steps.filter((s) => s.type === 'upload' && s.param)
+    .flatMap((s) => String((Object.hasOwn(given, s.param) ? given[s.param] : Object.hasOwn(saved, s.param) ? saved[s.param] : '') || '').split('|').map((x) => x.trim()).filter(Boolean));
+}
+// 上传：页面给文件框打了临时标记，这里在各个框架里按标记找到它，把本机文件设进去。
+// 文件框可能在 open 的 Shadow DOM 里（组件库的上传组件）：document.querySelector 进不去，一层层进 shadowRoot 找
+const findUploadExpr = (mark) => `(function find(root) {
+  var hit = root.querySelector('[data-pr-upload="${mark}"]');
+  if (hit) return hit;
+  var all = root.querySelectorAll('*');
+  for (var i = 0; i < all.length; i++) {
+    if (!all[i].shadowRoot) continue;
+    hit = find(all[i].shadowRoot);
+    if (hit) return hit;
+  }
+  return null;
+})(document)`;
 async function realFiles(tabId, mark, files) {
   const tree = await cdp(tabId, 'Page.getFrameTree');
   const ids = [];
@@ -1006,7 +1032,7 @@ async function realFiles(tabId, mark, files) {
   for (const frameId of ids) {
     try {
       const w = await cdp(tabId, 'Page.createIsolatedWorld', { frameId, worldName: 'page-recorder-upload' });
-      const r = await cdp(tabId, 'Runtime.evaluate', { expression: `document.querySelector('[data-pr-upload="${mark}"]')`, contextId: w.executionContextId });
+      const r = await cdp(tabId, 'Runtime.evaluate', { expression: findUploadExpr(mark), contextId: w.executionContextId });
       if (r.result && r.result.objectId) {
         started(tabId);
         await cdp(tabId, 'DOM.setFileInputFiles', { files, objectId: r.result.objectId });
@@ -1030,7 +1056,7 @@ async function realInputAction(tabId, a) {
   else if (a.type === 'text') await realType(tabId, a.text);
   else if (a.type === 'files') {
     if (!/^[a-z0-9]+$/i.test(String(a.mark))) throw new Error('上传参数不对');
-    if (!(await realFiles(tabId, a.mark, allowed()))) throw new Error('找不到上传控件（跨域 iframe 里的上传暂不支持）');
+    if (!(await realFiles(tabId, a.mark, allowed()))) throw new Error('找不到上传控件（在跨域 iframe 或封闭的 Shadow DOM 里的上传暂不支持）');
   } else if (a.type === 'chooser' && num(a.x) && num(a.y)) {
     // 点上传按钮 → 浏览器要弹选文件对话框（已被拦下）→ 把文件设到对话框对应的文件框上
     const files = allowed();
@@ -1530,8 +1556,9 @@ async function runUi(item, b, opts, calibrateNames, required) {
   const runId = uid();
   runningTabs.add(tabId);
   // 真实输入：连上调试接口后，页面里的点击、输入、按键都由浏览器真实产生；连不上就用合成事件
-  // 上传参数里给的文件路径（| 分隔）是这次回放唯一允许设进文件框的文件
-  const uploadFiles = b.recording.steps.filter((s) => s.type === 'upload' && s.param).flatMap((s) => String(Object.hasOwn(opts.params || {}, s.param) ? opts.params[s.param] || '' : '').split('|').map((x) => x.trim()).filter(Boolean));
+  // 这次回放允许设进文件框的文件：上传参数里给的路径（| 分隔）；没传这个参数就是用户在这台电脑的弹窗里给它存的默认路径
+  // （默认路径只留在本机：导出、共享、导入、恢复备份时都会去掉，别人给的录制里带不进来）
+  const uploadFiles = uploadWhitelist(b, opts.params);
   const wantReal = (await load().catch(() => ({ settings: {} }))).settings.realInput !== false && opts.realInput !== false;
   let real = false;
   // 按所在框架把步骤切成几段：顶层页面的连续步骤一段，同一个 iframe 里的连续步骤一段，依次在对应框架里执行
