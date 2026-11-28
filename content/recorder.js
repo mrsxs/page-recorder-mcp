@@ -375,8 +375,10 @@
   // 还没键入就先点了“显示密码”的：键入时 type 已经是 text 了。所以每次扫描字段、聚焦时看到是密码框就先记下
   const notePassword = (el) => { if (el && el.type === 'password') everSensitive.add(el); };
   // 名字、id 里带 password / pwd 的（loginPwd、user_password、confirmPassword）也算；
-  // pass、otp、cvv、secret 这类短词要单独成词（passport、option 不算），pin 只认整个名字就是它（pin_code 是邮编）
-  const SECRET_WORD = /pass(?:word|wd|code|phrase)|pwd|(?:^|[^a-z])(?:pass|otp|cvv|cvc|secret)(?:$|[^a-z])|^pin$|verif(?:y|ication)[_-]?code/;
+  // otp、cvv、secret 这类短词要单独成词（option、secretary 不算），pin 只认整个名字就是它（pin_code 是邮编）；
+  // pass 只认名字的最后一个词（后面只能跟数字、符号：pass1、pass_1、pass[0]、user[pass]），前面也不能是 is / no / not / un / has
+  // ——passReason、pass_rate、isPass、noPassReason、passport 是审核、证件字段，不是密码
+  const SECRET_WORD = /pass[_-]?(?:word|wd|code|phrase)|pwd|(?:^|[^a-z])(?:otp|cvv|cvc|secret)(?:$|[^a-z])|(?<!(?:^|[^a-z])(?:is|no|not|un|has))(?:^|[^a-z])pass[^a-z]*$|^pin$|verif(?:y|ication)[_-]?code/;
   const nameWords = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase();
   const isSensitive = (el) => {
     if (everSensitive.has(el)) return true;
@@ -1097,6 +1099,7 @@
   let dragEndTs = 0;
   let userScrollTs = 0;
   listen('pointerdown', (e) => {
+    rootsCache = null;
     if (!recording || !e.isTrusted || isOurUI(e)) return;
     const t = deepTarget(e);
     noteRoot(t);
@@ -1110,6 +1113,7 @@
     pressInfo = { t, x: e.clientX, y: e.clientY, ts: Date.now(), max: 0, button: e.button, toggle: e.button === 0 ? toggleSnap(interactive(t)) : null, state: e.button === 0 ? stateSnap(interactive(t)) : null, href: location.href };
   }, true);
   listen('focusin', (e) => {
+    rootsCache = null;
     if (!recording || !e.isTrusted) return;
     const t = deepTarget(e);
     noteRoot(t);
@@ -1250,6 +1254,21 @@
 
   // 宿主里的 Shadow DOM：open 的直接拿；closed 的用扩展专用接口（没有这个接口的旧浏览器拿不到）
   const shadowOf = (n) => { try { return n.shadowRoot || (chrome.dom && chrome.dom.openOrClosedShadowRoot ? chrome.dom.openOrClosedShadowRoot(n) : null); } catch (e) { return null; } };
+  // 文档和它里面的 Shadow DOM（closed 的也用 shadowOf 拿到）：最多 200 个根，结果留 500 毫秒，免得每次按键都全量扫一遍。
+  // 按下鼠标、焦点换了时清掉（可能刚打开登录弹窗）
+  let rootsCache = null;
+  function pageRoots(doc) {
+    if (rootsCache && rootsCache.doc === doc && Date.now() - rootsCache.t < 500) return rootsCache.list;
+    const list = [doc];
+    for (let i = 0; i < list.length && list.length < 200; i++) {
+      for (const e of list[i].querySelectorAll('*')) {
+        const r = shadowOf(e);
+        if (r && list.length < 200) list.push(r);
+      }
+    }
+    rootsCache = { doc, t: Date.now(), list };
+    return list;
+  }
   // 焦点真正在哪个元素上（一层层进 Shadow DOM）
   function innerFocus(el) {
     let a = el;
@@ -1276,10 +1295,19 @@
     const t = deepTarget(e);
     noteRoot(t);
     const el = t && t !== document.body && t !== document.documentElement && t.nodeType === 1 ? t : null;
-    const typing = el && isTextField(el);
+    // 是不是在打字不看 el（目标是 body 时 el 为空）：可编辑的 body、designMode 的 iframe 编辑器（CKEditor4、UEditor）里
+    // 打的字、空格、方向键、退格都是内容，由输入事件录成「输入」
+    const tdoc = (t && (t.nodeType === 9 ? t : t.ownerDocument)) || document;
+    const bodyEditable = tdoc.designMode === 'on' || !!(tdoc.body && tdoc.body.isContentEditable);
+    const typing = !!((el && isTextField(el)) || (t && t.nodeType === 1 && isTextField(t)) || bodyEditable);
+    // 焦点在 body 上（页面在 document 上接键盘）时，页面上有看得见的密码框、验证码框（包括 Shadow DOM 里的），就当是在输自己画的 PIN 键盘
+    const secretOnPage = () => pageRoots(tdoc).some((r) => [...r.querySelectorAll('input')].some((f) => isSensitive(f) && visibleEl(f)));
     // 单个字符、空格当快捷键录之前再确认不是在输入内容：焦点在 closed Shadow DOM 里的输入框上（事件目标只到宿主）、
-    // 自己画的密码 / PIN 键盘（div、canvas 接键盘事件）、按住不放的重复，都不录——不然密码会一个字符一个字符明文录下来
-    const asShortcut = () => !typing && !e.repeat && !(el && (isTextField(innerFocus(el)) || unseenShadow(el) || secretish(el)));
+    // 自己画的密码 / PIN 键盘（div、canvas 接键盘事件）、按住不放的重复，都不录——不然密码会一个字符一个字符明文录下来。
+    // 焦点在 body 上时数字键一律不当快捷键（PIN、验证码多半是数字；在 body 上用数字当快捷键的页面很少）
+    const asShortcut = () => !typing && !e.repeat && (el
+      ? !(isTextField(innerFocus(el)) || unseenShadow(el) || secretish(el))
+      : !/^\d$/.test(e.key) && !secretOnPage());
     const popup = !!(el && (el.getAttribute('aria-expanded') === 'true' || el.hasAttribute('aria-activedescendant') || session));
     let keep = false;
     if (/^(Enter|Escape|Tab)$/.test(e.key)) keep = true;

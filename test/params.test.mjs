@@ -87,3 +87,17 @@ test('上传参数：没存默认路径的必填；在这台电脑上存了默�
   assert.equal(saved.paramInfo[name].required, undefined, '存了默认路径：按接口生成的工具不再要求必填');
 });
 
+
+test('上传参数：「导出 JSON」和生成的脚本里不带本机文件路径（扩展里回放的默认路径照旧）', () => {
+  const nav = step('n', 1, { type: 'navigate', url: 'https://shop.test/' });
+  const path = '/Users/x/Documents/a.jpg';
+  const up = step('u', 2, { type: 'upload', target: tgt('#file', '附件', '', 'input', 'file'), files: ['a.jpg'], value: path, recordedValue: path });
+  const out = PR_EXPORTER.build([nav, up], {}, {});
+  const [name] = Object.keys(out.analysis.params);
+  assert.equal(out.analysis.params[name], path, '本机回放还用默认路径');
+  assert.equal(JSON.stringify(out.raw).includes(path), false, '导出 JSON');
+  assert.equal(out.raw.params[name], '');
+  assert.equal(out.raw.paramInfo[name].required, true, '没了默认路径：要求必填');
+  assert.equal(out.script.includes(path), false, '脚本');
+  assert.ok(out.script.includes(`${JSON.stringify(name)}: ""`));
+});

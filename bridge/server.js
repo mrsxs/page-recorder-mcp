@@ -173,9 +173,14 @@ const log = (...a) => process.stderr.write('[page-recorder-bridge] ' + a.join(' 
 // 每个 Chrome 用户资料里的扩展是一个“实例”，连上后先发 hello 报 instanceId（和资料名 profile）。
 // 按 instanceId 各存一条连接：同一个实例重连只替换它自己，多个资料（主 Chrome、指纹浏览器、各店铺）可以同时在线。
 const instances = new Map(); // instanceId -> conn
-// instanceId → 第一次报这个标识的扩展来源：别的扩展不能冒用。按最近连接的先后排，满了淘汰最久没连过的
+// instanceId → { origin: 第一次报这个标识的扩展来源（别的扩展不能冒用）, seen: 最后一次连上、发 hello 或断开的时间 }。
+// 满了先淘汰同一来源自己的离线登记，没有就淘汰别的来源里离线而且很久没见过的
 const instanceOrigins = new Map();
 const MAX_INSTANCE_PINS = Math.max(1, Number(process.env.PR_MAX_INSTANCES) || 1024);
+// 别的来源的离线登记多久没见过才可以淘汰，默认 24 小时，可以写小数
+const STALE_HOURS = Number(process.env.PR_INSTANCE_STALE_HOURS) > 0 ? Number(process.env.PR_INSTANCE_STALE_HOURS) : 24;
+const STALE_MS = STALE_HOURS * 3600000;
+const seenNow = (id) => { const pin = instanceOrigins.get(id); if (pin) pin.seen = Date.now(); };
 // 同时连着的扩展（浏览器环境）上限，默认 32；同时开的指纹浏览器环境多就调大
 const MAX_EXT_SOCKETS = Math.max(1, Number(process.env.PR_MAX_BROWSERS) || 32);
 const wsSockets = new Set();
@@ -225,6 +230,7 @@ function attachWs(socket, origin, head) {
     failPending(conn, '浏览器扩展连接已断开');
     if (conn.instanceId && instances.get(conn.instanceId) === conn) {
       instances.delete(conn.instanceId);
+      seenNow(conn.instanceId); // 在线很久的环境刚断开也算刚见过，不会马上被别的来源挤掉
       recentlySeen.set(conn.instanceId, { profile: conn.profile, at: Date.now() });
       if (recentlySeen.size > 200) recentlySeen.delete(recentlySeen.keys().next().value);
       log(`扩展已断开：${browserLabel(conn)}，还剩 ${instances.size} 个浏览器`);
@@ -326,28 +332,34 @@ function register(conn, instanceId, info) {
     conn.profile = String(info.profile || conn.profile || '');
     conn.version = String(info.version || conn.version || '');
     conn.capabilities = capabilitiesOf(info);
+    seenNow(instanceId);
     return;
   }
   const pinned = instanceOrigins.get(instanceId);
-  if (pinned && pinned !== conn.origin) {
+  if (pinned && pinned.origin !== conn.origin) {
     log(`拒绝不同扩展来源 (${conn.origin}) 冒用实例标识`);
     conn.close();
     return;
   }
-  if (pinned) instanceOrigins.delete(instanceId); // 下面重新放到最后：最近连过的最后淘汰
-  else if (instanceOrigins.size >= MAX_INSTANCE_PINS) {
-    // 登记满了（指纹浏览器陆续开过很多环境）：淘汰最久没连过、现在也不在线的那个；全都在线才拒绝，并写进日志。
-    // 先淘汰同一个扩展来源自己登记的：一个来源换着标识连很多次，挤掉的也只是它自己的，别的来源的登记不会被它顶掉再冒用
+  if (!pinned && instanceOrigins.size >= MAX_INSTANCE_PINS) {
+    // 登记满了（指纹浏览器陆续开过很多环境）：先淘汰这个扩展来源自己登记的、现在不在线的里最久没见过的。
+    // 指纹浏览器每个环境的扩展来源都不同，新环境没有自己的可淘汰，就淘汰别的来源里离线、超过 STALE_HOURS 没见过的里最久的那条。
+    // 冒用要先挤掉别人的登记再拿那个标识连进来，现在只挤得掉一天（默认）没用过的环境，在线和最近用过的不会被挤掉。
+    // 都没有就拒绝，并写进日志
+    const oldest = (list) => list.reduce((a, b) => (!a || b[1].seen < a[1].seen ? b : a), null);
     const offline = [...instanceOrigins].filter(([id]) => !instances.has(id));
-    const stale = (offline.find(([, origin]) => origin === conn.origin) || offline[0] || [])[0];
-    if (stale === undefined) {
-      log(`同时连着的浏览器环境已有 ${instanceOrigins.size} 个，拒绝新连上的环境（来源 ${conn.origin}）`);
+    const now = Date.now();
+    const pick = oldest(offline.filter(([, v]) => v.origin === conn.origin))
+      || oldest(offline.filter(([, v]) => now - v.seen > STALE_MS));
+    if (!pick) {
+      log(`浏览器环境登记已满（${instanceOrigins.size} 个），这个来源（${conn.origin}）没有可淘汰的离线登记，别的来源的登记也都在线或 ${STALE_HOURS} 小时内连过，拒绝新连上的环境；可以用 PR_MAX_INSTANCES 调大上限，用 PR_INSTANCE_STALE_HOURS 调短「很久没连过」的门槛（现在 ${STALE_HOURS} 小时），或重启桥接清掉登记`);
       conn.close();
       return;
     }
-    instanceOrigins.delete(stale);
+    instanceOrigins.delete(pick[0]);
   }
-  instanceOrigins.set(instanceId, conn.origin);
+  if (pinned) pinned.seen = Date.now();
+  else instanceOrigins.set(instanceId, { origin: conn.origin, seen: Date.now() });
   // 等 hello 超时先按匿名登记了，后来才收到 hello：从匿名位置挪走
   if (conn.instanceId && instances.get(conn.instanceId) === conn) instances.delete(conn.instanceId);
   conn.instanceId = instanceId;
