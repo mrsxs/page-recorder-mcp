@@ -325,7 +325,7 @@ test('环境登记满了：淘汰现在不在线的，新环境照样连得上�
   }
 });
 
-test('环境登记满了：只淘汰同一个扩展来源自己的离线登记，别的来源的登记不被顶掉；没有可淘汰的就拒绝并写日志', async () => {
+test('环境登记满了：先淘汰同一个扩展来源自己的离线登记，别的来源最近连过的登记不被顶掉；没有可淘汰的就拒绝并写日志', async () => {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const p = spawn(process.execPath, [server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PR_MAX_INSTANCES: '2', PR_MAX_BROWSERS: '4' } });
   let err = '';
@@ -351,12 +351,67 @@ test('环境登记满了：只淘汰同一个扩展来源自己的离线登记�
     await until([]);
     // 另一个来源连上来：登记满了，离线的都是 abcdef 的，不替它淘汰
     ext('envG', 'ghijkl');
-    for (let i = 0; i < 100 && !err.includes('登记被其他来源占满'); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.match(err, /登记被其他来源占满/);
+    for (let i = 0; i < 100 && !err.includes('别的来源的登记也都在线'); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.match(err, /别的来源的登记也都在线或 24 小时内连过/);
+    assert.match(err, /PR_INSTANCE_STALE_HOURS/);
     await until([]);
     // abcdef 自己的新环境：淘汰它自己离线的登记，连得上
     ext('envA3');
     await until(['envA3']);
+  } finally {
+    exts.forEach((e) => e.destroy());
+    p.kill();
+  }
+});
+
+test('环境登记满了：别的来源离线很久的登记可以淘汰，挑最久没见过的那条，在线很久刚断开的不算久', async () => {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  // 「很久」的门槛调成约 0.8 秒
+  const p = spawn(process.execPath, [server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PR_MAX_INSTANCES: '2', PR_MAX_BROWSERS: '4', PR_INSTANCE_STALE_HOURS: String(0.8 / 3600) } });
+  let err = '';
+  const exts = [];
+  const ext = (id, from) => { const e = fakeExt(port, [], id, from); exts.push(e); return e; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('启动超时')), 10000);
+      p.stderr.on('data', (d) => { err += d; if (err.includes('已启动')) { clearTimeout(t); resolve(); } });
+      p.on('exit', (code) => { clearTimeout(t); reject(new Error('进程退出 ' + code)); });
+    });
+    const ids = async () => (await (await fetch(`http://127.0.0.1:${port}/api/status`)).json()).browsers.map((b) => b.instanceId).sort();
+    const until = async (want) => {
+      for (let i = 0; i < 100 && JSON.stringify(await ids()) !== JSON.stringify(want); i++) await sleep(50);
+      assert.deepEqual(await ids(), want);
+    };
+    const waitLog = async (text, n = 1) => {
+      for (let i = 0; i < 100 && err.split(text).length - 1 < n; i++) await sleep(50);
+      assert.equal(err.split(text).length - 1 >= n, true, '日志里没有：' + text);
+    };
+    // envA1 先登记（排在 Map 最前面），一直在线；envA2 连上就下线
+    const a1 = ext('envA1');
+    const a2 = ext('envA2');
+    await until(['envA1', 'envA2']);
+    a2.destroy();
+    await until(['envA1']);
+    // 别的来源马上来：envA2 才刚下线，不够久，拒绝
+    ext('envG', 'ghijkl');
+    await waitLog('别的来源的登记也都在线');
+    await until(['envA1']);
+    // 过了门槛以后 envA1 才断开：它在线了很久，但断开时刚见过，不算久
+    await sleep(1100);
+    a1.destroy();
+    await until([]);
+    // 别的来源再来：淘汰的是最久没见过的 envA2，不是 Map 里排第一的 envA1
+    ext('envG', 'ghijkl');
+    await until(['envG']);
+    // envA1 的登记还在：别的来源拿它的标识连不进来
+    ext('envA1', 'ghijkl');
+    await waitLog('冒用实例标识');
+    await sleep(200);
+    await until(['envG']);
+    // envA2 的登记被淘汰了，原来的扩展回来要重新登记：先淘汰同来源自己离线的 envA1，连得上
+    ext('envA2');
+    await until(['envA2', 'envG']);
   } finally {
     exts.forEach((e) => e.destroy());
     p.kill();
