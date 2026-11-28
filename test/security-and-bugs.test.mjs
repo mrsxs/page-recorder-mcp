@@ -313,6 +313,30 @@ test('runtime: navigate 拒绝 javascript: 协议，同页 #hash 跳转立即完
   assert.ok(Date.now() - t0 < 2000, 'SPA hash 导航不应等待 20 秒');
 });
 
+test('runtime: 可选步骤——元素不在就跳过、不算警告；已经动手才出错的照样往下走，但写进警告，日志里标出来', async () => {
+  const { win } = createRuntimeEnv();
+  const rec = {
+    startUrl: 'https://app.test/page',
+    apis: [],
+    steps: [
+      { type: 'click', optional: true, desc: '点击 关闭广告', target: { selectors: ['#ad-close'], tag: 'button', desc: '按钮 "关闭"' } },
+      // 没有目标的按键：直接动手。这个假页面里派发不了键盘事件，动手之后才出错
+      { type: 'press', optional: true, key: 'Enter', desc: '按下 Enter 键' },
+      { type: 'navigate', url: 'https://app.test/page', desc: '打开页面' },
+    ],
+  };
+  await win.__pageRecorderRuntime(rec, {}, {}, { autoRun: false, verbose: false, rewriteRequests: false, netLog: false, stepDelay: 1, optionalTimeout: 60, findTimeout: 200 });
+  const r = JSON.parse(JSON.stringify(await win.__PR__.replay({ from: 0 })));
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.completed, 3);
+  const [a, b] = [r.log.filter((x) => x.step === 1), r.log.filter((x) => x.step === 2)];
+  assert.deepEqual(a.map((x) => [x.skipped, x.acted]), [[true, undefined]], '元素不在：普通的跳过');
+  assert.deepEqual(b.map((x) => [x.ok, x.skipped, x.acted]), [[true, true, true]], '动手后出错：只留一条，标出动过手（不能既有“成功”又有“跳过”）');
+  assert.ok(b[0].reason);
+  assert.equal(r.warnings.length, 1, JSON.stringify(r.warnings));
+  assert.match(r.warnings[0], /第 2 步是可选步骤，已经动手但没做成/);
+});
+
 test('runtime: 合成模式下空文本 confirm("") 不会误匹配跨步骤录制的非空弹窗', async () => {
   const { win } = createRuntimeEnv({ href: 'https://app.test/' });
   win.confirm = () => { throw new Error('original confirm should be intercepted'); };

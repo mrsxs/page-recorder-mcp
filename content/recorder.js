@@ -23,9 +23,15 @@
   const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const alive = () => { try { return !!(chrome.runtime && chrome.runtime.id); } catch (e) { return false; } };
 
+  let lastSent = Promise.resolve(null); // 最近发给后台的那条消息（停止录制前要等它送到）
   function send(msg) {
     if (!alive()) return Promise.resolve(null);
-    try { return chrome.runtime.sendMessage(msg).catch(() => null); } catch (e) { return Promise.resolve(null); }
+    try {
+      const p = chrome.runtime.sendMessage(msg).catch(() => null);
+      // 只记录制内容（步骤、步骤的补充、密码）；stop 的应答要等后台停完才回来，等它就成了和后台互相等
+      if (msg.type === 'event' || msg.type === 'updateEvent' || msg.type === 'secret') lastSent = p;
+      return p;
+    } catch (e) { return Promise.resolve(null); }
   }
 
   // ---------------- 元素描述与选择器 ----------------
@@ -366,9 +372,19 @@
   const valueOf = (el) => (el.isContentEditable && !('value' in el) ? el.innerText : el.value);
   // 见过一次是密码框就一直按密码处理（点“显示密码”小眼睛后 type 变成 text，内容还是密码）
   const everSensitive = new WeakSet();
+  // 还没键入就先点了“显示密码”的：键入时 type 已经是 text 了。所以每次扫描字段、聚焦时看到是密码框就先记下
+  const notePassword = (el) => { if (el && el.type === 'password') everSensitive.add(el); };
+  // 名字、id 里带 password / pwd 的（loginPwd、user_password、confirmPassword）也算；
+  // pass、otp、cvv、secret 这类短词要单独成词（passport、option 不算），pin 只认整个名字就是它（pin_code 是邮编）
+  const SECRET_WORD = /pass(?:word|wd|code|phrase)|pwd|(?:^|[^a-z])(?:pass|otp|cvv|cvc|secret)(?:$|[^a-z])|^pin$|verif(?:y|ication)[_-]?code/;
+  const nameWords = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase();
   const isSensitive = (el) => {
-    if (el.type === 'password' || /(?:^|\s)(one-time-code|current-password|new-password)(?:$|\s)/i.test(el.autocomplete || '') || /^(password|passwd|passcode|otp|pin|verification_?code)$/i.test(el.name || el.id || '')) { everSensitive.add(el); return true; }
-    return everSensitive.has(el);
+    if (everSensitive.has(el)) return true;
+    // 按名字认只对能键入的框：name 是 remember_password 的复选框不是密码
+    const hit = el.type === 'password' || (isTextField(el) && (/(?:^|\s)(one-time-code|current-password|new-password)(?:$|\s)/i.test(el.autocomplete || '')
+      || SECRET_WORD.test(nameWords(el.name)) || SECRET_WORD.test(nameWords(el.id))));
+    if (hit) everSensitive.add(el);
+    return hit;
   };
   const visibleEl = (el) => !!(el && el.isConnected && (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length));
   function selectData(el) {
@@ -452,6 +468,15 @@
     pendingTimer = setTimeout(flushInput, 1500);
   }
   listen('input', onInput, true);
+  // 这一轮键入开始前，框里已经不是上次录的值了（聊天框、扫码框回车后被页面清空；可编辑区域不在字段扫描里，只能在这里看）：
+  // 上次录的值跟着改，不然再键入同样的内容会被当成“没变”漏掉
+  listen('beforeinput', (e) => {
+    if (!recording || !e.isTrusted) return;
+    const el = deepTarget(e);
+    if (!isTextField(el) || (pending && pending.el === el) || !lastValue.has(el)) return;
+    const v = valueOf(el);
+    if (lastValue.get(el) !== v) lastValue.set(el, v);
+  }, true);
 
   function onChange(e) {
     if (!recording) return;
@@ -528,10 +553,14 @@
     if (!recording) return;
     const changed = [];
     for (const el of allFields()) {
+      notePassword(el);
       const k = fieldKey(el);
       const old = known.get(el);
       known.set(el, k);
-      if (old !== undefined && old !== k) changed.push(el); // 第一次见到的只记基线
+      if (old === undefined || old === k) continue; // 第一次见到的只记基线
+      changed.push(el);
+      // 不是正在键入的框被页面改了值（发送后清空、重置）：上次录的值跟着改，之后再键入同样的内容照样录
+      if (!(pending && pending.el === el) && lastValue.has(el)) lastValue.set(el, valueOf(el));
     }
     if (changed.length) onFieldsChanged(changed);
   }
@@ -1084,6 +1113,7 @@
     if (!recording || !e.isTrusted) return;
     const t = deepTarget(e);
     noteRoot(t);
+    notePassword(t); // 空白 iframe、还没登记的 Shadow DOM 里的密码框扫描不到，聚焦时记
     if (!t.matches || !t.matches(FIELD_SEL) || (session && (session.fields.has(t) || inSessionUI(t)))) return;
     const near = widgetNear(t);
     if (near) startSession(near);
@@ -1117,11 +1147,17 @@
   // 原生拖放（draggable）：pointerup 不会来，按 dragstart → drop 录
   let dndSrc = null;
   listen('dragstart', (e) => { if (recording && e.isTrusted) dndSrc = interactive(deepTarget(e)); }, true);
+  // 没拖到能放的地方（不会有 drop）也要清掉，不然之后从桌面拖文件进来会被当成“拖动刚才那个元素”
+  listen('dragend', () => { dndSrc = null; }, true);
   listen('drop', (e) => {
     if (!recording || !e.isTrusted) return;
     // 从桌面拖文件进页面（上传区）：录成上传，回放时用浏览器调试接口把参数里的文件拖进去
     const dropped = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length ? [...e.dataTransfer.files].map((f) => f.name) : null;
-    if (!dndSrc && dropped) {
+    // 只带着文件、没有别的类型：是从桌面拖进来的（页面里拖图片也带文件，但同时有 text/html、text/uri-list）。
+    // 这时还留着拖动起点，是上一次拖动的起点被页面移走、没收到 dragend
+    const fromDesktop = !!dropped && [...(e.dataTransfer.types || [])].every((x) => x === 'Files');
+    if (dropped && (!dndSrc || fromDesktop)) {
+      dndSrc = null;
       const zone = interactive(deepTarget(e));
       flushInput();
       record({ type: 'upload', drop: true, target: describe(zone), files: dropped }, zone);
@@ -1212,8 +1248,26 @@
     }
   }, true);
 
-  // 按键：回车、Esc、Tab 都录；方向键、翻页只在不是打字的时候（或者有展开的下拉/联想列表时）录；
-  // Ctrl/Cmd 组合键录（输入框里的复制、粘贴、全选、撤销除外）；普通打字由输入事件录
+  // 宿主里的 Shadow DOM：open 的直接拿；closed 的用扩展专用接口（没有这个接口的旧浏览器拿不到）
+  const shadowOf = (n) => { try { return n.shadowRoot || (chrome.dom && chrome.dom.openOrClosedShadowRoot ? chrome.dom.openOrClosedShadowRoot(n) : null); } catch (e) { return null; } };
+  // 焦点真正在哪个元素上（一层层进 Shadow DOM）
+  function innerFocus(el) {
+    let a = el;
+    for (let k = 0; k < 8; k++) { const r = shadowOf(a); if (!r || !r.activeElement) break; a = r.activeElement; }
+    return a;
+  }
+  // 自定义元素、又看不到它里面（没有上面那个接口）：里面可能正是个输入框
+  const unseenShadow = (el) => el.tagName.includes('-') && !el.shadowRoot && !(chrome.dom && chrome.dom.openOrClosedShadowRoot);
+  // 目标或外面几层的名字、类名、说明像密码 / 验证码的
+  const SECRET_HINT = /pass(?:word|wd|code|phrase)|pwd|(?:^|[^a-z])(?:pass|otp|pin|cvv|cvc|secret)(?![a-z])|密码|口令|验证码|安全码/;
+  function secretish(el) {
+    for (let n = el, k = 0; n && n.nodeType === 1 && k < 4; n = n.parentElement, k++) {
+      if (SECRET_HINT.test(nameWords(`${n.id || ''} ${typeof n.className === 'string' ? n.className : ''} ${n.getAttribute('aria-label') || ''} ${n.getAttribute('name') || ''} ${n.getAttribute('placeholder') || ''}`))) return true;
+    }
+    return false;
+  }
+  // 按键：回车、Esc、Tab、功能键都录；方向键、翻页只在不是打字的时候（或者有展开的下拉/联想列表时）录；
+  // Ctrl/Cmd 组合键录（输入框里的复制、粘贴、全选、撤销除外）；不在打字时的空格、单个字符当快捷键录；普通打字由输入事件录
   listen('keydown', (e) => {
     if (!recording || !e.isTrusted || isOurUI(e)) return;
     if (/^(Alt|Control|Meta|Shift|CapsLock|Process|Unidentified|Dead)$/.test(e.key)) return;
@@ -1223,12 +1277,21 @@
     noteRoot(t);
     const el = t && t !== document.body && t !== document.documentElement && t.nodeType === 1 ? t : null;
     const typing = el && isTextField(el);
+    // 单个字符、空格当快捷键录之前再确认不是在输入内容：焦点在 closed Shadow DOM 里的输入框上（事件目标只到宿主）、
+    // 自己画的密码 / PIN 键盘（div、canvas 接键盘事件）、按住不放的重复，都不录——不然密码会一个字符一个字符明文录下来
+    const asShortcut = () => !typing && !e.repeat && !(el && (isTextField(innerFocus(el)) || unseenShadow(el) || secretish(el)));
     const popup = !!(el && (el.getAttribute('aria-expanded') === 'true' || el.hasAttribute('aria-activedescendant') || session));
     let keep = false;
     if (/^(Enter|Escape|Tab)$/.test(e.key)) keep = true;
     else if (e.ctrlKey || e.metaKey) keep = !(typing && /^[acvxyz]$/i.test(e.key));
     else if (/^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key)) keep = !typing || popup;
     else if (/^(ArrowLeft|ArrowRight|Home|End|Delete|Backspace)$/.test(e.key)) keep = !typing;
+    // 功能键：F5 刷新、F12 开发者工具是浏览器自己的，不录
+    else if (/^F([1-9]|1[0-2])$/.test(e.key)) keep = !/^F(5|12)$/.test(e.key);
+    // 不在打字时按的空格、单个字符是页面的快捷键（播放/暂停、j/k 上下条、/ 聚焦搜索）。
+    // 按钮、复选框、原生下拉框上的空格浏览器会接着发 click / change（已经录了），原生下拉框上的字符是按首字母选项：都不再录按键
+    else if (e.key === ' ') keep = asShortcut() && !(el && el.matches('button,summary,input,select'));
+    else if (e.key.length === 1) keep = asShortcut() && !(el && el.tagName === 'SELECT');
     if (!keep) return;
     flushInput();
     scan();
@@ -1373,6 +1436,7 @@
     gesture = null;
     pressPick = null;
     pressInfo = null;
+    dndSrc = null;
     hoverTrail.length = 0;
     scanTimers.forEach(clearTimeout);
     scanTimers = [];
@@ -1406,6 +1470,12 @@
         sendResponse({ ok: true });
       }
       if (msg?.type === 'capture') { captureVersion++; setCapture(msg.on); sendResponse({ ok: true }); }
+      // 后台准备停止录制（在弹窗里点的「停止」）：键入后还没提交的输入、没收尾的选择先交上去，送到了再回话
+      if (msg?.type === 'flush') {
+        if (recording) { flushInput(); endSession(); }
+        lastSent.then(() => sendResponse({ ok: true }));
+        return true;
+      }
       return false;
     });
   }

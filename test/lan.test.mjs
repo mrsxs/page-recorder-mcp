@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 
 const require = createRequire(import.meta.url);
-const { createLanServer, lanRequest, newCode, normCode, validCode, showCode, keyOf, seal, open, parseAddr } = require('../bridge/lan.js');
+const { createLanServer, lanRequest, newCode, normCode, validCode, showCode, keyOf, seal, open, parseAddr, isLanIp } = require('../bridge/lan.js');
 // 让系统给一个空闲端口：随机挑的可能落在 Windows 保留给系统的端口段里（监听报 EACCES）
 const port = (host = '0.0.0.0') => new Promise((resolve, reject) => {
   const s = http.createServer().listen(0, host, () => { const { port: p } = s.address(); s.close(() => resolve(p)); });
@@ -92,6 +92,12 @@ test('同时开两次只开一个端口，关掉后端口确实释放；请求�
   again.close();
   const code = newCode();
   assert.equal(open(keyOf(code, 'req'), seal(keyOf(code, 'res'), { a: 1 })), null);
+});
+
+test('局域网地址只认标准写法：带前导零、超过 255 的段不算（系统可能按八进制读成公网地址）', () => {
+  for (const ip of ['10.0.0.1', '192.168.1.20', '172.16.0.1', '172.31.255.254', '127.0.0.1', '169.254.3.4', '100.64.0.1', '100.127.255.255', '::ffff:192.168.1.5', '10.0.0.0']) assert.equal(isLanIp(ip), true, ip);
+  // 010 按八进制是 8、0300.0250 是 192.168、0177 是 127：Number() 读出来却像局域网地址
+  for (const ip of ['010.0.0.1', '010.1.2.3', '192.168.01.1', '0192.168.1.1', '127.0.0.01', '00.0.0.1', '10.0.0.256', '10.999.1.1', '10.0.0', '10.0.0.1.2', '8.8.8.8', '172.32.0.1', '100.128.0.1', '', null, '10.0.0.1 ', '0x0a.0.0.1']) assert.equal(isLanIp(ip), false, String(ip));
 });
 
 test('只连局域网地址；重放的请求不处理；对方回得太大就断开，不等它发完', async () => {
