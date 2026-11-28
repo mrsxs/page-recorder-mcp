@@ -1068,3 +1068,16 @@ test('被盖掉要另存的环境同步时原脚本正忙：先不另存；重�
     assert.equal(store.get('x').left, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('background: 上传步骤的本机文件路径不出这台电脑——导出录制包、脚本库备份 / 共享 / 局域网读取都清掉', async () => {
+  const path = '/Users/x/Documents/a.jpg';
+  const events = [{ kind: 'step', ts: 1, type: 'navigate', url: 'https://app.test/' }, { kind: 'step', ts: 2, type: 'upload', files: ['a.jpg'], value: path, recordedValue: path }];
+  const { bg } = loadBackground({ libIndex: [{ id: 'up', name: '脚本 up', savedAt: 5 }], 'lib:up': item('up', 5, { events }) });
+  await bg.load();
+  const { pkg } = plain(await bg.handle({ type: 'exportPackage', id: 'up' }, {}));
+  assert.equal(JSON.stringify(pkg).includes(path), false, '录制包');
+  assert.deepEqual(pkg.item.events[1].files, ['a.jpg'], '文件名留着');
+  const { chunk, done } = plain(await bg.bridgeHandle('libraryGet', { id: 'up' }));
+  assert.equal(done, true);
+  assert.equal(chunk.includes(path), false, '备份、共享目录、局域网读的都是这份');
+});

@@ -2169,7 +2169,7 @@ function packageOf(item) {
   // 分析时才认出的页面现算长串（入库时没打码）也按位置打码
   let raw = item.events || [];
   try { raw = PR_EXPORTER.maskGenerated(raw, PR_EXPORTER.analyze(raw, s, item.state, item.apiOverrides, item.aiDocs)); } catch (e) { /* 分析不了就按名字脱敏 */ }
-  const events = raw.map((e) => e.kind === 'request' ? PR_EXPORTER.exportRequest(e, s) : PR_EXPORTER.maskStepUrls(e, s.maskPasswords !== false));
+  const events = raw.map((e) => e.kind === 'request' ? PR_EXPORTER.exportRequest(e, s) : PR_EXPORTER.stripUpload(PR_EXPORTER.maskStepUrls(e, s.maskPasswords !== false)));
   const state = { ...item.state };
   state.startUrl = PR_EXPORTER.maskUrl(state.startUrl, s.maskPasswords !== false);
   delete state.tabId;
@@ -2205,7 +2205,7 @@ async function importPackage(c, pkg) {
   if (pkg.version > 1) throw new Error(`录制包版本 ${pkg.version} 比扩展新，请先升级扩展`);
   const src = pkg.item;
   const events = src.events.filter((e) => e && typeof e === 'object' && (e.kind === 'step' || e.kind === 'request') && Number.isFinite(e.ts))
-    .map((e) => (e.kind !== 'step' ? e : PR_EXPORTER.bareStep(e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e)));
+    .map((e) => (e.kind !== 'step' ? e : PR_EXPORTER.bareStep(PR_EXPORTER.stripUpload(e))));
   if (!events.length) throw new Error('录制包里没有步骤');
   const id = uid();
   const state = Object.assign({}, src.state || {}, { id, recording: false });
@@ -2370,7 +2370,7 @@ function applySharedItem(c, raw, p) {
     // 上传步骤里的本机文件路径不带过来（和恢复备份、导入录制包一样）：另一个环境回放时要传文件就在参数里给。
     // 另一台电脑来的还和导入录制包一样：去掉步骤上分析时算出来的字段（按这里的分析重算），分析不了的不收
     const events = raw.events.map((e) => {
-      const step = e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e;
+      const step = PR_EXPORTER.stripUpload(e);
       return fromLan && step.kind === 'step' ? PR_EXPORTER.bareStep(step) : step;
     });
     const plainObj = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {});
@@ -2429,7 +2429,7 @@ async function restoreLibItem(c, raw, sourceExtension) {
   const cur = c.libIndex.find((x) => x.id === raw.id);
   if (deletedAt >= raw.savedAt || (cur && cur.savedAt >= raw.savedAt)) return { ok: true, skipped: true };
   // 不带本机文件路径。这个扩展自己录的照常用；别的扩展 ID 存的按导入的录制包对待（不用页面 SDK，实时身份不跟随重定向）
-  const events = raw.events.map((e) => (e.kind === 'step' && e.type === 'upload' ? { ...e, value: '', recordedValue: '' } : e));
+  const events = raw.events.map(PR_EXPORTER.stripUpload);
   const own = sourceExtension === chrome.runtime.id && !raw.imported;
   const item = { ...raw, events, imported: !own, state: { ...raw.state, recording: false }, settings: c.settings };
   c.libIndex = [libEntryOf(item), ...c.libIndex.filter((x) => x.id !== item.id)];
