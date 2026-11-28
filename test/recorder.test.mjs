@@ -379,6 +379,43 @@ test('录制：焦点在 body 上时数字不录成按键；页面上有看得�
   assert.deepEqual(keys(p), ['j']);
 });
 
+test('录制：Shadow DOM（open 和 closed）里看得见的密码框也算，字母不录；后来才打开的，点一下或换焦点就认得出', async () => {
+  const keys = (q) => q.steps().filter((s) => s.type === 'press').map((s) => s.key);
+  const shadowWith = (inputs) => ({ querySelectorAll: (sel) => (sel === 'input' ? inputs : []), activeElement: null });
+  for (const attach of [(h, r) => { h.shadowRoot = r; }, (h, r) => { h.closedRoot = r; }]) {
+    const p = page();
+    const pw = { nodeType: 1, tagName: 'INPUT', type: 'password', name: '', id: '', isConnected: true, checkVisibility: () => true, getClientRects: () => [{}] };
+    // 外层宿主里套一层宿主，密码框在里面那层
+    const inner = p.add('x-pin-box', {});
+    attach(inner, shadowWith([pw]));
+    const outer = p.add('x-login', {});
+    attach(outer, { querySelectorAll: (sel) => (sel === '*' ? [inner] : []), activeElement: null });
+    p.doc.querySelectorAll = ((orig) => (sel) => orig(sel).filter((e) => e !== inner))(p.doc.querySelectorAll); // inner 只在 outer 的 Shadow DOM 里
+    await p.start();
+    for (const k of 'a1b2') p.fire('keydown', p.doc.body, { key: k });
+    p.fire('keydown', p.doc.body, { key: 'Enter' });
+    assert.deepEqual(keys(p), ['Enter']);
+  }
+
+  // 一开始没有密码框，j 照常录；登录弹窗（Shadow DOM 里）后来才打开，按下鼠标后就认得出
+  const p = page();
+  const pw = { nodeType: 1, tagName: 'INPUT', type: 'password', name: '', id: '', isConnected: true, checkVisibility: () => true, getClientRects: () => [{}] };
+  await p.start();
+  p.fire('keydown', p.doc.body, { key: 'j' });
+  assert.deepEqual(keys(p), ['j']);
+  for (const ev of ['pointerdown', 'focusin']) {
+    const before = keys(p).length;
+    const host = p.add('x-login', { shadowRoot: shadowWith([pw]) }); // 弹窗开了
+    p.fire(ev, p.doc.body);
+    p.fire('keydown', p.doc.body, { key: 'k' });
+    assert.equal(keys(p).length, before, ev);
+    host.shadowRoot = null; // 弹窗关了
+    p.fire(ev, p.doc.body);
+    p.fire('keydown', p.doc.body, { key: 'm' });
+    assert.deepEqual(keys(p).slice(before), ['m'], ev);
+  }
+});
+
 test('录制：pass 只认名字最后一个词——审核、证件字段（passReason、isPass、pass_rate、passport）不当密码', async () => {
   const sensitive = ['pass', 'userPass', 'login_pass', 'user-pass', 'password', 'pass_word', 'pass1', 'pass_1', 'pass[0]', 'user[pass]', 'passCode', 'pwd', 'loginPwd'];
   const plain = ['passReason', 'pass_rate', 'isPass', 'is_pass', 'noPassReason', 'notPass', 'hasPass', 'pass_status', 'passport', 'bypass', 'compass'];

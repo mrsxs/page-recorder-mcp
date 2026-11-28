@@ -1099,6 +1099,7 @@
   let dragEndTs = 0;
   let userScrollTs = 0;
   listen('pointerdown', (e) => {
+    rootsCache = null;
     if (!recording || !e.isTrusted || isOurUI(e)) return;
     const t = deepTarget(e);
     noteRoot(t);
@@ -1112,6 +1113,7 @@
     pressInfo = { t, x: e.clientX, y: e.clientY, ts: Date.now(), max: 0, button: e.button, toggle: e.button === 0 ? toggleSnap(interactive(t)) : null, state: e.button === 0 ? stateSnap(interactive(t)) : null, href: location.href };
   }, true);
   listen('focusin', (e) => {
+    rootsCache = null;
     if (!recording || !e.isTrusted) return;
     const t = deepTarget(e);
     noteRoot(t);
@@ -1252,6 +1254,21 @@
 
   // 宿主里的 Shadow DOM：open 的直接拿；closed 的用扩展专用接口（没有这个接口的旧浏览器拿不到）
   const shadowOf = (n) => { try { return n.shadowRoot || (chrome.dom && chrome.dom.openOrClosedShadowRoot ? chrome.dom.openOrClosedShadowRoot(n) : null); } catch (e) { return null; } };
+  // 文档和它里面的 Shadow DOM（closed 的也用 shadowOf 拿到）：最多 200 个根，结果留 500 毫秒，免得每次按键都全量扫一遍。
+  // 按下鼠标、焦点换了时清掉（可能刚打开登录弹窗）
+  let rootsCache = null;
+  function pageRoots(doc) {
+    if (rootsCache && rootsCache.doc === doc && Date.now() - rootsCache.t < 500) return rootsCache.list;
+    const list = [doc];
+    for (let i = 0; i < list.length && list.length < 200; i++) {
+      for (const e of list[i].querySelectorAll('*')) {
+        const r = shadowOf(e);
+        if (r && list.length < 200) list.push(r);
+      }
+    }
+    rootsCache = { doc, t: Date.now(), list };
+    return list;
+  }
   // 焦点真正在哪个元素上（一层层进 Shadow DOM）
   function innerFocus(el) {
     let a = el;
@@ -1283,8 +1300,8 @@
     const tdoc = (t && (t.nodeType === 9 ? t : t.ownerDocument)) || document;
     const bodyEditable = tdoc.designMode === 'on' || !!(tdoc.body && tdoc.body.isContentEditable);
     const typing = !!((el && isTextField(el)) || (t && t.nodeType === 1 && isTextField(t)) || bodyEditable);
-    // 焦点在 body 上（页面在 document 上接键盘）时，页面上有看得见的密码框、验证码框，就当是在输自己画的 PIN 键盘
-    const secretOnPage = () => [...tdoc.querySelectorAll('input')].some((f) => isSensitive(f) && visibleEl(f));
+    // 焦点在 body 上（页面在 document 上接键盘）时，页面上有看得见的密码框、验证码框（包括 Shadow DOM 里的），就当是在输自己画的 PIN 键盘
+    const secretOnPage = () => pageRoots(tdoc).some((r) => [...r.querySelectorAll('input')].some((f) => isSensitive(f) && visibleEl(f)));
     // 单个字符、空格当快捷键录之前再确认不是在输入内容：焦点在 closed Shadow DOM 里的输入框上（事件目标只到宿主）、
     // 自己画的密码 / PIN 键盘（div、canvas 接键盘事件）、按住不放的重复，都不录——不然密码会一个字符一个字符明文录下来。
     // 焦点在 body 上时数字键一律不当快捷键（PIN、验证码多半是数字；在 body 上用数字当快捷键的页面很少）
