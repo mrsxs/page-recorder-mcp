@@ -762,3 +762,23 @@ test('全仓审查：起后台桥接出错（状态目录写不了）时，MCP �
   assert.match(out, /"id":1/, err);
   assert.match(err, /后台桥接起不来/);
 });
+
+test('按键表：回放引擎（runtime.js）和后台（background.js）两份 SHIFT_KEYS、按键码表内容一样（runtime.js 注入页面跑，不能共用一份）', () => {
+  const bgSrc = readFileSync(join(root, 'background.js'), 'utf8');
+  // 取出对象字面量，在空环境里求值成对象再比，不比源码文本（换行、引号写法不同不算不一样）
+  const take = (src, name) => {
+    const m = src.match(new RegExp(`const ${name} = (\\{[\\s\\S]*?\\});\\n`));
+    assert.ok(m, `${name} 没找到`);
+    return vm.runInNewContext(`(${m[1]})`);
+  };
+  const plain = (x) => JSON.parse(JSON.stringify(x));
+  assert.deepEqual(plain(take(runtimeSrc, 'SHIFT_KEYS')), plain(take(bgSrc, 'SHIFT_KEYS')));
+  // 后台的 KEY_DEFS = 回放引擎的 KEY_CODES（特殊键，code 就是键名，空格是 Space）+ PUNCT_KEYS（标点）
+  const codes = take(runtimeSrc, 'KEY_CODES');
+  const punct = take(runtimeSrc, 'PUNCT_KEYS');
+  const fromRuntime = {};
+  for (const [k, c] of Object.entries(codes)) fromRuntime[k] = [c, k === ' ' ? 'Space' : k];
+  for (const [k, v] of Object.entries(punct)) fromRuntime[k] = [v[0], v[1]];
+  const fromBg = Object.fromEntries(Object.entries(take(bgSrc, 'KEY_DEFS')).map(([k, v]) => [k, [v[0], v[1]]]));
+  assert.deepEqual(plain(fromRuntime), plain(fromBg));
+});
