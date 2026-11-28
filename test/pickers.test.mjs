@@ -241,15 +241,16 @@ test('keyInfo：Shift 符号按它所在的键算 keyCode 和 code（美式键�
 // ======================= 月份 / 年份 / 季度面板 =======================
 
 // 月份面板：头上是年份和前后翻年的按钮，下面 12 格。点格子把值写进框里
-function monthPanel(dom, box, year, { left = 100, top = 132, id } = {}) {
+function monthPanel(dom, box, year, { left = 100, top = 132, id, bare = false } = {}) {
   const state = { year };
-  const title = dom.h('span', { className: 'picker-header-view', text: `${year}年` });
+  const yearText = (y) => (bare ? String(y) : `${y}年`); // bare：头上只写「2026」（像个选项）
+  const title = dom.h('span', { className: 'picker-header-view', text: yearText(year) });
   const prev = dom.h('button', { className: 'picker-header-super-prev-btn', text: '«', rect: { left: left + 4, top, width: 20, height: 20 } });
   const next = dom.h('button', { className: 'picker-header-super-next-btn', text: '»', rect: { left: left + 250, top, width: 20, height: 20 } });
   const cells = Array.from({ length: 12 }, (_, i) => dom.h('td', { className: 'picker-cell', text: `${i + 1}月` }));
   const grid = dom.h('table', { rect: { left, top: top + 30, width: 280, height: 200 } }, dom.h('tbody', {}, cells));
   const root = popup(dom, { rect: { left, top, width: 280, height: 240 }, id }, dom.h('div', { className: 'picker-header', rect: { left, top, width: 280, height: 24 } }, prev, title, next), grid);
-  const setYear = (y) => { state.year = y; title.textContent = `${y}年`; };
+  const setYear = (y) => { state.year = y; title.textContent = yearText(y); };
   prev.on.click = () => setYear(state.year - 1);
   next.on.click = () => setYear(state.year + 1);
   cells.forEach((c, i) => { c.on.click = () => { box.value = `${state.year}-${String(i + 1).padStart(2, '0')}`; }; });
@@ -497,4 +498,40 @@ test('几个时间面板同时开着：按这个框自己的那个点', async ()
   assert.equal(await f.pickTimePanel(box, f.partialDate('09:15'), { desc: '时间' }), true);
   assert.deepEqual(mine.picked, [9, 15]);
   assert.deepEqual(near.picked, []);
+});
+
+// ======================= 用斜杠写的月份不走级联 =======================
+
+test('pickChoice：「2026/09」弹出的是月份面板时不当级联（面板头上的「2026」不是第一级），按面板选；真的两级下拉照旧逐级点', async () => {
+  const dom = makeDom();
+  const box = input(dom, { readOnly: true, attrs: { 'aria-controls': 'mp' } });
+  const p = monthPanel(dom, box, 2026, { bare: true, id: 'mp' }); // 头上正好写着「2026」
+  box.on.click = () => { if (!p.root.isConnected) dom.doc.body.append(p.root); };
+  dom.doc.body.append(box);
+  const f = await runtimeFor(dom);
+  await f.pickChoice(box, '2026/09', { desc: '月份' });
+  assert.equal(box.value, '2026-09');
+
+  // 两级下拉：第一列是年份，点了出第二列月份
+  const d2 = makeDom();
+  const b2 = input(d2, { readOnly: true });
+  const col2 = d2.h('ul', { rect: { left: 260, top: 132, width: 120, height: 200 } });
+  const col1 = d2.h('ul', { rect: { left: 100, top: 132, width: 120, height: 200 } }, ['2025', '2026'].map((y) => {
+    const li = d2.h('li', { attrs: { role: 'option' }, text: y });
+    li.on.click = () => {
+      col2.childNodes = [];
+      for (const m of ['08', '09']) {
+        const o = d2.h('li', { attrs: { role: 'option' }, text: m });
+        o.on.click = () => { b2.value = `${y} / ${m}`; };
+        col2.append(o);
+      }
+    };
+    return li;
+  }));
+  const drop = popup(d2, { className: 'cascader-dropdown' }, col1, col2);
+  b2.on.click = () => { if (!drop.isConnected) d2.doc.body.append(drop); };
+  d2.doc.body.append(b2);
+  const g = await runtimeFor(d2);
+  await g.pickChoice(b2, '2026/09', { desc: '月份' });
+  assert.equal(b2.value, '2026 / 09');
 });
