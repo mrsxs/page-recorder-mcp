@@ -336,3 +336,45 @@ test('录制：点页面上的「停止」后后台发来 flush，马上回话�
   assert.equal(JSON.stringify(res), '{"ok":true}');
 });
 
+
+test('录制：可编辑的 body、designMode 的编辑器里打的字不录成按键（由输入事件录），回车、Tab、Ctrl+B 照常录', async () => {
+  for (const setup of [(p) => { p.doc.body.isContentEditable = true; }, (p) => { p.doc.designMode = 'on'; }]) {
+    const p = page();
+    setup(p);
+    await p.start();
+    const keys = () => p.steps().filter((s) => s.type === 'press').map((s) => s.key);
+    for (const k of ['a', 'b', 'c', ' ', '1', 'ArrowLeft', 'Backspace', 'Home']) p.fire('keydown', p.doc.body, { key: k });
+    assert.deepEqual(keys(), []);
+    p.fire('keydown', p.doc.body, { key: 'Enter' });
+    p.fire('keydown', p.doc.body, { key: 'Tab' });
+    p.fire('keydown', p.doc.body, { key: 'b', ctrlKey: true });
+    assert.deepEqual(keys(), ['Enter', 'Tab', 'b']);
+  }
+});
+
+test('录制：焦点在 body 上时数字不录成按键；页面上有看得见的密码框、验证码框时字母也不录，没有时 j、k 照常录', async () => {
+  let p = page();
+  await p.start();
+  const keys = (q) => q.steps().filter((s) => s.type === 'press').map((s) => s.key);
+  for (const k of '123456') p.fire('keydown', p.doc.body, { key: k });
+  assert.deepEqual(keys(p), []);
+  p.fire('keydown', p.doc.body, { key: 'j' });
+  p.fire('keydown', p.doc.body, { key: 'k' });
+  assert.deepEqual(keys(p), ['j', 'k']);
+
+  // 自己画的 PIN 面板，旁边有个看得见的密码框（或验证码框）：键盘事件在 document 上接，目标是 body
+  for (const props of [{ type: 'password' }, { autocomplete: 'one-time-code' }, { name: 'payPwd' }]) {
+    p = page();
+    p.add('input', props);
+    await p.start();
+    for (const k of 'a1b2c3') p.fire('keydown', p.doc.body, { key: k });
+    p.fire('keydown', p.doc.body, { key: 'Enter' });
+    assert.deepEqual(keys(p), ['Enter'], JSON.stringify(props));
+  }
+  // 密码框藏起来了（登录弹窗关了）：不算
+  p = page();
+  p.add('input', { type: 'password', checkVisibility: () => false, getClientRects: () => [] });
+  await p.start();
+  p.fire('keydown', p.doc.body, { key: 'j' });
+  assert.deepEqual(keys(p), ['j']);
+});

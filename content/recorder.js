@@ -1276,10 +1276,19 @@
     const t = deepTarget(e);
     noteRoot(t);
     const el = t && t !== document.body && t !== document.documentElement && t.nodeType === 1 ? t : null;
-    const typing = el && isTextField(el);
+    // 是不是在打字不看 el（目标是 body 时 el 为空）：可编辑的 body、designMode 的 iframe 编辑器（CKEditor4、UEditor）里
+    // 打的字、空格、方向键、退格都是内容，由输入事件录成「输入」
+    const tdoc = (t && (t.nodeType === 9 ? t : t.ownerDocument)) || document;
+    const bodyEditable = tdoc.designMode === 'on' || !!(tdoc.body && tdoc.body.isContentEditable);
+    const typing = !!((el && isTextField(el)) || (t && t.nodeType === 1 && isTextField(t)) || bodyEditable);
+    // 焦点在 body 上（页面在 document 上接键盘）时，页面上有看得见的密码框、验证码框，就当是在输自己画的 PIN 键盘
+    const secretOnPage = () => [...tdoc.querySelectorAll('input')].some((f) => isSensitive(f) && visibleEl(f));
     // 单个字符、空格当快捷键录之前再确认不是在输入内容：焦点在 closed Shadow DOM 里的输入框上（事件目标只到宿主）、
-    // 自己画的密码 / PIN 键盘（div、canvas 接键盘事件）、按住不放的重复，都不录——不然密码会一个字符一个字符明文录下来
-    const asShortcut = () => !typing && !e.repeat && !(el && (isTextField(innerFocus(el)) || unseenShadow(el) || secretish(el)));
+    // 自己画的密码 / PIN 键盘（div、canvas 接键盘事件）、按住不放的重复，都不录——不然密码会一个字符一个字符明文录下来。
+    // 焦点在 body 上时数字键一律不当快捷键（PIN、验证码多半是数字；在 body 上用数字当快捷键的页面很少）
+    const asShortcut = () => !typing && !e.repeat && (el
+      ? !(isTextField(innerFocus(el)) || unseenShadow(el) || secretish(el))
+      : !/^\d$/.test(e.key) && !secretOnPage());
     const popup = !!(el && (el.getAttribute('aria-expanded') === 'true' || el.hasAttribute('aria-activedescendant') || session));
     let keep = false;
     if (/^(Enter|Escape|Tab)$/.test(e.key)) keep = true;
