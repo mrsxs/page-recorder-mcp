@@ -336,12 +336,13 @@ function register(conn, instanceId, info) {
   }
   if (pinned) instanceOrigins.delete(instanceId); // 下面重新放到最后：最近连过的最后淘汰
   else if (instanceOrigins.size >= MAX_INSTANCE_PINS) {
-    // 登记满了（指纹浏览器陆续开过很多环境）：淘汰最久没连过、现在也不在线的那个；全都在线才拒绝，并写进日志。
-    // 先淘汰同一个扩展来源自己登记的：一个来源换着标识连很多次，挤掉的也只是它自己的，别的来源的登记不会被它顶掉再冒用
+    // 登记满了（指纹浏览器陆续开过很多环境）：淘汰这个扩展来源自己登记的、最久没连过、现在也不在线的那个。
+    // 只淘汰同一来源自己的：一个来源换着标识连很多次，挤掉的也只是它自己的，别的来源的登记不会被它顶掉、再拿那个标识冒用。
+    // 这个来源没有可淘汰的就拒绝，并写进日志
     const offline = [...instanceOrigins].filter(([id]) => !instances.has(id));
-    const stale = (offline.find(([, origin]) => origin === conn.origin) || offline[0] || [])[0];
+    const stale = (offline.find(([, origin]) => origin === conn.origin) || [])[0];
     if (stale === undefined) {
-      log(`同时连着的浏览器环境已有 ${instanceOrigins.size} 个，拒绝新连上的环境（来源 ${conn.origin}）`);
+      log(`浏览器环境登记已满（${instanceOrigins.size} 个），登记被其他来源占满或都在线，这个来源（${conn.origin}）没有可淘汰的离线登记，拒绝新连上的环境；可以用 PR_MAX_INSTANCES 调大上限，或重启桥接清掉登记`);
       conn.close();
       return;
     }

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const server = join(dirname(fileURLToPath(import.meta.url)), '..', 'bridge', 'server.js');
 process.env.PR_BRIDGE_DIR = mkdtempSync(join(tmpdir(), 'pr-state-'));
-writeFileSync(join(process.env.PR_BRIDGE_DIR, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef'] })); // 测试用的假扩展：桥接认得它
+writeFileSync(join(process.env.PR_BRIDGE_DIR, 'trusted-extensions.json'), JSON.stringify({ ids: ['abcdef', 'ghijkl'] })); // 测试用的假扩展：桥接认得它（ghijkl 是另一个来源）
 
 const DOMAINS = [['order', '订单'], ['product', '商品'], ['refund', '退款'], ['coupon', '优惠券']];
 const VERBS = [['list', '列表'], ['detail', '详情'], ['export', '导出报表'], ['stats', '统计'], ['update', '修改']];
@@ -51,11 +51,11 @@ function reply(lib, params) {
   if (rec && params.api != null && !rec.tools.some((t) => t.api === params.api || t.name === params.api || t.api.includes(params.api))) return { ok: false, error: '没有接口 ' + params.api };
   return { ok: true, got: params };
 }
-function fakeExt(port, lib, instanceId = 'test1') {
+function fakeExt(port, lib, instanceId = 'test1', extId = 'abcdef') {
   const s = net.connect(port, '127.0.0.1');
   let buf = Buffer.alloc(0);
   let up = false;
-  s.write(`GET /ext HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: chrome-extension://abcdef\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+  s.write(`GET /ext HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: chrome-extension://${extId}\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
   s.on('data', (d) => {
     buf = Buffer.concat([buf, d]);
     if (!up) {
@@ -71,8 +71,11 @@ function fakeExt(port, lib, instanceId = 'test1') {
       let off = 2;
       if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; } else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
       if (buf.length < off + len) return;
-      const m = JSON.parse(buf.slice(off, off + len).toString());
+      const text = (buf[0] & 0x0f) === 1; // 关闭帧这类不是文本的跳过
+      const body = buf.slice(off, off + len).toString();
       buf = buf.slice(off + len);
+      if (!text) continue;
+      const m = JSON.parse(body);
       if (m.type !== 'request') continue;
       s.write(frame(JSON.stringify({ type: 'response', id: m.id, ok: true, data: m.method === 'list' ? lib : reply(lib, m.params) })));
     }
@@ -316,6 +319,44 @@ test('环境登记满了：淘汰现在不在线的，新环境照样连得上�
     await until(['envC']);
     ext('envA');
     await until(['envA', 'envC']);
+  } finally {
+    exts.forEach((e) => e.destroy());
+    p.kill();
+  }
+});
+
+test('环境登记满了：只淘汰同一个扩展来源自己的离线登记，别的来源的登记不被顶掉；没有可淘汰的就拒绝并写日志', async () => {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const p = spawn(process.execPath, [server, '--port', String(port)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PR_MAX_INSTANCES: '2', PR_MAX_BROWSERS: '4' } });
+  let err = '';
+  const exts = [];
+  const ext = (id, from) => { const e = fakeExt(port, [], id, from); exts.push(e); return e; };
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('启动超时')), 10000);
+      p.stderr.on('data', (d) => { err += d; if (err.includes('已启动')) { clearTimeout(t); resolve(); } });
+      p.on('exit', (code) => { clearTimeout(t); reject(new Error('进程退出 ' + code)); });
+    });
+    const ids = async () => (await (await fetch(`http://127.0.0.1:${port}/api/status`)).json()).browsers.map((b) => b.instanceId).sort();
+    const until = async (want) => {
+      for (let i = 0; i < 100 && JSON.stringify(await ids()) !== JSON.stringify(want); i++) await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(await ids(), want);
+    };
+    // 来源 abcdef 登记了两个环境，都下线了
+    const a1 = ext('envA1');
+    const a2 = ext('envA2');
+    await until(['envA1', 'envA2']);
+    a1.destroy();
+    a2.destroy();
+    await until([]);
+    // 另一个来源连上来：登记满了，离线的都是 abcdef 的，不替它淘汰
+    ext('envG', 'ghijkl');
+    for (let i = 0; i < 100 && !err.includes('登记被其他来源占满'); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.match(err, /登记被其他来源占满/);
+    await until([]);
+    // abcdef 自己的新环境：淘汰它自己离线的登记，连得上
+    ext('envA3');
+    await until(['envA3']);
   } finally {
     exts.forEach((e) => e.destroy());
     p.kill();
