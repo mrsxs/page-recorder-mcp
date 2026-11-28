@@ -535,3 +535,68 @@ test('pickChoice：「2026/09」弹出的是月份面板时不当级联（面板
   await g.pickChoice(b2, '2026/09', { desc: '月份' });
   assert.equal(b2.value, '2026 / 09');
 });
+
+// 按坐标找最里层的元素（点得中才不用等）
+const hitTest = (dom) => (x, y) => {
+  let hit = null;
+  for (const e of dom.doc.body.descendants()) {
+    const r = e.getBoundingClientRect();
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) hit = e;
+  }
+  return hit;
+};
+
+test('pickChoice：月份面板先渲染「2026」、格子晚 600 毫秒才出来，也按面板选；真的两级下拉（第一级是 option）不多等', async () => {
+  const dom = makeDom();
+  const box = input(dom, { readOnly: true, attrs: { 'aria-controls': 'mp' } });
+  const p = monthPanel(dom, box, 2026, { bare: true, id: 'mp' });
+  const grid = p.root.children[1];
+  const title = p.root.children[0].children[1];
+  const clicks = [];
+  title.on.click = () => clicks.push(title.textContent);
+  const r = loadRuntime(dom);
+  // 格子按假时钟晚 600 毫秒才出来（比点开以后等的 300 毫秒晚）。不用 setTimeout：假时钟把同时挂着的定时器时长加在一起
+  const head = p.root.childNodes.filter((n) => n !== grid);
+  box.on.click = () => {
+    if (p.root.isConnected) return;
+    const shownAt = r.win.Date.now() + 600;
+    Object.defineProperty(p.root, 'childNodes', { configurable: true, get: () => (r.win.Date.now() >= shownAt ? [...head, grid] : head), set() {} });
+    dom.doc.body.append(p.root);
+  };
+  dom.doc.body.append(box);
+  dom.doc.elementFromPoint = hitTest(dom);
+  await r.ready;
+  await r.fns().pickChoice(box, '2026/09', { desc: '月份' });
+  assert.equal(box.value, '2026-09');
+
+  assert.deepEqual(clicks, [], '没有把面板头上的「2026」当第一级点');
+
+  // 两级下拉：第一级是 role=option 的列表项，不等格子面板
+  let clickedAt = null;
+  const d2 = makeDom();
+  const b2 = input(d2, { readOnly: true });
+  const col2 = d2.h('ul', { rect: { left: 260, top: 132, width: 120, height: 200 } });
+  const col1 = d2.h('ul', { rect: { left: 100, top: 132, width: 120, height: 200 } }, ['2025', '2026'].map((y, i) => {
+    const o = d2.h('div', { attrs: { role: 'option' }, text: y, rect: { left: 100, top: 132 + i * 30, width: 120, height: 30 } });
+    o.on.click = () => {
+      clickedAt = clickedAt ?? g.win.Date.now();
+      col2.childNodes = [];
+      for (const [j, m] of ['08', '09'].entries()) {
+        const x = d2.h('div', { attrs: { role: 'option' }, text: m, rect: { left: 260, top: 132 + j * 30, width: 120, height: 30 } });
+        x.on.click = () => { b2.value = `${y} / ${m}`; };
+        col2.append(x);
+      }
+    };
+    return o;
+  }));
+  const drop = popup(d2, { className: 'select-dropdown' }, col1, col2);
+  b2.on.click = () => { if (!drop.isConnected) d2.doc.body.append(drop); };
+  d2.doc.body.append(b2);
+  d2.doc.elementFromPoint = hitTest(d2);
+  const g = loadRuntime(d2);
+  await g.ready;
+  const t0 = g.win.Date.now();
+  await g.fns().pickChoice(b2, '2026/09', { desc: '月份' });
+  assert.equal(b2.value, '2026 / 09');
+  assert.ok(clickedAt - t0 < 1200, `点第一级之前多等了：${clickedAt - t0} 毫秒`);
+});
