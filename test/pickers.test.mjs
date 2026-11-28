@@ -168,18 +168,19 @@ function loadRuntime(dom) {
     HTMLInputElement: { prototype: {} }, HTMLTextAreaElement: { prototype: {} }, HTMLSelectElement: { prototype: {} },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     URL, URLSearchParams, Headers,
-    console: { log() {}, warn() {}, error() {} },
+    console: { log() {}, warn: (...a) => warns.push(a.join(' ')), error() {} },
   };
+  const warns = [];
   win.window = win; win.self = win; win.top = win;
   vm.runInContext(runtimeSrc, vm.createContext(win));
   let fns = null;
   const ready = win.__pageRecorderRuntime({ steps: [], apis: [] }, {}, {}, { autoRun: false, verbose: false, rewriteRequests: false, netLog: false, expose: false, highlight: false }, { test: (x) => { fns = x; } });
-  return { fns: () => fns, ready, win };
+  return { fns: () => fns, ready, win, warns };
 }
 async function runtimeFor(dom) {
   const r = loadRuntime(dom);
   await r.ready;
-  return r.fns();
+  return Object.assign(r.fns(), { warns: r.warns });
 }
 
 // 一个绝对定位的弹层（overlay），挨着输入框下方
@@ -449,4 +450,51 @@ test('scrollToOption：只渲染看得见那几行的列表，滚过去才有后
   assert.ok(o, '滚到了');
   assert.equal(o.textContent, '城市 150');
   assert.equal(await f.scrollToOption(box, '城市 999', new Set()), null, '没有的选项滚到底返回 null');
+});
+
+// ======================= 同时开着几个面板 =======================
+
+test('几个月份面板同时开着：点这个框自己的（aria-controls 指着的），不是离得最近的那个；都认不出时用最近的并只提醒一次', async () => {
+  const dom = makeDom();
+  const box = input(dom, { attrs: { 'aria-controls': 'mine' } });
+  const other = input(dom, { attrs: { 'aria-controls': 'theirs' }, rect: { left: 100, top: 400, width: 200, height: 30 } });
+  const near = monthPanel(dom, other, 2026, { top: 132, id: 'theirs' }); // 别的框的面板没关，正好挨着这个框
+  const mine = monthPanel(dom, box, 2026, { left: 500, top: 132, id: 'mine' });
+  dom.doc.body.append(box, other, near.root, mine.root);
+  const f = await runtimeFor(dom);
+  assert.equal(await f.pickUnit(box, f.partialDate('2027-04'), { desc: '月份' }), true);
+  assert.equal(box.value, '2027-04');
+  assert.equal(mine.state.year, 2027, '翻的是自己那个面板');
+  assert.equal(near.state.year, 2026, '别的框的面板没动');
+  assert.equal(other.value, '');
+  assert.deepEqual(f.warns, []);
+
+  // 两个面板都不像是这个框的（没有 aria-controls、也不挨着）：用离得最近的，翻了两页也只提醒一次
+  const d2 = makeDom();
+  const b2 = input(d2);
+  const p1 = monthPanel(d2, b2, 2026, { left: 100, top: 300 });
+  const p2 = monthPanel(d2, b2, 2026, { left: 700, top: 300 });
+  d2.doc.body.append(b2, p1.root, p2.root);
+  const g = await runtimeFor(d2);
+  assert.equal(await g.pickUnit(b2, g.partialDate('2028-01'), { desc: '月份' }), true);
+  assert.equal(p1.state.year, 2028);
+  assert.equal(p2.state.year, 2026);
+  assert.equal(g.warns.filter((w) => w.includes('没认出哪个是这个框自己的')).length, 1, g.warns.join('\n'));
+});
+
+test('几个时间面板同时开着：按这个框自己的那个点', async () => {
+  const dom = makeDom();
+  const box = input(dom, { attrs: { 'aria-controls': 'tmine' } });
+  const other = input(dom, { attrs: { 'aria-controls': 'tother' }, rect: { left: 100, top: 400, width: 200, height: 30 } });
+  const near = timePanel(dom, other, [range(24), range(60)]); // 别的框的面板，正好挨着这个框
+  near.root.id = 'tother';
+  const mine = timePanel(dom, box, [range(24), range(60)]);
+  mine.root.id = 'tmine';
+  mine.root.rect = { left: 600, top: 132, width: 200, height: 260 };
+  mine.root.children.slice(0, 2).forEach((ul, k) => { ul.rect = { left: 600 + k * 60, top: 132, width: 50, height: 200 }; });
+  dom.doc.body.append(box, other, near.root, mine.root);
+  const f = await runtimeFor(dom);
+  assert.equal(await f.pickTimePanel(box, f.partialDate('09:15'), { desc: '时间' }), true);
+  assert.deepEqual(mine.picked, [9, 15]);
+  assert.deepEqual(near.picked, []);
 });
